@@ -9,4 +9,4 @@
 دستور زیر را در ترمینال سرور خود اجرا کنید:
 
 ```bash
-curl -sSL [https://raw.githubusercontent.com/JavadWolf-af/wolf/main/install.sh](https://raw.githubusercontent.com/JavadWolf-af/wolf/main/install.sh) | bash
+curl -sSL https://raw.githubusercontent.com/JavadWolf-af/wolf/main/install.sh | bash

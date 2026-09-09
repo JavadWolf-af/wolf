@@ -4,11 +4,9 @@
 
 ---
 
-## 🚀 نصب آسان در سرور (فقط با ۱ دستور)
+## 🚀 نصب مستقیم روی سرور (یک‌خطی)
 
-کافیست مخزن را کلون کرده و اسکریپت نصب را اجرا کنید:
+دستور زیر را در ترمینال سرور خود وارد کنید:
 
 ```bash
-git clone [https://github.com/YOUR_USERNAME/wolf-self-bot.git](https://github.com/YOUR_USERNAME/wolf-self-bot.git)
-cd wolf-self-bot
-bash install.sh
+bash <(curl -Ls [https://raw.githubusercontent.com/JavadWolf-af/wolf/main/install.sh](https://raw.githubusercontent.com/JavadWolf-af/wolf/main/install.sh))

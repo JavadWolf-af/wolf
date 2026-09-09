@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"html"
 	"log"
 	"os"
 	"strconv"
@@ -60,6 +61,9 @@ func InitDB() {
 		log.Fatalf("❌ خطا در اتصال به دیتابیس: %v", err)
 	}
 
+	// تنظیم اتصال همزمان برای جلوگیری از قفل شدن SQLite
+	db.SetMaxOpenConns(1)
+
 	query := `
 	CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY,
@@ -89,7 +93,6 @@ func SaveUser(userID int64, firstName, username string) {
 func main() {
 	cfg := loadConfig()
 
-	// راه‌اندازی دیتابیس
 	InitDB()
 	defer db.Close()
 
@@ -103,7 +106,6 @@ func main() {
 		log.Fatalf("❌ خطا در راه‌اندازی ربات: %v", err)
 	}
 
-	// کیبوردها
 	userMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
@@ -137,75 +139,72 @@ func main() {
 		return userMenu
 	}
 
-	// دستور /start
 	bot.Handle("/start", func(c tele.Context) error {
 		user := c.Sender()
-		firstName := user.FirstName
+		firstName := html.EscapeString(user.FirstName)
 		if firstName == "" {
 			firstName = "کاربر"
 		}
 
 		username := "ثبت نشده"
 		if user.Username != "" {
-			username = "@" + user.Username
+			username = "@" + html.EscapeString(user.Username)
 		}
 
-		// ذخیره کاربر در دیتابیس
-		SaveUser(user.ID, firstName, username)
+		SaveUser(user.ID, user.FirstName, user.Username)
 
-		welcomeTitle := "👑 *به ربات ولف سلف 🐺 خوش آمدید!*"
+		welcomeTitle := "👑 <b>به ربات ولف سلف 🐺 خوش آمدید!</b>"
 		if cfg.IsAdmin(user.ID) {
-			welcomeTitle = "👑 *به ربات ولف سلف 🐺 خوش آمدید! (دسترسی مدیر)*"
+			welcomeTitle = "👑 <b>به ربات ولف سلف 🐺 خوش آمدید! (دسترسی مدیر)</b>"
 		}
 
 		text := fmt.Sprintf(
 			"%s\n\n"+
-				"💙 *یکی از گزینه‌های زیر را انتخاب کنید:*\n\n"+
-				"👤 *نام:* %s\n"+
-				"🆔 *آیدی عددی:* `%d`\n"+
-				"🌐 *یوزرنیم:* %s",
+				"💙 <b>یکی از گزینه‌های زیر را انتخاب کنید:</b>\n\n"+
+				"👤 <b>نام:</b> %s\n"+
+				"🆔 <b>آیدی عددی:</b> <code>%d</code>\n"+
+				"🌐 <b>یوزرنیم:</b> %s",
 			welcomeTitle, firstName, user.ID, username,
 		)
 
-		return c.Send(text, getKeyboard(user.ID), tele.ModeMarkdown)
+		return c.Send(text, getKeyboard(user.ID), tele.ModeHTML)
 	})
 
-	// هندلرهای دکمه‌ها
 	bot.Handle(&btnBuy, func(c tele.Context) error {
-		return c.Send("🛍️ *بخش خرید سلف*\n\nلطفاً خدمت مورد نظر خود را انتخاب کنید.", tele.ModeMarkdown)
+		return c.Send("🛍️ <b>بخش خرید سلف</b>\n\nلطفاً خدمت مورد نظر خود را انتخاب کنید.", tele.ModeHTML)
 	})
 
 	bot.Handle(&btnProfile, func(c tele.Context) error {
 		user := c.Sender()
 		username := "ثبت نشده"
 		if user.Username != "" {
-			username = "@" + user.Username
+			username = "@" + html.EscapeString(user.Username)
 		}
 
 		text := fmt.Sprintf(
-			"👤 *اطلاعات حساب کاربری شما*\n\n"+
-				"🔹 *نام:* %s\n"+
-				"🔹 *آیدی عددی:* `%d`\n"+
-				"🔹 *یوزرنیم:* %s",
-			user.FirstName, user.ID, username,
+			"👤 <b>اطلاعات حساب کاربری شما</b>\n\n"+
+				"🔹 <b>نام:</b> %s\n"+
+				"🔹 <b>آیدی عددی:</b> <code>%d</code>\n"+
+				"🔹 <b>یوزرنیم:</b> %s",
+			html.EscapeString(user.FirstName), user.ID, username,
 		)
-		return c.Send(text, tele.ModeMarkdown)
+		return c.Send(text, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnWallet, func(c tele.Context) error {
-		return c.Send("👛 *بخش کیف پول*\n\nاز این بخش می‌توانید موجودی خود را مدیریت یا شارژ کنید.", tele.ModeMarkdown)
+		return c.Send("👛 <b>بخش کیف پول</b>\n\nاز این بخش می‌توانید موجودی خود را مدیریت یا شارژ کنید.", tele.ModeHTML)
 	})
 
 	bot.Handle(&btnSupport, func(c tele.Context) error {
-		return c.Send("🎧 *پشتیبانی*\n\nجهت ارتباط با پشتیبانی، پیام خود را ارسال کنید.", tele.ModeMarkdown)
+		return c.Send("🎧 <b>پشتیبانی</b>\n\nجهت ارتباط با پشتیبانی، پیام خود را ارسال کنید.", tele.ModeHTML)
 	})
 
 	bot.Handle(&btnGuide, func(c tele.Context) error {
-		return c.Send("📚 *راهنمای استفاده*\n\nآموزش‌ها و راهنمای کامل استفاده از ربات.", tele.ModeMarkdown)
+		return c.Send("📚 <b>راهنمای استفاده</b>\n\nآموزش‌ها و راهنمای کامل استفاده از ربات.", tele.ModeHTML)
 	})
 
 	bot.Handle(&btnAgency, func(c tele.Context) error {
-		return c.Send("👑 *بخش نمایندگی*\n\nاطلاعات و شرایط دریافت نمایندگی.", tele.ModeMarkdown)
+		return c.Send("👑 <b>بخش نمایندگی</b>\n\nاطلاعات و شرایط دریافت نمایندگی.", tele.ModeHTML)
 	})
 
 	bot.Handle(&btnAdminPanel, func(c tele.Context) error {
@@ -213,12 +212,12 @@ func main() {
 			return c.Send("❌ شما دسترسی به بخش مدیریت را ندارید.")
 		}
 
-		adminText := "⚙️ *پنل مدیریت ربات ولف سلف*\n\n" +
+		adminText := "⚙️ <b>پنل مدیریت ربات ولف سلف</b>\n\n" +
 			"به بخش مدیریت خوش آمدید. از این بخش می‌توانید ربات را کنترل و نظارت کنید:\n\n" +
-			"📊 *وضعیت سیستم:* فعال و آنلاین\n" +
-			"⚡ *سرور:* پاسخ‌گویی با سرعت زیر چند میلی‌ثانیه"
+			"📊 <b>وضعیت سیستم:</b> فعال و آنلاین\n" +
+			"⚡ <b>سرور:</b> پاسخ‌گویی با سرعت زیر چند میلی‌ثانیه"
 
-		return c.Send(adminText, tele.ModeMarkdown)
+		return c.Send(adminText, tele.ModeHTML)
 	})
 
 	log.Println("⚡ ربات ولف سلف آماده و روشن شد!")

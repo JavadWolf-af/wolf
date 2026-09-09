@@ -31,21 +31,24 @@ else
     TARGET_DIR=$(pwd)
 fi
 
-# دریافت و نصب آخرین نسخه زبان Go به صورت خودکار
+# نصب مطمئن و هوشمند زبان Go
 if ! command -v go &> /dev/null; then
-    echo -e "${CYAN}⚡ در حال دریافت آخرین نسخه رسمی زبان Go...${NC}"
-    LATEST_GO=$(curl -s "https://go.dev/VERSION?m=text" | head -n 1)
+    echo -e "${CYAN}⚡ در حال نصب زبان Go...${NC}"
     
-    if [ -z "$LATEST_GO" ]; then
-        LATEST_GO="go1.23.0"
+    # تلاش اول: نصب از طریق apt (سریع و بدون خطای لینک)
+    if apt-get install -y golang-go &>/dev/null; then
+        echo -e "${GREEN}✅ زبان Go از مخازن سیستم‌عامل نصب شد.${NC}"
+    else
+        # تلاش دوم: دریافت مستقیم تاربال رسمی
+        GO_TAR=$(curl -s https://go.dev/dl/?mode=json | grep -o 'go[0-9.]*\.linux-amd64\.tar\.gz' | head -n 1)
+        if [ -n "$GO_TAR" ]; then
+            wget "https://go.dev/dl/${GO_TAR}" -O go.tar.gz
+            rm -rf /usr/local/go && tar -C /usr/local -xzf go.tar.gz
+            export PATH=$PATH:/usr/local/go/bin
+            echo "export PATH=\$PATH:/usr/local/go/bin" >> ~/.bashrc
+            rm go.tar.gz
+        fi
     fi
-    
-    echo -e "${CYAN}📦 در حال دانلود و نصب نسخه: ${LATEST_GO}${NC}"
-    wget "https://go.dev/dl/${LATEST_GO}.linux-amd64.tar.gz" -O go.tar.gz
-    rm -rf /usr/local/go && tar -C /usr/local -xzf go.tar.gz
-    export PATH=$PATH:/usr/local/go/bin
-    echo "export PATH=\$PATH:/usr/local/go/bin" >> ~/.bashrc
-    rm go.tar.gz
 fi
 
 export PATH=$PATH:/usr/local/go/bin

@@ -61,7 +61,6 @@ func InitDB() {
 		log.Fatalf("❌ خطا در اتصال به دیتابیس: %v", err)
 	}
 
-	// تنظیم اتصال همزمان برای جلوگیری از قفل شدن SQLite
 	db.SetMaxOpenConns(1)
 
 	query := `

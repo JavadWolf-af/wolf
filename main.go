@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
 	"html"
 	"log"
@@ -19,8 +18,6 @@ type Config struct {
 	BotToken string
 	AdminIDs []int64
 }
-
-var db *sql.DB
 
 func loadConfig() Config {
 	_ = godotenv.Load()
@@ -52,41 +49,6 @@ func (c *Config) IsAdmin(userID int64) bool {
 		}
 	}
 	return false
-}
-
-func InitDB() {
-	var err error
-	db, err = sql.Open("sqlite3", "./wolf.db")
-	if err != nil {
-		log.Fatalf("❌ خطا در اتصال به دیتابیس: %v", err)
-	}
-
-	db.SetMaxOpenConns(1)
-
-	query := `
-	CREATE TABLE IF NOT EXISTS users (
-		id INTEGER PRIMARY KEY,
-		first_name TEXT,
-		username TEXT,
-		joined_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);`
-
-	_, err = db.Exec(query)
-	if err != nil {
-		log.Fatalf("❌ خطا در ساخت جدول دیتابیس: %v", err)
-	}
-}
-
-func SaveUser(userID int64, firstName, username string) {
-	if db == nil {
-		return
-	}
-	query := `INSERT INTO users (id, first_name, username) VALUES (?, ?, ?) 
-	          ON CONFLICT(id) DO UPDATE SET first_name=excluded.first_name, username=excluded.username`
-	_, err := db.Exec(query, userID, firstName, username)
-	if err != nil {
-		log.Printf("⚠️ خطا در ذخیره کاربر: %v", err)
-	}
 }
 
 func main() {

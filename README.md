@@ -6,7 +6,7 @@
 
 ## 🚀 نصب مستقیم روی سرور (یک‌خطی)
 
-دستور زیر را در ترمینال سرور خود وارد کنید:
+دستور زیر را در ترمینال سرور خود اجرا کنید:
 
 ```bash
-bash <(curl -Ls [https://raw.githubusercontent.com/JavadWolf-af/wolf/main/install.sh](https://raw.githubusercontent.com/JavadWolf-af/wolf/main/install.sh))
+curl -sSL [https://raw.githubusercontent.com/JavadWolf-af/wolf/main/install.sh](https://raw.githubusercontent.com/JavadWolf-af/wolf/main/install.sh) | bash

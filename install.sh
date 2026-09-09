@@ -14,12 +14,10 @@ fi
 
 echo -e "${CYAN}📦 در حال بررسی و نصب پیش‌نیازها...${NC}"
 apt-get update -y
-apt-get install -y git curl build-essential
+apt-get install -y git curl build-essential wget software-properties-common gcc sqlite3 libsqlite3-dev
 
-# مسیر استاندارد نصب پروژه روی سرور
 TARGET_DIR="/opt/wolf"
 
-# بررسی دانلود پروژه از گیت‌هاب در صورت اجرا با دستور یک‌خطی
 if [ ! -f "main.go" ]; then
     echo -e "${CYAN}📥 در حال دریافت پروژه از گیت‌هاب...${NC}"
     if [ -d "$TARGET_DIR" ]; then
@@ -31,30 +29,17 @@ else
     TARGET_DIR=$(pwd)
 fi
 
-# نصب مطمئن و هوشمند زبان Go
-if ! command -v go &> /dev/null; then
-    echo -e "${CYAN}⚡ در حال نصب زبان Go...${NC}"
-    
-    # تلاش اول: نصب از طریق apt (سریع و بدون خطای لینک)
-    if apt-get install -y golang-go &>/dev/null; then
-        echo -e "${GREEN}✅ زبان Go از مخازن سیستم‌عامل نصب شد.${NC}"
-    else
-        # تلاش دوم: دریافت مستقیم تاربال رسمی
-        GO_TAR=$(curl -s https://go.dev/dl/?mode=json | grep -o 'go[0-9.]*\.linux-amd64\.tar\.gz' | head -n 1)
-        if [ -n "$GO_TAR" ]; then
-            wget "https://go.dev/dl/${GO_TAR}" -O go.tar.gz
-            rm -rf /usr/local/go && tar -C /usr/local -xzf go.tar.gz
-            export PATH=$PATH:/usr/local/go/bin
-            echo "export PATH=\$PATH:/usr/local/go/bin" >> ~/.bashrc
-            rm go.tar.gz
-        fi
-    fi
+# نصب Go از مخازن رسمی
+if ! command -v go &> /dev/null || [ "$(go version | grep -oE 'go1\.[0-9]+' | cut -d. -f2)" -lt 22 ]; then
+    echo -e "${CYAN}⚡ در حال نصب آخرین نسخه Go...${NC}"
+    add-apt-repository ppa:longsleep/golang-backports -y
+    apt-get update -y
+    apt-get install -y golang-go
 fi
 
-export PATH=$PATH:/usr/local/go/bin
-
+# 🛑 درخواست اطلاعات .env پیش از کامپایل و ران شدن ربات
 if [ ! -f .env ]; then
-    echo -e "${CYAN}⚙️ تنظیمات .env...${NC}"
+    echo -e "${CYAN}⚙️ فایل تنظیمات .env یافت نشد. لطفاً اطلاعات زیر را وارد کنید:${NC}"
     read -p "لطفا توکن ربات (BOT_TOKEN) را وارد کنید: " bot_token
     read -p "لطفا آیدی عددی ادمین (ADMIN_ID) را وارد کنید: " admin_id
     
@@ -62,12 +47,17 @@ if [ ! -f .env ]; then
 BOT_TOKEN=$bot_token
 ADMIN_ID=$admin_id
 EOF
-    echo "✅ فایل .env ساخته شد."
+    echo "✅ فایل .env با موفقیت ساخته شد."
+else
+    echo "✅ فایل .env از قبل موجود است."
 fi
 
-echo -e "${CYAN}🔨 در حال کامپایل پروژه...${NC}"
+echo -e "${CYAN}🔨 در حال کامپایل پروژه (بسیار سریع)...${NC}"
+export GOPROXY=direct
+export CGO_ENABLED=1
 go mod tidy
 go build -o wolfbot .
+chmod +x wolfbot
 
 echo -e "${CYAN}🚀 در حال ساخت سرویس همیشه آنلاین (Systemd)...${NC}"
 cat <<EOF > /etc/systemd/system/wolfbot.service
@@ -97,16 +87,15 @@ cat <<EOF > /usr/local/bin/wolf-update
 echo "🔄 در حال دریافت آخرین تغییرات از گیت‌هاب..."
 cd $TARGET_DIR
 git pull origin main
-export PATH=\$PATH:/usr/local/go/bin
+export GOPROXY=direct
+export CGO_ENABLED=1
 go mod tidy
 go build -o wolfbot .
+chmod +x wolfbot
 systemctl restart wolfbot
 echo "✅ ربات با موفقیت آپدیت شد و بدون دستکاری دیتابیس مجدداً راه‌اندازی گردید!"
 EOF
 
 chmod +x /usr/local/bin/wolf-update
 
-echo -e "${GREEN}🎉 نصب ربات ولف سلف با موفقیت انجام شد!${NC}"
-echo -e "${GREEN}🔹 ربات به صورت ۲۴/۷ آنلاین شد.${NC}"
-echo -e "${GREEN}🔹 جهت آپدیت ربات در آینده فقط دستور زیر را در سرور وارد کنید:${NC}"
-echo -e "${CYAN}wolf-update${NC}"
+echo -e "${GREEN}🎉 نصب ربات ولف سلف با موفقیت انجام شد و ربات در حال اجراست!${GREEN}"

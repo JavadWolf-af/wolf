@@ -37,11 +37,11 @@ if ! command -v go &> /dev/null || [ "$(go version | grep -oE 'go1\.[0-9]+' | cu
     apt-get install -y golang-go
 fi
 
-# درخواست اطلاعات .env پیش از کامپایل و ران شدن ربات
+# درخواست اطلاعات .env پیش از کامپایل و ران شدن ربات (با استفاده از /dev/tty برای دریافت ورودی صحیح)
 if [ ! -f .env ]; then
     echo -e "${CYAN}⚙️ فایل تنظیمات .env یافت نشد. لطفاً اطلاعات زیر را وارد کنید:${NC}"
-    read -p "لطفا توکن ربات (BOT_TOKEN) را وارد کنید: " bot_token
-    read -p "لطفا آیدی عددی ادمین (ADMIN_ID) را وارد کنید: " admin_id
+    read -p "لطفا توکن ربات (BOT_TOKEN) را وارد کنید: " bot_token < /dev/tty
+    read -p "لطفا آیدی عددی ادمین (ADMIN_ID) را وارد کنید: " admin_id < /dev/tty
     
     cat <<EOF > .env
 BOT_TOKEN=$bot_token
@@ -98,4 +98,4 @@ EOF
 
 chmod +x /usr/local/bin/wolf-update
 
-echo -e "${GREEN}🎉 نصب ربات ولف سلف با موفقیت انجام شد و ربات در حال اجراست!${NC}"
+echo -e "${GREEN}🎉 نصب ربات ولف سلف با موفقیت انجام شد و ربات در حال اجراست!${GREEN}"

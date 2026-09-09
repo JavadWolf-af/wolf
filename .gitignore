@@ -1,0 +1,9 @@
+wolfbot
+*.exe
+*.dll
+*.so
+.env
+wolf.db
+wolf.db-journal
+.idea/
+.vscode/

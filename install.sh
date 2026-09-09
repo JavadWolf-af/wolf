@@ -8,13 +8,28 @@ NC='\033[0m'
 echo -e "${CYAN}🐺 در حال نصب و راه‌اندازی ربات ولف سلف...${NC}"
 
 if [ "$EUID" -ne 0 ]; then
-    echo "❌ لطفاً این اسکریپت را با دسترسی root اجرا کنید (sudo bash install.sh)"
+    echo "❌ لطفاً این اسکریپت را با دسترسی root اجرا کنید (sudo bash ...)"
     exit 1
 fi
 
 echo -e "${CYAN}📦 در حال بررسی و نصب پیش‌نیازها...${NC}"
 apt-get update -y
 apt-get install -y git curl build-essential
+
+# مسیر استاندارد نصب پروژه روی سرور
+TARGET_DIR="/opt/wolf"
+
+# بررسی دانلود پروژه از گیت‌هاب در صورت اجرا با دستور یک‌خطی
+if [ ! -f "main.go" ]; then
+    echo -e "${CYAN}📥 در حال دریافت پروژه از گیت‌هاب...${NC}"
+    if [ -d "$TARGET_DIR" ]; then
+        rm -rf "$TARGET_DIR"
+    fi
+    git clone https://github.com/JavadWolf-af/wolf.git "$TARGET_DIR"
+    cd "$TARGET_DIR"
+else
+    TARGET_DIR=$(pwd)
+fi
 
 if ! command -v go &> /dev/null; then
     echo -e "${CYAN}⚡ در حال نصب زبان Go...${NC}"
@@ -26,7 +41,6 @@ if ! command -v go &> /dev/null; then
 fi
 
 export PATH=$PATH:/usr/local/go/bin
-PROJECT_DIR=$(pwd)
 
 if [ ! -f .env ]; then
     echo -e "${CYAN}⚙️ تنظیمات .env...${NC}"
@@ -53,8 +67,8 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$PROJECT_DIR
-ExecStart=$PROJECT_DIR/wolfbot
+WorkingDirectory=$TARGET_DIR
+ExecStart=$TARGET_DIR/wolfbot
 Restart=always
 RestartSec=5
 
@@ -70,7 +84,7 @@ echo -e "${CYAN}🛠️ در حال ساخت دستور آپدیت (wolf-update)
 cat <<EOF > /usr/local/bin/wolf-update
 #!/bin/bash
 echo "🔄 در حال دریافت آخرین تغییرات از گیت‌هاب..."
-cd $PROJECT_DIR
+cd $TARGET_DIR
 git pull origin main
 export PATH=\$PATH:/usr/local/go/bin
 go mod tidy
@@ -83,5 +97,5 @@ chmod +x /usr/local/bin/wolf-update
 
 echo -e "${GREEN}🎉 نصب ربات ولف سلف با موفقیت انجام شد!${NC}"
 echo -e "${GREEN}🔹 ربات به صورت ۲۴/۷ آنلاین شد.${NC}"
-echo -e "${GREEN}🔹 جهت آپدیت ربات در آینده فقط دستور زیر را وارد کنید:${NC}"
+echo -e "${GREEN}🔹 جهت آپدیت ربات در آینده فقط دستور زیر را در سرور وارد کنید:${NC}"
 echo -e "${CYAN}wolf-update${NC}"

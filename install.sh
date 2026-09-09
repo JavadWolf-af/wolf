@@ -37,7 +37,7 @@ if ! command -v go &> /dev/null || [ "$(go version | grep -oE 'go1\.[0-9]+' | cu
     apt-get install -y golang-go
 fi
 
-# 🛑 درخواست اطلاعات .env پیش از کامپایل و ران شدن ربات
+# درخواست اطلاعات .env پیش از کامپایل و ران شدن ربات
 if [ ! -f .env ]; then
     echo -e "${CYAN}⚙️ فایل تنظیمات .env یافت نشد. لطفاً اطلاعات زیر را وارد کنید:${NC}"
     read -p "لطفا توکن ربات (BOT_TOKEN) را وارد کنید: " bot_token
@@ -52,8 +52,8 @@ else
     echo "✅ فایل .env از قبل موجود است."
 fi
 
-echo -e "${CYAN}🔨 در حال کامپایل پروژه (بسیار سریع)...${NC}"
-export GOPROXY=direct
+echo -e "${CYAN}🔨 در حال دانلود پکیج‌ها با سرعت بالا و کامپایل پروژه...${NC}"
+export GOPROXY=https://goproxy.cn,direct
 export CGO_ENABLED=1
 go mod tidy
 go build -o wolfbot .
@@ -87,7 +87,7 @@ cat <<EOF > /usr/local/bin/wolf-update
 echo "🔄 در حال دریافت آخرین تغییرات از گیت‌هاب..."
 cd $TARGET_DIR
 git pull origin main
-export GOPROXY=direct
+export GOPROXY=https://goproxy.cn,direct
 export CGO_ENABLED=1
 go mod tidy
 go build -o wolfbot .
@@ -98,4 +98,4 @@ EOF
 
 chmod +x /usr/local/bin/wolf-update
 
-echo -e "${GREEN}🎉 نصب ربات ولف سلف با موفقیت انجام شد و ربات در حال اجراست!${GREEN}"
+echo -e "${GREEN}🎉 نصب ربات ولف سلف با موفقیت انجام شد و ربات در حال اجراست!${NC}"

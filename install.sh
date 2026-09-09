@@ -31,13 +31,21 @@ else
     TARGET_DIR=$(pwd)
 fi
 
+# دریافت و نصب آخرین نسخه زبان Go به صورت خودکار
 if ! command -v go &> /dev/null; then
-    echo -e "${CYAN}⚡ در حال نصب زبان Go...${NC}"
-    wget https://go.dev/dl/go1.22.1.linux-amd64.tar.gz
-    rm -rf /usr/local/go && tar -C /usr/local -xzf go1.22.1.linux-amd64.tar.gz
+    echo -e "${CYAN}⚡ در حال دریافت آخرین نسخه رسمی زبان Go...${NC}"
+    LATEST_GO=$(curl -s "https://go.dev/VERSION?m=text" | head -n 1)
+    
+    if [ -z "$LATEST_GO" ]; then
+        LATEST_GO="go1.23.0"
+    fi
+    
+    echo -e "${CYAN}📦 در حال دانلود و نصب نسخه: ${LATEST_GO}${NC}"
+    wget "https://go.dev/dl/${LATEST_GO}.linux-amd64.tar.gz" -O go.tar.gz
+    rm -rf /usr/local/go && tar -C /usr/local -xzf go.tar.gz
     export PATH=$PATH:/usr/local/go/bin
     echo "export PATH=\$PATH:/usr/local/go/bin" >> ~/.bashrc
-    rm go1.22.1.linux-amd64.tar.gz
+    rm go.tar.gz
 fi
 
 export PATH=$PATH:/usr/local/go/bin

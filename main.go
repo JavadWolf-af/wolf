@@ -491,14 +491,11 @@ func main() {
 		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
 	})
 
-	// تایید فیش (با پاکسازی فوری دکمه‌ها جهت جلوگیری از دوبار شارژ شدن)
+	// تایید فیش (پاکسازی فوری دکمه‌ها برای جلوگیری از دوبار شارژ شدن)
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
-
-		// حذف فوری دکمه‌ها برای جلوگیری از کلیک مجدد و دوبار شارژ شدن
-		_ = c.Edit(c.Message().Caption+"\n\n⏳ <b>در حال پردازش تایید فیش...</b>", tele.ModeHTML, &tele.ReplyMarkup{})
 
 		parts := strings.Split(c.Data(), "_")
 		if len(parts) != 2 {
@@ -508,12 +505,16 @@ func main() {
 		targetUserID, _ := strconv.ParseInt(parts[0], 10, 64)
 		amount, _ := strconv.Atoi(parts[1])
 
+		// حذف فوری دکمه‌ها از زیر پیام ادمین
+		finalCaption := c.Message().Caption + "\n\n✅ <b>تایید شد و موجودی کاربر شارژ گردید.</b>"
+		_ = c.Edit(finalCaption, tele.ModeHTML, &tele.ReplyMarkup{})
+
 		AddUserBalance(targetUserID, amount)
 		_, _ = db.Exec("UPDATE users SET purchases_count = purchases_count + 1 WHERE id = ?", targetUserID)
 
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, fmt.Sprintf("🎉 <b>فیش واریزی شما تایید شد!</b>\n\nمبلغ <code>%s تومان</code> به کیف پول شما اضافه گردید. 💳", formatMoney(amount)), tele.ModeHTML)
 
-		return c.Edit(c.Message().Caption + "\n\n✅ <b>تایید شد و موجودی کاربر شارژ گردید.</b>", tele.ModeHTML)
+		return c.Respond(&tele.CallbackResponse{Text: "✅ فیش با موفقیت تایید شد."})
 	})
 
 	// رد فیش (حذف فوری دکمه‌ها)
@@ -522,15 +523,17 @@ func main() {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
 
-		_ = c.Edit(c.Message().Caption+"\n\n⏳ <b>در حال پردازش...</b>", tele.ModeHTML, &tele.ReplyMarkup{})
-
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
+
+		finalCaption := c.Message().Caption + "\n\n❌ <b>فیش واریزی رد شد.</b>"
+		_ = c.Edit(finalCaption, tele.ModeHTML, &tele.ReplyMarkup{})
+
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, "❌ <b>فیش واریزی شما توسط ادمین رد شد.</b>\n\nلطفاً در صورت وجود مشکل با پشتیبانی ارتباط برقرار کنید.", tele.ModeHTML)
 
-		return c.Edit(c.Message().Caption + "\n\n❌ <b>فیش واریزی رد شد.</b>", tele.ModeHTML)
+		return c.Respond(&tele.CallbackResponse{Text: "❌ فیش رد شد."})
 	})
 
-	// مسدود کردن (درخواست دلیل به صورت پیام ماندگار در چت ادمین)
+	// مسدود کردن (ارسال پیام ثابت در چت برای دریافت دلیل)
 	bot.Handle(&tele.Btn{Unique: "admin_block"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
@@ -542,20 +545,21 @@ func main() {
 		return c.Send("🚫 <b>لطفاً دلیل مسدودی را ارسال کنید تا به همراه پیام مسدودی به صورت بولد برای کاربر ارسال شود:</b>", tele.ModeHTML)
 	})
 
-	// رفع مسدودی (مستقیماً بدون نیاز به دلیل)
+	// رفع مسدودی (مستقیماً بدون نیاز به دلیل و حذف دکمه‌ها)
 	bot.Handle(&tele.Btn{Unique: "admin_unblock"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
 
-		_ = c.Edit(c.Message().Caption+"\n\n⏳ <b>در حال پردازش...</b>", tele.ModeHTML, &tele.ReplyMarkup{})
-
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
-		_, _ = db.Exec("UPDATE users SET is_blocked = FALSE WHERE id = ?", targetUserID)
 
+		finalCaption := c.Message().Caption + "\n\n🔓 <b>کاربر رفع مسدودی گردید.</b>"
+		_ = c.Edit(finalCaption, tele.ModeHTML, &tele.ReplyMarkup{})
+
+		_, _ = db.Exec("UPDATE users SET is_blocked = FALSE WHERE id = ?", targetUserID)
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, "🔓 <b>حساب کاربری شما رفع مسدودی شد.</b>", tele.ModeHTML)
 
-		return c.Edit(c.Message().Caption + "\n\n🔓 <b>کاربر رفع مسدودی گردید.</b>", tele.ModeHTML)
+		return c.Respond(&tele.CallbackResponse{Text: "🔓 کاربر رفع مسدودی شد."})
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_msg"}, func(c tele.Context) error {
@@ -664,7 +668,6 @@ func main() {
 	bot.Start()
 }
 
-// تابع کمکی برای فرمت سه‌رقمی مبالغ (مثلاً 150,000)
 func formatMoney(n int) string {
 	s := fmt.Sprintf("%d", n)
 	var parts []string

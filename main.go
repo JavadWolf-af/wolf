@@ -10,14 +10,17 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql" // درایور MySQL
 	"github.com/joho/godotenv"
 	tele "gopkg.in/telebot.v3"
-	_ "modernc.org/sqlite" // نسخه دیتابیس بدون نیاز به CGO (کامپایل در 2 ثانیه)
 )
 
 type Config struct {
 	BotToken string
 	AdminIDs []int64
+	DBUser   string
+	DBPass   string
+	DBName   string
 }
 
 var db *sql.DB
@@ -28,6 +31,13 @@ func loadConfig() Config {
 	token := os.Getenv("BOT_TOKEN")
 	if token == "" {
 		log.Fatal("❌ خطای پیکربندی: مقدار BOT_TOKEN در فایل .env یافت نشد.")
+	}
+
+	dbUser := os.Getenv("DB_USER")
+	dbPass := os.Getenv("DB_PASS")
+	dbName := os.Getenv("DB_NAME")
+	if dbUser == "" || dbName == "" {
+		log.Fatal("❌ خطای پیکربندی: اطلاعات دیتابیس (DB_USER و DB_NAME) یافت نشد.")
 	}
 
 	adminStr := os.Getenv("ADMIN_ID")
@@ -42,6 +52,9 @@ func loadConfig() Config {
 	return Config{
 		BotToken: token,
 		AdminIDs: adminIDs,
+		DBUser:   dbUser,
+		DBPass:   dbPass,
+		DBName:   dbName,
 	}
 }
 
@@ -54,23 +67,32 @@ func (c *Config) IsAdmin(userID int64) bool {
 	return false
 }
 
-func InitDB() {
+func InitDB(cfg Config) {
 	var err error
-	// اتصال با درایور جدید
-	db, err = sql.Open("sqlite", "./wolf.db")
+	// ساخت رشته اتصال به MySQL
+	dsn := fmt.Sprintf("%s:%s@tcp(127.0.0.1:3306)/%s?parseTime=true", cfg.DBUser, cfg.DBPass, cfg.DBName)
+	
+	db, err = sql.Open("mysql", dsn)
 	if err != nil {
-		log.Fatalf("❌ خطا در اتصال به دیتابیس: %v", err)
+		log.Fatalf("❌ خطا در اتصال به MySQL: %v", err)
 	}
 
-	db.SetMaxOpenConns(1)
+	// بررسی برقراری ارتباط با دیتابیس
+	if err = db.Ping(); err != nil {
+		log.Fatalf("❌ خطا در پینگ دیتابیس (آیا MySQL روشن است؟): %v", err)
+	}
 
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+
+	// ساخت جدول کاربران با سینتکس MySQL
 	query := `
 	CREATE TABLE IF NOT EXISTS users (
-		id INTEGER PRIMARY KEY,
-		first_name TEXT,
-		username TEXT,
+		id BIGINT PRIMARY KEY,
+		first_name VARCHAR(255),
+		username VARCHAR(255),
 		joined_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);`
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
 
 	_, err = db.Exec(query)
 	if err != nil {
@@ -82,9 +104,10 @@ func SaveUser(userID int64, firstName, username string) {
 	if db == nil {
 		return
 	}
+	// کوئری مخصوص MySQL برای آپدیت در صورت وجود کاربر قبلی
 	query := `INSERT INTO users (id, first_name, username) VALUES (?, ?, ?) 
-	          ON CONFLICT(id) DO UPDATE SET first_name=excluded.first_name, username=excluded.username`
-	_, err := db.Exec(query, userID, firstName, username)
+	          ON DUPLICATE KEY UPDATE first_name=?, username=?`
+	_, err := db.Exec(query, userID, firstName, username, firstName, username)
 	if err != nil {
 		log.Printf("⚠️ خطا در ذخیره کاربر: %v", err)
 	}
@@ -93,7 +116,7 @@ func SaveUser(userID int64, firstName, username string) {
 func main() {
 	cfg := loadConfig()
 
-	InitDB()
+	InitDB(cfg)
 	defer db.Close()
 
 	pref := tele.Settings{
@@ -214,12 +237,12 @@ func main() {
 
 		adminText := "⚙️ <b>پنل مدیریت ربات ولف سلف</b>\n\n" +
 			"به بخش مدیریت خوش آمدید. از این بخش می‌توانید ربات را کنترل و نظارت کنید:\n\n" +
-			"📊 <b>وضعیت سیستم:</b> فعال و آنلاین\n" +
-			"⚡ <b>سرور:</b> پاسخ‌گویی با سرعت بالا"
+			"📊 <b>وضعیت سیستم:</b> فعال و متصل به MySQL\n" +
+			"⚡ <b>سرور:</b> در حال اجرا روی سرور Pro"
 
 		return c.Send(adminText, tele.ModeHTML)
 	})
 
-	log.Println("⚡ ربات ولف سلف آماده و روشن شد!")
+	log.Println("⚡ ربات ولف سلف با دیتابیس MySQL آماده و روشن شد!")
 	bot.Start()
 }

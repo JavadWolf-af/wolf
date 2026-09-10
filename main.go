@@ -29,9 +29,8 @@ var db *sql.DB
 var userWalletTemp = make(map[int64]int)
 var userPendingInvoice = make(map[int64]int)
 
-// مدیریت وضعیت‌های ادمین برای تعاملات متنی (ارسال پیام، افزایش موجودی، دلیل رفع مسدودی)
 type AdminAction struct {
-	Action   string // "msg", "manual_add", "unblock_reason"
+	Action   string // "msg", "manual_add", "block_reason"
 	TargetID int64
 }
 
@@ -414,7 +413,6 @@ func main() {
 		return c.Edit(formatWalletText(amount), getWalletKeyboard(), tele.ModeHTML)
 	})
 
-	// دریافت تصویر فیش واریزی از کاربر
 	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
 		user := c.Sender()
 		if IsUserBlocked(user.ID) {
@@ -426,7 +424,6 @@ func main() {
 			return c.Send("📸 تصویر شما دریافت شد.")
 		}
 
-		// استخراج اطلاعات کاربر از دیتابیس جهت نمایش کامل به ادمین
 		var dbJoinedAt time.Time
 		var phone, selfStatus string
 		var purchasesCount int
@@ -494,7 +491,6 @@ func main() {
 		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
 	})
 
-	// مدیریت کلیک ادمین روی تایید فیش
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
@@ -516,7 +512,6 @@ func main() {
 		return c.Edit(c.Message().Text + "\n\n✅ <b>تایید شد و موجودی کاربر شارژ گردید.</b>", tele.ModeHTML)
 	})
 
-	// مدیریت رد فیش
 	bot.Handle(&tele.Btn{Unique: "admin_reject"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
@@ -528,33 +523,32 @@ func main() {
 		return c.Edit(c.Message().Text + "\n\n❌ <b>فیش واریزی رد شد.</b>", tele.ModeHTML)
 	})
 
-	// مدیریت مسدود کردن کاربر
+	// مسدود کردن (درخواست دلیل به صورت بولد برای ارسال به کاربر)
 	bot.Handle(&tele.Btn{Unique: "admin_block"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
 
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
-		_, _ = db.Exec("UPDATE users SET is_blocked = TRUE WHERE id = ?", targetUserID)
+		adminStates[c.Sender().ID] = AdminAction{Action: "block_reason", TargetID: targetUserID}
 
-		_, _ = bot.Send(&tele.User{ID: targetUserID}, "❌ <b>حساب کاربری شما مسدود شد.</b>", tele.ModeHTML)
-
-		return c.Edit(c.Message().Text + "\n\n🚫 <b>کاربر مسدود گردید.</b>", tele.ModeHTML)
+		return c.Respond(&tele.CallbackResponse{Text: "لطفاً دلیل مسدودی را ارسال کنید تا به همراه پیام مسدودی به صورت بولد برای کاربر ارسال شود."})
 	})
 
-	// مدیریت رفع مسدود (درخواست دلیل به صورت بولد)
+	// رفع مسدودی (بدون نیاز به دلیل، مستقیم رفع مسدود می‌شود)
 	bot.Handle(&tele.Btn{Unique: "admin_unblock"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
 
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
-		adminStates[c.Sender().ID] = AdminAction{Action: "unblock_reason", TargetID: targetUserID}
+		_, _ = db.Exec("UPDATE users SET is_blocked = FALSE WHERE id = ?", targetUserID)
 
-		return c.Respond(&tele.CallbackResponse{Text: "لطفاً دلیل رفع مسدودی را در قالب پیام متنی ارسال کنید تا به کاربر ارسال شود."})
+		_, _ = bot.Send(&tele.User{ID: targetUserID}, "🔓 <b>حساب کاربری شما رفع مسدودی شد.</b>", tele.ModeHTML)
+
+		return c.Edit(c.Message().Text + "\n\n🔓 <b>کاربر رفع مسدودی گردید.</b>", tele.ModeHTML)
 	})
 
-	// پیام به کاربر
 	bot.Handle(&tele.Btn{Unique: "admin_msg"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
@@ -566,7 +560,6 @@ func main() {
 		return c.Respond(&tele.CallbackResponse{Text: "لطفاً متن پیام خود برای کاربر را ارسال کنید."})
 	})
 
-	// افزایش موجودی دستی
 	bot.Handle(&tele.Btn{Unique: "admin_manual"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
@@ -578,16 +571,15 @@ func main() {
 		return c.Respond(&tele.CallbackResponse{Text: "لطفاً مبلغ مورد نظر برای افزایش دستی موجودی را (فقط عدد به تومان) ارسال کنید."})
 	})
 
-	// دریافت پاسخ‌های متنی ادمین برای دستورات تعاملی (پیام، افزایش موجودی، دلیل رفع مسدودی)
 	bot.Handle(tele.OnText, func(c tele.Context) error {
 		adminID := c.Sender().ID
 		if !cfg.IsAdmin(adminID) {
-			return nil // کاربران عادی متن معمولی بفرستند نادیده گرفته شود یا هندل شود
+			return nil
 		}
 
 		state, exists := adminStates[adminID]
 		if !exists {
-			return nil // ادمین در حالت خاصی نیست
+			return nil
 		}
 
 		text := c.Text()
@@ -613,11 +605,11 @@ func main() {
 			_ = c.Send(fmt.Sprintf("✅ مبلغ %s تومان با موفقیت به کیف پول کاربر اضافه شد.", formatMoney(amount)))
 			delete(adminStates, adminID)
 
-		case "unblock_reason":
-			_, _ = db.Exec("UPDATE users SET is_blocked = FALSE WHERE id = ?", state.TargetID)
-			_, err := bot.Send(&tele.User{ID: state.TargetID}, fmt.Sprintf("🔓 <b>حساب کاربری شما رفع مسدودی شد.</b>\n\n<b>دلیل:</b> %s", html.EscapeString(text)), tele.ModeHTML)
+		case "block_reason":
+			_, _ = db.Exec("UPDATE users SET is_blocked = TRUE WHERE id = ?", state.TargetID)
+			_, err := bot.Send(&tele.User{ID: state.TargetID}, fmt.Sprintf("❌ <b>حساب کاربری شما مسدود شد.</b>\n\n<b>دلیل مسدودی: %s</b>", html.EscapeString(text)), tele.ModeHTML)
 			if err == nil {
-				_ = c.Send("✅ کاربر رفع مسدودی شد و دلیل به صورت بولد برایش ارسال گردید.")
+				_ = c.Send("✅ کاربر مسدود شد و دلیل به صورت بولد برایش ارسال گردید.")
 			} else {
 				_ = c.Send("❌ خطا در ارسال پیام به کاربر.")
 			}

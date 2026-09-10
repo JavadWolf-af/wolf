@@ -14,7 +14,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
 	gpc "github.com/yaa110/go-persian-calendar"
-	tele "gopkg.in/tucnak/telebot.v2"
+	tele "gopkg.in/telebot.v4"
 )
 
 type Config struct {
@@ -203,7 +203,11 @@ func AddUserBalance(userID int64, amount int) {
 	)
 
 	if err != nil {
-		log.Printf("خطا در افزایش موجودی کاربر %d: %v", userID, err)
+		log.Printf(
+			"خطا در افزایش موجودی کاربر %d: %v",
+			userID,
+			err,
+		)
 	}
 }
 
@@ -267,268 +271,251 @@ func main() {
 	log.Println("Telegram bot connected.")
 
 	// ========================================================
-	// RAW WALLET KEYBOARD
+	// WALLET INLINE KEYBOARD
 	// ========================================================
 
-	sendRawWalletKeyboard := func(
+	sendWalletKeyboard := func(
 		c tele.Context,
 		text string,
 		isEdit bool,
 	) error {
 
-		keyboard := map[string]interface{}{
-			"inline_keyboard": [][]map[string]interface{}{
-				{
-					{
-						"text":          "+ 25,000",
-						"callback_data": "\fwallet_change|25000",
-						"style":         "primary",
-					},
-					{
-						"text":          "+ 50,000",
-						"callback_data": "\fwallet_change|50000",
-						"style":         "primary",
-					},
-					{
-						"text":          "+ 100,000",
-						"callback_data": "\fwallet_change|100000",
-						"style":         "primary",
-					},
-				},
-				{
-					{
-						"text":          "- 1,000",
-						"callback_data": "\fwallet_change|-1000",
-						"style":         "danger",
-					},
-					{
-						"text":          "+ 1,000",
-						"callback_data": "\fwallet_change|1000",
-						"style":         "primary",
-					},
-				},
-				{
-					{
-						"text":          "- 5,000",
-						"callback_data": "\fwallet_change|-5000",
-						"style":         "danger",
-					},
-					{
-						"text":          "+ 5,000",
-						"callback_data": "\fwallet_change|5000",
-						"style":         "primary",
-					},
-				},
-				{
-					{
-						"text":          "- 10,000",
-						"callback_data": "\fwallet_change|-10000",
-						"style":         "danger",
-					},
-					{
-						"text":          "+ 10,000",
-						"callback_data": "\fwallet_change|10000",
-						"style":         "primary",
-					},
-				},
-				{
-					{
-						"text":          "✅ تایید و ساخت فاکتور",
-						"callback_data": "\fwallet_confirm|",
-						"style":         "success",
-					},
-				},
-				{
-					{
-						"text":          "🔙 بازگشت",
-						"callback_data": "\fwallet_back_main|",
-					},
-				},
-			},
+		rm := &tele.ReplyMarkup{}
+
+		btn25000 := tele.Btn{
+			Unique: "wallet_change",
+			Text:   "+ 25,000",
+			Data:   "25000",
+			Style:  tele.ButtonStylePrimary,
 		}
 
-		payload := map[string]interface{}{
-			"chat_id":      c.Sender().ID,
-			"text":         text,
-			"parse_mode":   "HTML",
-			"reply_markup": keyboard,
+		btn50000 := tele.Btn{
+			Unique: "wallet_change",
+			Text:   "+ 50,000",
+			Data:   "50000",
+			Style:  tele.ButtonStylePrimary,
 		}
 
-		// ----------------------------------------------------
-		// EDIT EXISTING MESSAGE
-		// ----------------------------------------------------
-
-		if isEdit && c.Message() != nil {
-
-			payload["chat_id"] = c.Message().Chat.ID
-			payload["message_id"] = c.Message().ID
-
-			_, err := bot.Raw(
-				"editMessageText",
-				payload,
-			)
-
-			if err != nil {
-				log.Printf(
-					"RAW editMessageText wallet error: %v",
-					err,
-				)
-			}
-
-			return err
+		btn100000 := tele.Btn{
+			Unique: "wallet_change",
+			Text:   "+ 100,000",
+			Data:   "100000",
+			Style:  tele.ButtonStylePrimary,
 		}
 
-		// ----------------------------------------------------
-		// SEND NEW MESSAGE
-		// ----------------------------------------------------
+		btnMinus1000 := tele.Btn{
+			Unique: "wallet_change",
+			Text:   "- 1,000",
+			Data:   "-1000",
+			Style:  tele.ButtonStyleDanger,
+		}
 
-		_, err := bot.Raw(
-			"sendMessage",
-			payload,
+		btnPlus1000 := tele.Btn{
+			Unique: "wallet_change",
+			Text:   "+ 1,000",
+			Data:   "1000",
+			Style:  tele.ButtonStylePrimary,
+		}
+
+		btnMinus5000 := tele.Btn{
+			Unique: "wallet_change",
+			Text:   "- 5,000",
+			Data:   "-5000",
+			Style:  tele.ButtonStyleDanger,
+		}
+
+		btnPlus5000 := tele.Btn{
+			Unique: "wallet_change",
+			Text:   "+ 5,000",
+			Data:   "5000",
+			Style:  tele.ButtonStylePrimary,
+		}
+
+		btnMinus10000 := tele.Btn{
+			Unique: "wallet_change",
+			Text:   "- 10,000",
+			Data:   "-10000",
+			Style:  tele.ButtonStyleDanger,
+		}
+
+		btnPlus10000 := tele.Btn{
+			Unique: "wallet_change",
+			Text:   "+ 10,000",
+			Data:   "10000",
+			Style:  tele.ButtonStylePrimary,
+		}
+
+		btnConfirm := tele.Btn{
+			Unique: "wallet_confirm",
+			Text:   "✅ تایید و ساخت فاکتور",
+			Data:   "",
+			Style:  tele.ButtonStyleSuccess,
+		}
+
+		btnBack := tele.Btn{
+			Unique: "wallet_back_main",
+			Text:   "🔙 بازگشت",
+			Data:   "",
+		}
+
+		rm.Inline(
+			rm.Row(
+				btn25000,
+				btn50000,
+				btn100000,
+			),
+			rm.Row(
+				btnMinus1000,
+				btnPlus1000,
+			),
+			rm.Row(
+				btnMinus5000,
+				btnPlus5000,
+			),
+			rm.Row(
+				btnMinus10000,
+				btnPlus10000,
+			),
+			rm.Row(
+				btnConfirm,
+			),
+			rm.Row(
+				btnBack,
+			),
 		)
 
-		if err != nil {
-			log.Printf(
-				"RAW sendMessage wallet error: %v",
-				err,
+		if isEdit && c.Message() != nil {
+			return c.Edit(
+				text,
+				tele.ModeHTML,
+				rm,
 			)
 		}
 
-		return err
+		return c.Send(
+			text,
+			tele.ModeHTML,
+			rm,
+		)
 	}
 
 	// ========================================================
-	// RAW INVOICE
+	// INVOICE KEYBOARD
 	// ========================================================
 
-	sendRawInvoice := func(
+	sendInvoice := func(
 		c tele.Context,
 		text string,
 	) error {
-
-		keyboard := map[string]interface{}{
-			"inline_keyboard": [][]map[string]interface{}{
-				{
-					{
-						"text":          "🔙 بازگشت به کیف پول",
-						"callback_data": "\fwallet_back_to_wallet|",
-					},
-				},
-			},
-		}
 
 		if c.Message() == nil {
 			return fmt.Errorf("callback message is nil")
 		}
 
-		payload := map[string]interface{}{
-			"chat_id":      c.Message().Chat.ID,
-			"message_id":   c.Message().ID,
-			"text":         text,
-			"parse_mode":   "HTML",
-			"reply_markup": keyboard,
+		rm := &tele.ReplyMarkup{}
+
+		btnBack := tele.Btn{
+			Unique: "wallet_back_to_wallet",
+			Text:   "🔙 بازگشت به کیف پول",
+			Data:   "",
 		}
 
-		_, err := bot.Raw(
-			"editMessageText",
-			payload,
+		rm.Inline(
+			rm.Row(btnBack),
 		)
 
-		if err != nil {
-			log.Printf(
-				"RAW editMessageText invoice error: %v",
-				err,
-			)
-		}
-
-		return err
+		return c.Edit(
+			text,
+			tele.ModeHTML,
+			rm,
+		)
 	}
 
 	// ========================================================
-	// RAW ADMIN PANEL
+	// ADMIN PANEL INLINE KEYBOARD
 	// ========================================================
 
-	sendRawAdminPanel := func(
+	sendAdminPanel := func(
 		adminID int64,
 		text string,
 		userID int64,
 		amount int,
 	) {
 
-		keyboard := map[string]interface{}{
-			"inline_keyboard": [][]map[string]interface{}{
-				{
-					{
-						"text": "❌ رد فیش",
-						"callback_data": fmt.Sprintf(
-							"\fadmin_reject|%d",
-							userID,
-						),
-						"style": "danger",
-					},
-					{
-						"text": "✅ تایید فیش",
-						"callback_data": fmt.Sprintf(
-							"\fadmin_approve|%d_%d",
-							userID,
-							amount,
-						),
-						"style": "success",
-					},
-				},
-				{
-					{
-						"text": "🚫 مسدود",
-						"callback_data": fmt.Sprintf(
-							"\fadmin_block|%d",
-							userID,
-						),
-						"style": "danger",
-					},
-					{
-						"text": "🔓 رفع مسدود",
-						"callback_data": fmt.Sprintf(
-							"\fadmin_unblock|%d",
-							userID,
-						),
-					},
-				},
-				{
-					{
-						"text": "💬 پیام به کاربر",
-						"callback_data": fmt.Sprintf(
-							"\fadmin_msg|%d",
-							userID,
-						),
-						"style": "primary",
-					},
-					{
-						"text": "💰 افزایش موجودی دستی",
-						"callback_data": fmt.Sprintf(
-							"\fadmin_manual|%d",
-							userID,
-						),
-						"style": "primary",
-					},
-				},
+		rm := &tele.ReplyMarkup{}
+
+		btnReject := tele.Btn{
+			Unique: "admin_reject",
+			Text:   "❌ رد فیش",
+			Data:   strconv.FormatInt(userID, 10),
+			Style:  tele.ButtonStyleDanger,
+		}
+
+		btnApprove := tele.Btn{
+			Unique: "admin_approve",
+			Text:   "✅ تایید فیش",
+			Data: fmt.Sprintf(
+				"%d_%d",
+				userID,
+				amount,
+			),
+			Style: tele.ButtonStyleSuccess,
+		}
+
+		btnBlock := tele.Btn{
+			Unique: "admin_block",
+			Text:   "🚫 مسدود",
+			Data:   strconv.FormatInt(userID, 10),
+			Style:  tele.ButtonStyleDanger,
+		}
+
+		btnUnblock := tele.Btn{
+			Unique: "admin_unblock",
+			Text:   "🔓 رفع مسدود",
+			Data:   strconv.FormatInt(userID, 10),
+		}
+
+		btnMessage := tele.Btn{
+			Unique: "admin_msg",
+			Text:   "💬 پیام به کاربر",
+			Data:   strconv.FormatInt(userID, 10),
+			Style:  tele.ButtonStylePrimary,
+		}
+
+		btnManual := tele.Btn{
+			Unique: "admin_manual",
+			Text:   "💰 افزایش موجودی دستی",
+			Data:   strconv.FormatInt(userID, 10),
+			Style:  tele.ButtonStylePrimary,
+		}
+
+		rm.Inline(
+			rm.Row(
+				btnReject,
+				btnApprove,
+			),
+			rm.Row(
+				btnBlock,
+				btnUnblock,
+			),
+			rm.Row(
+				btnMessage,
+				btnManual,
+			),
+		)
+
+		_, err := bot.Send(
+			&tele.User{
+				ID: adminID,
 			},
-		}
-
-		payload := map[string]interface{}{
-			"chat_id":      adminID,
-			"text":         text,
-			"parse_mode":   "HTML",
-			"reply_markup": keyboard,
-		}
-
-		_, err := bot.Raw(
-			"sendMessage",
-			payload,
+			text,
+			tele.ModeHTML,
+			rm,
 		)
 
 		if err != nil {
 			log.Printf(
-				"RAW admin panel error for admin %d: %v",
+				"Admin panel error for admin %d: %v",
 				adminID,
 				err,
 			)
@@ -709,9 +696,7 @@ func main() {
 			joinedAt = time.Now()
 		}
 
-		loc, err := time.LoadLocation(
-			"Asia/Tehran",
-		)
+		loc, err := time.LoadLocation("Asia/Tehran")
 
 		if err != nil {
 			loc = time.FixedZone(
@@ -812,7 +797,7 @@ func main() {
 
 		userWalletTemp[userID] = 0
 
-		err := sendRawWalletKeyboard(
+		err := sendWalletKeyboard(
 			c,
 			formatWalletText(0),
 			false,
@@ -867,14 +852,13 @@ func main() {
 			userWalletTemp[userID] =
 				current
 
-			err = sendRawWalletKeyboard(
+			err = sendWalletKeyboard(
 				c,
 				formatWalletText(current),
 				true,
 			)
 
 			if err != nil {
-
 				log.Printf(
 					"Wallet update error for user %d: %v",
 					userID,
@@ -935,7 +919,7 @@ func main() {
 				keys,
 			)
 
-			return sendRawInvoice(
+			return sendInvoice(
 				c,
 				text,
 			)
@@ -988,7 +972,7 @@ func main() {
 			amount :=
 				userWalletTemp[userID]
 
-			err := sendRawWalletKeyboard(
+			err := sendWalletKeyboard(
 				c,
 				formatWalletText(amount),
 				true,
@@ -1140,7 +1124,7 @@ func main() {
 					continue
 				}
 
-				sendRawAdminPanel(
+				sendAdminPanel(
 					adminID,
 					tableText,
 					user.ID,

@@ -1,4 +1,3 @@
-```go
 package main
 
 import (
@@ -9,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -36,6 +36,25 @@ type AdminAction struct {
 }
 
 var adminStates = make(map[int64]AdminAction)
+
+// ============================================================
+// RECEIPT MESSAGE MANAGEMENT
+// ============================================================
+
+type ReceiptMessage struct {
+	ChatID    int64
+	MessageID int
+}
+
+var receiptMessages = make(map[string][]ReceiptMessage)
+var receiptStatus = make(map[string]string)
+
+var receiptMutex sync.Mutex
+var stateMutex sync.Mutex
+
+// ============================================================
+// CONFIG
+// ============================================================
 
 func loadConfig() Config {
 	_ = godotenv.Load()
@@ -65,6 +84,10 @@ func loadConfig() Config {
 		}
 	}
 
+	if len(adminIDs) == 0 {
+		log.Fatal("❌ خطای پیکربندی: هیچ ADMIN_ID معتبری پیدا نشد.")
+	}
+
 	return Config{
 		BotToken: token,
 		AdminIDs: adminIDs,
@@ -73,6 +96,10 @@ func loadConfig() Config {
 		DBName:   dbName,
 	}
 }
+
+// ============================================================
+// ADMIN CHECK
+// ============================================================
 
 func (c *Config) IsAdmin(userID int64) bool {
 	for _, id := range c.AdminIDs {
@@ -83,6 +110,10 @@ func (c *Config) IsAdmin(userID int64) bool {
 
 	return false
 }
+
+// ============================================================
+// DATABASE
+// ============================================================
 
 func InitDB(cfg Config) {
 	var err error
@@ -140,6 +171,10 @@ func InitDB(cfg Config) {
 		log.Fatalf("❌ خطا در ساخت جدول کیف پول: %v", err)
 	}
 }
+
+// ============================================================
+// USER
+// ============================================================
 
 func SaveUser(userID int64, firstName, username string) {
 	if db == nil {
@@ -211,6 +246,124 @@ func IsUserBlocked(userID int64) bool {
 	return blocked
 }
 
+// ============================================================
+// RECEIPT HELPERS
+// ============================================================
+
+func saveReceiptMessage(receiptID string, msg *tele.Message) {
+	if msg == nil || msg.Chat == nil {
+		return
+	}
+
+	receiptMutex.Lock()
+	defer receiptMutex.Unlock()
+
+	receiptMessages[receiptID] = append(
+		receiptMessages[receiptID],
+		ReceiptMessage{
+			ChatID:    msg.Chat.ID,
+			MessageID: msg.ID,
+		},
+	)
+}
+
+func getReceiptMessages(receiptID string) []ReceiptMessage {
+	receiptMutex.Lock()
+	defer receiptMutex.Unlock()
+
+	items := receiptMessages[receiptID]
+
+	result := make([]ReceiptMessage, len(items))
+	copy(result, items)
+
+	return result
+}
+
+func setReceiptStatus(receiptID, status string) {
+	receiptMutex.Lock()
+	defer receiptMutex.Unlock()
+
+	receiptStatus[receiptID] = status
+}
+
+func getReceiptStatus(receiptID string) string {
+	receiptMutex.Lock()
+	defer receiptMutex.Unlock()
+
+	return receiptStatus[receiptID]
+}
+
+func deleteReceipt(receiptID string) {
+	receiptMutex.Lock()
+	defer receiptMutex.Unlock()
+
+	delete(receiptMessages, receiptID)
+	delete(receiptStatus, receiptID)
+}
+
+// ============================================================
+// EDIT ALL RECEIPT MESSAGES
+// ============================================================
+
+func editAllReceiptMessages(
+	bot *tele.Bot,
+	receiptID string,
+	finalCaption string,
+) {
+	messages := getReceiptMessages(receiptID)
+
+	for _, item := range messages {
+
+		msg := &tele.Message{
+			ID: item.MessageID,
+			Chat: &tele.Chat{
+				ID: item.ChatID,
+			},
+		}
+
+		// تغییر کپشن
+		_, err := bot.EditCaption(
+			msg,
+			finalCaption,
+			tele.ModeHTML,
+		)
+
+		if err != nil {
+			log.Printf(
+				"⚠️ خطا در تغییر کپشن فیش ChatID=%d MessageID=%d: %v",
+				item.ChatID,
+				item.MessageID,
+				err,
+			)
+		}
+
+		// حذف کامل Inline Keyboard
+		_, err = bot.EditReplyMarkup(
+			msg,
+			nil,
+		)
+
+		if err != nil {
+			log.Printf(
+				"⚠️ خطا در حذف دکمه‌های فیش ChatID=%d MessageID=%d: %v",
+				item.ChatID,
+				item.MessageID,
+				err,
+			)
+		} else {
+			log.Printf(
+				"✅ دکمه‌های فیش ChatID=%d MessageID=%d حذف شدند.",
+				item.ChatID,
+				item.MessageID,
+			)
+		}
+	}
+}
+
+// ============================================================
+// MAIN
+// ============================================================
+
 func main() {
 
 	cfg := loadConfig()
@@ -231,9 +384,9 @@ func main() {
 		log.Fatalf("❌ خطا در راه‌اندازی ربات: %v", err)
 	}
 
-	// =========================
-	// منوی کاربر
-	// =========================
+	// ============================================================
+	// USER MENU
+	// ============================================================
 
 	userMenu := &tele.ReplyMarkup{
 		ResizeKeyboard: true,
@@ -264,9 +417,17 @@ func main() {
 		adminMenu.Row(btnAdminPanel),
 	)
 
-	// =========================
-	// منوی پروفایل
-	// =========================
+	getKeyboard := func(userID int64) *tele.ReplyMarkup {
+		if cfg.IsAdmin(userID) {
+			return adminMenu
+		}
+
+		return userMenu
+	}
+
+	// ============================================================
+	// PROFILE MENU
+	// ============================================================
 
 	profileMenu := &tele.ReplyMarkup{
 		ResizeKeyboard: true,
@@ -283,17 +444,9 @@ func main() {
 		profileMenu.Row(btnBack),
 	)
 
-	getKeyboard := func(userID int64) *tele.ReplyMarkup {
-		if cfg.IsAdmin(userID) {
-			return adminMenu
-		}
-
-		return userMenu
-	}
-
-	// =========================
+	// ============================================================
 	// START
-	// =========================
+	// ============================================================
 
 	bot.Handle("/start", func(c tele.Context) error {
 
@@ -346,9 +499,9 @@ func main() {
 		)
 	})
 
-	// =========================
+	// ============================================================
 	// PROFILE
-	// =========================
+	// ============================================================
 
 	bot.Handle(&btnProfile, func(c tele.Context) error {
 
@@ -417,9 +570,9 @@ func main() {
 		)
 	})
 
-	// =========================
+	// ============================================================
 	// BACK
-	// =========================
+	// ============================================================
 
 	bot.Handle(&btnBack, func(c tele.Context) error {
 		return c.Send(
@@ -428,9 +581,9 @@ func main() {
 		)
 	})
 
-	// =========================
+	// ============================================================
 	// WALLET KEYBOARD
-	// =========================
+	// ============================================================
 
 	getWalletKeyboard := func() *tele.ReplyMarkup {
 
@@ -523,9 +676,9 @@ func main() {
 		)
 	}
 
-	// =========================
+	// ============================================================
 	// WALLET
-	// =========================
+	// ============================================================
 
 	bot.Handle(&btnWallet, func(c tele.Context) error {
 
@@ -544,9 +697,9 @@ func main() {
 		)
 	})
 
-	// =========================
+	// ============================================================
 	// WALLET CHANGE
-	// =========================
+	// ============================================================
 
 	bot.Handle(&tele.Btn{Unique: "wallet_change"}, func(c tele.Context) error {
 
@@ -584,9 +737,9 @@ func main() {
 		return c.Respond()
 	})
 
-	// =========================
+	// ============================================================
 	// CREATE INVOICE
-	// =========================
+	// ============================================================
 
 	bot.Handle(&tele.Btn{Unique: "wallet_confirm"}, func(c tele.Context) error {
 
@@ -636,9 +789,9 @@ func main() {
 		)
 	})
 
-	// =========================
+	// ============================================================
 	// WALLET BACK MAIN
-	// =========================
+	// ============================================================
 
 	bot.Handle(&tele.Btn{Unique: "wallet_back_main"}, func(c tele.Context) error {
 
@@ -656,9 +809,9 @@ func main() {
 		)
 	})
 
-	// =========================
+	// ============================================================
 	// WALLET BACK
-	// =========================
+	// ============================================================
 
 	bot.Handle(&tele.Btn{Unique: "wallet_back_to_wallet"}, func(c tele.Context) error {
 
@@ -675,9 +828,9 @@ func main() {
 		)
 	})
 
-	// =========================
+	// ============================================================
 	// RECEIVE RECEIPT
-	// =========================
+	// ============================================================
 
 	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
 
@@ -738,46 +891,80 @@ func main() {
 			usernameStr = "@" + html.EscapeString(user.Username)
 		}
 
-		// =========================
+		// ========================================================
+		// RECEIPT ID
+		// ========================================================
+
+		receiptID := fmt.Sprintf(
+			"%d_%d_%d",
+			user.ID,
+			amount,
+			time.Now().UnixNano(),
+		)
+
+		// ========================================================
 		// ADMIN INLINE KEYBOARD
-		// =========================
+		// ========================================================
 
 		adminKeyboard := &tele.ReplyMarkup{}
 
 		btnApprove := adminKeyboard.Data(
 			"✅ تایید فیش",
 			"admin_approve",
-			fmt.Sprintf("%d_%d", user.ID, amount),
+			fmt.Sprintf(
+				"%d_%d_%s",
+				user.ID,
+				amount,
+				receiptID,
+			),
 		)
 
 		btnReject := adminKeyboard.Data(
 			"❌ رد فیش",
 			"admin_reject",
-			fmt.Sprintf("%d", user.ID),
+			fmt.Sprintf(
+				"%d_%s",
+				user.ID,
+				receiptID,
+			),
 		)
 
 		btnBlock := adminKeyboard.Data(
 			"🚫 مسدود",
 			"admin_block",
-			fmt.Sprintf("%d", user.ID),
+			fmt.Sprintf(
+				"%d_%s",
+				user.ID,
+				receiptID,
+			),
 		)
 
 		btnUnblock := adminKeyboard.Data(
 			"🔓 رفع مسدود",
 			"admin_unblock",
-			fmt.Sprintf("%d", user.ID),
+			fmt.Sprintf(
+				"%d_%s",
+				user.ID,
+				receiptID,
+			),
 		)
 
 		btnMessage := adminKeyboard.Data(
 			"💬 پیام به کاربر",
 			"admin_msg",
-			fmt.Sprintf("%d", user.ID),
+			fmt.Sprintf(
+				"%d",
+				user.ID,
+			),
 		)
 
 		btnManualAdd := adminKeyboard.Data(
 			"💰 افزایش موجودی دستی",
 			"admin_manual",
-			fmt.Sprintf("%d", user.ID),
+			fmt.Sprintf(
+				"%d",
+				user.ID,
+			),
 		)
 
 		adminKeyboard.Inline(
@@ -810,10 +997,18 @@ func main() {
 			phone,
 		)
 
-		// ارسال فیش به تمام ادمین‌ها
+		setReceiptStatus(
+			receiptID,
+			"pending",
+		)
+
+		// ========================================================
+		// SEND RECEIPT TO ALL ADMINS
+		// ========================================================
+
 		for _, adminID := range cfg.AdminIDs {
 
-			_, err := bot.Send(
+			sentMsg, err := bot.Send(
 				&tele.User{ID: adminID},
 				c.Message().Photo,
 				caption,
@@ -827,7 +1022,22 @@ func main() {
 					adminID,
 					err,
 				)
+
+				continue
 			}
+
+			// ذخیره MessageID و ChatID
+			saveReceiptMessage(
+				receiptID,
+				sentMsg,
+			)
+
+			log.Printf(
+				"✅ فیش %s برای ادمین %d ارسال شد. MessageID=%d",
+				receiptID,
+				adminID,
+				sentMsg.ID,
+			)
 		}
 
 		delete(
@@ -846,7 +1056,7 @@ func main() {
 	})
 
 	// ============================================================
-	// تایید فیش
+	// APPROVE RECEIPT
 	// ============================================================
 
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
@@ -864,10 +1074,11 @@ func main() {
 			"_",
 		)
 
-		if len(parts) != 2 {
+		// userID + amount + receiptID
+		if len(parts) < 5 {
 			return c.Respond(
 				&tele.CallbackResponse{
-					Text: "❌ خطا در پردازش اطلاعات.",
+					Text: "❌ خطا در پردازش اطلاعات فیش.",
 				},
 			)
 		}
@@ -896,13 +1107,44 @@ func main() {
 			)
 		}
 
-		// افزایش موجودی
+		receiptID := strings.Join(
+			parts[2:],
+			"_",
+		)
+
+		// ========================================================
+		// PREVENT DOUBLE APPROVAL
+		// ========================================================
+
+		currentStatus := getReceiptStatus(receiptID)
+
+		if currentStatus != "pending" {
+			return c.Respond(
+				&tele.CallbackResponse{
+					Text: "⚠️ این فیش قبلاً بررسی شده است.",
+					ShowAlert: true,
+				},
+			)
+		}
+
+		setReceiptStatus(
+			receiptID,
+			"approved",
+		)
+
+		// ========================================================
+		// ADD BALANCE
+		// ========================================================
+
 		AddUserBalance(
 			targetUserID,
 			amount,
 		)
 
-		// افزایش تعداد خرید
+		// ========================================================
+		// INCREASE PURCHASE COUNT
+		// ========================================================
+
 		_, err = db.Exec(
 			"UPDATE users SET purchases_count = purchases_count + 1 WHERE id = ?",
 			targetUserID,
@@ -916,7 +1158,10 @@ func main() {
 			)
 		}
 
-		// پیام تایید برای کاربر
+		// ========================================================
+		// MESSAGE TO USER
+		// ========================================================
+
 		_, err = bot.Send(
 			&tele.User{ID: targetUserID},
 			fmt.Sprintf(
@@ -936,7 +1181,7 @@ func main() {
 		}
 
 		// ========================================================
-		// تغییر کپشن عکس
+		// FINAL CAPTION
 		// ========================================================
 
 		oldCaption := c.Message().Caption
@@ -944,45 +1189,311 @@ func main() {
 		finalCaption := oldCaption +
 			"\n\n✅ <b>فیش تایید شد و موجودی کاربر شارژ گردید.</b>"
 
-		_, editCaptionErr := bot.EditCaption(
-			c.Message(),
+		// ========================================================
+		// EDIT ALL ADMIN RECEIPTS
+		// ========================================================
+
+		editAllReceiptMessages(
+			bot,
+			receiptID,
 			finalCaption,
-			tele.ModeHTML,
 		)
 
-		if editCaptionErr != nil {
-			log.Printf(
-				"⚠️ خطا در ویرایش کپشن فیش تایید شده: %v",
-				editCaptionErr,
-			)
-		}
-
-		// ========================================================
-		// حذف کامل Inline Keyboard
-		// ========================================================
-
-		_, removeKeyboardErr := bot.EditReplyMarkup(
+		// اطمینان از حذف دکمه همین پیام
+		_, _ = bot.EditReplyMarkup(
 			c.Message(),
 			nil,
 		)
 
-		if removeKeyboardErr != nil {
-			log.Printf(
-				"⚠️ خطا در حذف کیبورد فیش تایید شده: %v",
-				removeKeyboardErr,
-			)
-		} else {
-			log.Println("✅ دکمه‌های فیش تایید شده با موفقیت حذف شدند.")
-		}
+		log.Printf(
+			"✅ فیش %s توسط ادمین %d تایید شد.",
+			receiptID,
+			c.Sender().ID,
+		)
 
-		return c.Respond()
+		return c.Respond(
+			&tele.CallbackResponse{
+				Text: "✅ فیش تایید شد و دکمه‌ها حذف شدند.",
+			},
+		)
 	})
 
 	// ============================================================
-	// رد فیش
+	// REJECT RECEIPT
 	// ============================================================
 
 	bot.Handle(&tele.Btn{Unique: "admin_reject"}, func(c tele.Context) error {
+
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(
+				&tele.CallbackResponse{
+					Text: "❌ شما دسترسی ندارید.",
+				},
+			)
+		}
+
+		parts := strings.Split(
+			c.Data(),
+			"_",
+		)
+
+		if len(parts) < 4 {
+			return c.Respond(
+				&tele.CallbackResponse{
+					Text: "❌ خطا در پردازش اطلاعات فیش.",
+				},
+			)
+		}
+
+		targetUserID, err := strconv.ParseInt(
+			parts[0],
+			10,
+			64,
+		)
+
+		if err != nil {
+			return c.Respond(
+				&tele.CallbackResponse{
+					Text: "❌ آیدی کاربر نامعتبر است.",
+				},
+			)
+		}
+
+		receiptID := strings.Join(
+			parts[1:],
+			"_",
+		)
+
+		// ========================================================
+		// PREVENT DOUBLE ACTION
+		// ========================================================
+
+		currentStatus := getReceiptStatus(receiptID)
+
+		if currentStatus != "pending" {
+			return c.Respond(
+				&tele.CallbackResponse{
+					Text: "⚠️ این فیش قبلاً بررسی شده است.",
+					ShowAlert: true,
+				},
+			)
+		}
+
+		setReceiptStatus(
+			receiptID,
+			"rejected",
+		)
+
+		// ========================================================
+		// MESSAGE TO USER
+		// ========================================================
+
+		_, err = bot.Send(
+			&tele.User{ID: targetUserID},
+			"❌ <b>فیش واریزی شما توسط ادمین رد شد.</b>\n\n"+
+				"لطفاً در صورت وجود مشکل با پشتیبانی ارتباط برقرار کنید.",
+			tele.ModeHTML,
+		)
+
+		if err != nil {
+			log.Printf(
+				"⚠️ خطا در ارسال پیام رد فیش به کاربر %d: %v",
+				targetUserID,
+				err,
+			)
+		}
+
+		// ========================================================
+		// FINAL CAPTION
+		// ========================================================
+
+		oldCaption := c.Message().Caption
+
+		finalCaption := oldCaption +
+			"\n\n❌ <b>فیش واریزی رد شد.</b>"
+
+		// ========================================================
+		// EDIT ALL ADMIN RECEIPTS
+		// ========================================================
+
+		editAllReceiptMessages(
+			bot,
+			receiptID,
+			finalCaption,
+		)
+
+		// اطمینان از حذف دکمه همین پیام
+		_, _ = bot.EditReplyMarkup(
+			c.Message(),
+			nil,
+		)
+
+		log.Printf(
+			"❌ فیش %s توسط ادمین %d رد شد.",
+			receiptID,
+			c.Sender().ID,
+		)
+
+		return c.Respond(
+			&tele.CallbackResponse{
+				Text: "❌ فیش رد شد و دکمه‌ها حذف شدند.",
+			},
+		)
+	})
+
+	// ============================================================
+	// BLOCK USER
+	// ============================================================
+
+	bot.Handle(&tele.Btn{Unique: "admin_block"}, func(c tele.Context) error {
+
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(
+				&tele.CallbackResponse{
+					Text: "❌ شما دسترسی ندارید.",
+				},
+			)
+		}
+
+		parts := strings.Split(
+			c.Data(),
+			"_",
+		)
+
+		if len(parts) < 4 {
+			return c.Respond(
+				&tele.CallbackResponse{
+					Text: "❌ خطا در پردازش اطلاعات.",
+				},
+			)
+		}
+
+		targetUserID, err := strconv.ParseInt(
+			parts[0],
+			10,
+			64,
+		)
+
+		if err != nil {
+			return c.Respond(
+				&tele.CallbackResponse{
+					Text: "❌ آیدی کاربر نامعتبر است.",
+				},
+			)
+		}
+
+		receiptID := strings.Join(
+			parts[1:],
+			"_",
+		)
+
+		stateMutex.Lock()
+
+		adminStates[c.Sender().ID] = AdminAction{
+			Action:   "block_reason",
+			TargetID: targetUserID,
+		}
+
+		stateMutex.Unlock()
+
+		// حذف دکمه‌ها از همین پیام
+		_, _ = bot.EditReplyMarkup(
+			c.Message(),
+			nil,
+		)
+
+		return c.Send(
+			fmt.Sprintf(
+				"🚫 <b>لطفاً دلیل مسدودی کاربر %d را ارسال کنید:</b>",
+				targetUserID,
+			),
+			tele.ModeHTML,
+		)
+	})
+
+	// ============================================================
+	// UNBLOCK USER
+	// ============================================================
+
+	bot.Handle(&tele.Btn{Unique: "admin_unblock"}, func(c tele.Context) error {
+
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(
+				&tele.CallbackResponse{
+					Text: "❌ شما دسترسی ندارید.",
+				},
+			)
+		}
+
+		parts := strings.Split(
+			c.Data(),
+			"_",
+		)
+
+		if len(parts) < 4 {
+			return c.Respond(
+				&tele.CallbackResponse{
+					Text: "❌ خطا در پردازش اطلاعات.",
+				},
+			)
+		}
+
+		targetUserID, err := strconv.ParseInt(
+			parts[0],
+			10,
+			64,
+		)
+
+		if err != nil {
+			return c.Respond(
+				&tele.CallbackResponse{
+					Text: "❌ آیدی کاربر نامعتبر است.",
+				},
+			)
+		}
+
+		receiptID := strings.Join(
+			parts[1:],
+			"_",
+		)
+
+		_, _ = db.Exec(
+			"UPDATE users SET is_blocked = FALSE WHERE id = ?",
+			targetUserID,
+		)
+
+		_, _ = bot.Send(
+			&tele.User{ID: targetUserID},
+			"🔓 <b>حساب کاربری شما رفع مسدودی شد.</b>",
+			tele.ModeHTML,
+		)
+
+		finalCaption := c.Message().Caption +
+			"\n\n🔓 <b>کاربر رفع مسدودی گردید.</b>"
+
+		editAllReceiptMessages(
+			bot,
+			receiptID,
+			finalCaption,
+		)
+
+		_, _ = bot.EditReplyMarkup(
+			c.Message(),
+			nil,
+		)
+
+		return c.Respond(
+			&tele.CallbackResponse{
+				Text: "🔓 کاربر رفع مسدودی شد.",
+			},
+		)
+	})
+
+	// ============================================================
+	// MESSAGE USER
+	// ============================================================
+
+	bot.Handle(&tele.Btn{Unique: "admin_msg"}, func(c tele.Context) error {
 
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(
@@ -1006,168 +1517,14 @@ func main() {
 			)
 		}
 
-		// پیام رد فیش برای کاربر
-		_, err = bot.Send(
-			&tele.User{ID: targetUserID},
-			"❌ <b>فیش واریزی شما توسط ادمین رد شد.</b>\n\n"+
-				"لطفاً در صورت وجود مشکل با پشتیبانی ارتباط برقرار کنید.",
-			tele.ModeHTML,
-		)
-
-		if err != nil {
-			log.Printf(
-				"⚠️ خطا در ارسال پیام رد فیش به کاربر %d: %v",
-				targetUserID,
-				err,
-			)
-		}
-
-		// ========================================================
-		// تغییر کپشن عکس
-		// ========================================================
-
-		oldCaption := c.Message().Caption
-
-		finalCaption := oldCaption +
-			"\n\n❌ <b>فیش واریزی رد شد.</b>"
-
-		_, editCaptionErr := bot.EditCaption(
-			c.Message(),
-			finalCaption,
-			tele.ModeHTML,
-		)
-
-		if editCaptionErr != nil {
-			log.Printf(
-				"⚠️ خطا در ویرایش کپشن فیش رد شده: %v",
-				editCaptionErr,
-			)
-		}
-
-		// ========================================================
-		// حذف کامل Inline Keyboard
-		// ========================================================
-
-		_, removeKeyboardErr := bot.EditReplyMarkup(
-			c.Message(),
-			nil,
-		)
-
-		if removeKeyboardErr != nil {
-			log.Printf(
-				"⚠️ خطا در حذف کیبورد فیش رد شده: %v",
-				removeKeyboardErr,
-			)
-		} else {
-			log.Println("✅ دکمه‌های فیش رد شده با موفقیت حذف شدند.")
-		}
-
-		return c.Respond()
-	})
-
-	// ============================================================
-	// مسدود کردن
-	// ============================================================
-
-	bot.Handle(&tele.Btn{Unique: "admin_block"}, func(c tele.Context) error {
-
-		if !cfg.IsAdmin(c.Sender().ID) {
-			return c.Respond(
-				&tele.CallbackResponse{
-					Text: "❌ شما دسترسی ندارید.",
-				},
-			)
-		}
-
-		targetUserID, _ := strconv.ParseInt(
-			c.Data(),
-			10,
-			64,
-		)
-
-		adminStates[c.Sender().ID] = AdminAction{
-			Action:   "block_reason",
-			TargetID: targetUserID,
-		}
-
-		return c.Send(
-			"🚫 <b>لطفاً دلیل مسدودی را ارسال کنید تا به همراه پیام مسدودی به صورت بولد برای کاربر ارسال شود:</b>",
-			tele.ModeHTML,
-		)
-	})
-
-	// ============================================================
-	// رفع مسدودی
-	// ============================================================
-
-	bot.Handle(&tele.Btn{Unique: "admin_unblock"}, func(c tele.Context) error {
-
-		if !cfg.IsAdmin(c.Sender().ID) {
-			return c.Respond(
-				&tele.CallbackResponse{
-					Text: "❌ شما دسترسی ندارید.",
-				},
-			)
-		}
-
-		targetUserID, _ := strconv.ParseInt(
-			c.Data(),
-			10,
-			64,
-		)
-
-		_, _ = db.Exec(
-			"UPDATE users SET is_blocked = FALSE WHERE id = ?",
-			targetUserID,
-		)
-
-		_, _ = bot.Send(
-			&tele.User{ID: targetUserID},
-			"🔓 <b>حساب کاربری شما رفع مسدودی شد.</b>",
-			tele.ModeHTML,
-		)
-
-		finalCaption := c.Message().Caption +
-			"\n\n🔓 <b>کاربر رفع مسدودی گردید.</b>"
-
-		_, _ = bot.EditCaption(
-			c.Message(),
-			finalCaption,
-			tele.ModeHTML,
-		)
-
-		_, _ = bot.EditReplyMarkup(
-			c.Message(),
-			nil,
-		)
-
-		return c.Respond()
-	})
-
-	// ============================================================
-	// پیام به کاربر
-	// ============================================================
-
-	bot.Handle(&tele.Btn{Unique: "admin_msg"}, func(c tele.Context) error {
-
-		if !cfg.IsAdmin(c.Sender().ID) {
-			return c.Respond(
-				&tele.CallbackResponse{
-					Text: "❌ شما دسترسی ندارید.",
-				},
-			)
-		}
-
-		targetUserID, _ := strconv.ParseInt(
-			c.Data(),
-			10,
-			64,
-		)
+		stateMutex.Lock()
 
 		adminStates[c.Sender().ID] = AdminAction{
 			Action:   "msg",
 			TargetID: targetUserID,
 		}
+
+		stateMutex.Unlock()
 
 		return c.Send(
 			"💬 <b>لطفاً متن پیام خود برای کاربر را ارسال کنید:</b>",
@@ -1176,7 +1533,7 @@ func main() {
 	})
 
 	// ============================================================
-	// افزایش دستی موجودی
+	// MANUAL ADD
 	// ============================================================
 
 	bot.Handle(&tele.Btn{Unique: "admin_manual"}, func(c tele.Context) error {
@@ -1189,16 +1546,28 @@ func main() {
 			)
 		}
 
-		targetUserID, _ := strconv.ParseInt(
+		targetUserID, err := strconv.ParseInt(
 			c.Data(),
 			10,
 			64,
 		)
 
+		if err != nil {
+			return c.Respond(
+				&tele.CallbackResponse{
+					Text: "❌ آیدی کاربر نامعتبر است.",
+				},
+			)
+		}
+
+		stateMutex.Lock()
+
 		adminStates[c.Sender().ID] = AdminAction{
 			Action:   "manual_add",
 			TargetID: targetUserID,
 		}
+
+		stateMutex.Unlock()
 
 		return c.Send(
 			"💰 <b>لطفاً مبلغ مورد نظر برای افزایش دستی موجودی را (فقط عدد به تومان) ارسال کنید:</b>",
@@ -1207,7 +1576,7 @@ func main() {
 	})
 
 	// ============================================================
-	// پیام‌های متنی ادمین
+	// ADMIN TEXT STATES
 	// ============================================================
 
 	bot.Handle(tele.OnText, func(c tele.Context) error {
@@ -1218,7 +1587,11 @@ func main() {
 			return nil
 		}
 
+		stateMutex.Lock()
+
 		state, exists := adminStates[adminID]
+
+		stateMutex.Unlock()
 
 		if !exists {
 			return nil
@@ -1249,10 +1622,12 @@ func main() {
 				)
 			}
 
+			stateMutex.Lock()
 			delete(
 				adminStates,
 				adminID,
 			)
+			stateMutex.Unlock()
 
 		case "manual_add":
 
@@ -1291,10 +1666,12 @@ func main() {
 				),
 			)
 
+			stateMutex.Lock()
 			delete(
 				adminStates,
 				adminID,
 			)
+			stateMutex.Unlock()
 
 		case "block_reason":
 
@@ -1326,10 +1703,12 @@ func main() {
 				)
 			}
 
+			stateMutex.Lock()
 			delete(
 				adminStates,
 				adminID,
 			)
+			stateMutex.Unlock()
 		}
 
 		return nil
@@ -1412,7 +1791,7 @@ func main() {
 		}
 
 		adminText :=
-			"⚙️ <b>پنل مدیریت ربات ولف سلف</b>\n\n"+
+			"⚙️ <b>پنل مدیریت ربات ولف سلف</b>\n\n" +
 				"وضعیت سیستم: فعال و متصل به MySQL"
 
 		return c.Send(
@@ -1465,4 +1844,3 @@ func formatMoney(n int) string {
 		",",
 	)
 }
-```

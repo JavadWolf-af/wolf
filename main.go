@@ -709,7 +709,6 @@ func main() {
 		)
 
 		if err != nil {
-
 			dbJoinedAt = time.Now()
 			phone = "ثبت نشده"
 			selfStatus = "خرید نداشته"
@@ -852,7 +851,6 @@ func main() {
 
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
 
-		// بررسی دسترسی ادمین
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(
 				&tele.CallbackResponse{
@@ -861,7 +859,6 @@ func main() {
 			)
 		}
 
-		// اطلاعات callback
 		parts := strings.Split(
 			c.Data(),
 			"_",
@@ -939,41 +936,45 @@ func main() {
 		}
 
 		// ========================================================
-		// مهم:
-		// چون پیام ادمین عکس است باید EditCaption استفاده شود
+		// تغییر کپشن عکس
 		// ========================================================
 
-		finalCaption := c.Message().Caption +
+		oldCaption := c.Message().Caption
+
+		finalCaption := oldCaption +
 			"\n\n✅ <b>فیش تایید شد و موجودی کاربر شارژ گردید.</b>"
 
-		err = c.EditCaption(
+		_, editCaptionErr := bot.EditCaption(
+			c.Message(),
 			finalCaption,
 			tele.ModeHTML,
-			&tele.ReplyMarkup{},
 		)
 
-		if err != nil {
-
+		if editCaptionErr != nil {
 			log.Printf(
 				"⚠️ خطا در ویرایش کپشن فیش تایید شده: %v",
-				err,
+				editCaptionErr,
 			)
-
-			// تلاش دوم برای حذف دکمه‌های پنل
-			_, removeErr := bot.EditReplyMarkup(
-				c.Message(),
-				&tele.ReplyMarkup{},
-			)
-
-			if removeErr != nil {
-				log.Printf(
-					"⚠️ خطا در حذف کیبورد فیش تایید شده: %v",
-					removeErr,
-				)
-			}
 		}
 
-		// بستن Loading دکمه
+		// ========================================================
+		// حذف کامل Inline Keyboard
+		// ========================================================
+
+		_, removeKeyboardErr := bot.EditReplyMarkup(
+			c.Message(),
+			nil,
+		)
+
+		if removeKeyboardErr != nil {
+			log.Printf(
+				"⚠️ خطا در حذف کیبورد فیش تایید شده: %v",
+				removeKeyboardErr,
+			)
+		} else {
+			log.Println("✅ دکمه‌های فیش تایید شده با موفقیت حذف شدند.")
+		}
+
 		return c.Respond()
 	})
 
@@ -983,7 +984,6 @@ func main() {
 
 	bot.Handle(&tele.Btn{Unique: "admin_reject"}, func(c tele.Context) error {
 
-		// بررسی دسترسی ادمین
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(
 				&tele.CallbackResponse{
@@ -1022,38 +1022,46 @@ func main() {
 			)
 		}
 
+		// ========================================================
 		// تغییر کپشن عکس
-		finalCaption := c.Message().Caption +
+		// ========================================================
+
+		oldCaption := c.Message().Caption
+
+		finalCaption := oldCaption +
 			"\n\n❌ <b>فیش واریزی رد شد.</b>"
 
-		err = c.EditCaption(
+		_, editCaptionErr := bot.EditCaption(
+			c.Message(),
 			finalCaption,
 			tele.ModeHTML,
-			&tele.ReplyMarkup{},
 		)
 
-		if err != nil {
-
+		if editCaptionErr != nil {
 			log.Printf(
 				"⚠️ خطا در ویرایش کپشن فیش رد شده: %v",
-				err,
+				editCaptionErr,
 			)
-
-			// تلاش دوم برای حذف کیبورد
-			_, removeErr := bot.EditReplyMarkup(
-				c.Message(),
-				&tele.ReplyMarkup{},
-			)
-
-			if removeErr != nil {
-				log.Printf(
-					"⚠️ خطا در حذف کیبورد فیش رد شده: %v",
-					removeErr,
-				)
-			}
 		}
 
-		// بستن Loading دکمه
+		// ========================================================
+		// حذف کامل Inline Keyboard
+		// ========================================================
+
+		_, removeKeyboardErr := bot.EditReplyMarkup(
+			c.Message(),
+			nil,
+		)
+
+		if removeKeyboardErr != nil {
+			log.Printf(
+				"⚠️ خطا در حذف کیبورد فیش رد شده: %v",
+				removeKeyboardErr,
+			)
+		} else {
+			log.Println("✅ دکمه‌های فیش رد شده با موفقیت حذف شدند.")
+		}
+
 		return c.Respond()
 	})
 
@@ -1122,10 +1130,15 @@ func main() {
 		finalCaption := c.Message().Caption +
 			"\n\n🔓 <b>کاربر رفع مسدودی گردید.</b>"
 
-		_ = c.EditCaption(
+		_, _ = bot.EditCaption(
+			c.Message(),
 			finalCaption,
 			tele.ModeHTML,
-			&tele.ReplyMarkup{},
+		)
+
+		_, _ = bot.EditReplyMarkup(
+			c.Message(),
+			nil,
 		)
 
 		return c.Respond()
@@ -1453,25 +1466,3 @@ func formatMoney(n int) string {
 	)
 }
 ```
-
-بعد از جایگزینی، این سه دستور را بزن:
-
-```bash
-gofmt -w main.go
-```
-
-بعد:
-
-```bash
-go build -o bot .
-```
-
-و اگر بدون خطا Build شد:
-
-```bash
-systemctl restart bot.service
-```
-
-اگر اسم سرویس‌ات `bot.service` نیست، فقط اسم سرویس خودت را جای `bot.service` بگذار.
-
-**نتیجه:** وقتی ادمین روی «✅ تایید فیش» بزند، موجودی شارژ می‌شود، پیام تأیید برای کاربر می‌رود، کپشن همان فیش به «فیش تایید شد...» تغییر می‌کند و دکمه‌های پنل حذف می‌شوند. برای «❌ رد فیش» هم همین اتفاق بدون شارژ موجودی انجام می‌شود.

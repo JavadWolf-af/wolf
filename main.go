@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql" // درایور MySQL
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
 	tele "gopkg.in/telebot.v3"
 )
@@ -37,7 +37,7 @@ func loadConfig() Config {
 	dbPass := os.Getenv("DB_PASS")
 	dbName := os.Getenv("DB_NAME")
 	if dbUser == "" || dbName == "" {
-		log.Fatal("❌ خطای پیکربندی: اطلاعات دیتابیس (DB_USER و DB_NAME) یافت نشد.")
+		log.Fatal("❌ خطای پیکربندی: اطلاعات دیتابیس یافت نشد.")
 	}
 
 	adminStr := os.Getenv("ADMIN_ID")
@@ -69,7 +69,6 @@ func (c *Config) IsAdmin(userID int64) bool {
 
 func InitDB(cfg Config) {
 	var err error
-	// ساخت رشته اتصال به MySQL
 	dsn := fmt.Sprintf("%s:%s@tcp(127.0.0.1:3306)/%s?parseTime=true", cfg.DBUser, cfg.DBPass, cfg.DBName)
 	
 	db, err = sql.Open("mysql", dsn)
@@ -77,15 +76,13 @@ func InitDB(cfg Config) {
 		log.Fatalf("❌ خطا در اتصال به MySQL: %v", err)
 	}
 
-	// بررسی برقراری ارتباط با دیتابیس
 	if err = db.Ping(); err != nil {
-		log.Fatalf("❌ خطا در پینگ دیتابیس (آیا MySQL روشن است؟): %v", err)
+		log.Fatalf("❌ خطا در برقراری ارتباط با دیتابیس: %v", err)
 	}
 
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(10)
 
-	// ساخت جدول کاربران با سینتکس MySQL
 	query := `
 	CREATE TABLE IF NOT EXISTS users (
 		id BIGINT PRIMARY KEY,
@@ -104,7 +101,6 @@ func SaveUser(userID int64, firstName, username string) {
 	if db == nil {
 		return
 	}
-	// کوئری مخصوص MySQL برای آپدیت در صورت وجود کاربر قبلی
 	query := `INSERT INTO users (id, first_name, username) VALUES (?, ?, ?) 
 	          ON DUPLICATE KEY UPDATE first_name=?, username=?`
 	_, err := db.Exec(query, userID, firstName, username, firstName, username)

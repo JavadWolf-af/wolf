@@ -84,7 +84,6 @@ func InitDB(cfg Config) {
 	db.SetMaxOpenConns(20)
 	db.SetMaxIdleConns(10)
 
-	// جدول کاربران
 	queryUsers := `
 	CREATE TABLE IF NOT EXISTS users (
 		id BIGINT PRIMARY KEY,
@@ -98,7 +97,6 @@ func InitDB(cfg Config) {
 		log.Fatalf("❌ خطا در ساخت جدول کاربران: %v", err)
 	}
 
-	// جدول کیف پول
 	queryWallet := `
 	CREATE TABLE IF NOT EXISTS wallets (
 		user_id BIGINT PRIMARY KEY,
@@ -123,7 +121,6 @@ func SaveUser(userID int64, firstName, username string) {
 		log.Printf("⚠️ خطا در ذخیره کاربر: %v", err)
 	}
 
-	// ایجاد رکورد کیف پول اگر وجود نداشته باشد
 	_, _ = db.Exec(`INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0)`, userID)
 }
 
@@ -152,7 +149,6 @@ func main() {
 		log.Fatalf("❌ خطا در راه‌اندازی ربات: %v", err)
 	}
 
-	// منوهای اصلی (Reply Keyboard)
 	userMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
@@ -161,7 +157,7 @@ func main() {
 	btnWallet := userMenu.Text("👛 کیف پول 💳")
 	btnSupport := userMenu.Text("🎧 پشتیبانی")
 	btnGuide := userMenu.Text("📚 راهنما")
-	btnAdminPanel := adminMenu.Text("⚙️ مدیریت")
+	btnAdminPanel := userMenu.Text("⚙️ مدیریت")
 
 	userMenu.Reply(
 		userMenu.Row(btnBuy, btnProfile),
@@ -272,22 +268,20 @@ func main() {
 		return c.Send("🔙 به منوی اصلی بازگشتید.", getKeyboard(c.Sender().ID))
 	})
 
-	// --- بخش کیف پول و افزایش موجودی (اینلاین کیبورد) ---
-	
-	// تابع کمکی برای ساخت دکمه‌های کیف پول با مبلغ دلخواه
+	// --- بخش کیف پول و افزایش موجودی ---
 	getWalletKeyboard := func(amount int) *tele.ReplyMarkup {
 		menu := &tele.ReplyMarkup{}
-		
+
 		btnP25k := menu.Data("+ 25,000", "wallet_add", "25000")
 		btnP50k := menu.Data("+ 50,000", "wallet_add", "50000")
 		btnP100k := menu.Data("+ 100,000", "wallet_add", "100000")
-		
+
 		btnM1k := menu.Data("- 1,000", "wallet_sub", "1000")
 		btnP1k := menu.Data("+ 1,000", "wallet_add", "1000")
-		
+
 		btnM5k := menu.Data("- 5,000", "wallet_sub", "5000")
 		btnP5k := menu.Data("+ 5,000", "wallet_add", "5000")
-		
+
 		btnM10k := menu.Data("- 10,000", "wallet_sub", "10000")
 		btnP10k := menu.Data("+ 10,000", "wallet_add", "10000")
 
@@ -320,33 +314,25 @@ func main() {
 		return c.Send(formatWalletText(initialAmount), getWalletKeyboard(initialAmount), tele.ModeHTML)
 	})
 
-	// مدیریت کلیک روی دکمه‌های اینلاین کیف پول
 	bot.Handle(&tele.Btn{Unique: "wallet_add"}, func(c tele.Context) error {
 		val, _ := strconv.Atoi(c.Data())
-		// استخراج مبلغ فعلی از متن پیام یا محاسبه (اینجا برای سادگی به صورت موقت مقدار پیش‌فرض رو هندل می‌کنیم)
-		// برای دقت بالا، مبلغ رو از کلیک قبلی می‌گیریم یا پیش‌فرض ۲۰ هزار تومان اضافه می‌کنیم
-		currentAmount := 0
-		// استخراج عدد از پیام قبلی اگر امکان‌پذیر باشد یا مدیریت ساده:
-		// فرض می‌کنیم هر بار کلیک مقدار را اضافه کند
-		// برای سادگی در این نسخه، مقدار دریافتی را به موجودی انتخابی اضافه می‌کنیم
-		// (روش استاندارد: ذخیره موقت در مموری یا خواندن از متن)
-		
-		// برای اینکه متن پیام آپدیت شود، بیایید مبلغ را از callback data بگیریم
-		// در اینجا برای سادگی دکمه مقدار را پاس می‌دهد، مقادیر را تجمیع می‌کنیم:
-		newAmount := val // جهت نسخه اولیه ساده
+		// در تلگرام برای نگهداری مبلغ انتخابی موقت می‌توان از دیتابیس یا منطق سشن استفاده کرد
+		// فعلاً مقدار جدید را اضافه می‌کنیم
+		currentAmount := 0 // مقدار فعلی فرضی
+		newAmount := currentAmount + val
 		return c.Edit(formatWalletText(newAmount), getWalletKeyboard(newAmount), tele.ModeHTML)
 	})
 
 	bot.Handle(&tele.Btn{Unique: "wallet_sub"}, func(c tele.Context) error {
-		return c.Respond(&tele.Callback{Text: "مبلغ کاهش یافت"})
+		return c.Respond(&tele.CallbackResponse{Text: "مبلغ کاهش یافت"})
 	})
 
 	bot.Handle(&tele.Btn{Unique: "wallet_confirm"}, func(c tele.Context) error {
-		return c.Respond(&tele.Callback{Text: "فاکتور شما با موفقیت صادر شد."})
+		return c.Respond(&tele.CallbackResponse{Text: "فاکتور شما با موفقیت صادر شد."})
 	})
 
 	bot.Handle(&tele.Btn{Unique: "wallet_back"}, func(c tele.Context) error {
-		return c.Edit("🔙 به منوی اصلی بازگشتید.", getKeyboard(c.Sender().ID))
+		return c.Edit("🔙 به منوی اصلی بازگشتید.")
 	})
 
 	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {
@@ -385,7 +371,6 @@ func main() {
 	bot.Start()
 }
 
-// تابع کمکی برای فرمت سه‌رقمی مبالغ (مثلاً 150,000)
 func formatMoney(n int) string {
 	s := fmt.Sprintf("%d", n)
 	var parts []string

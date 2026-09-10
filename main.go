@@ -26,7 +26,6 @@ type Config struct {
 
 var db *sql.DB
 
-// حافظه موقت برای نگهداری مبلغ در حال انتخاب هر کاربر
 var userWalletTemp = make(map[int64]int)
 
 func loadConfig() Config {
@@ -271,7 +270,6 @@ func main() {
 		return c.Send("🔙 به منوی اصلی بازگشتید.", getKeyboard(c.Sender().ID))
 	})
 
-	// --- بخش کیف پول پیشرفته با قابلیت جمع و تفریق زنده ---
 	getWalletKeyboard := func() *tele.ReplyMarkup {
 		menu := &tele.ReplyMarkup{}
 
@@ -314,7 +312,7 @@ func main() {
 
 	bot.Handle(&btnWallet, func(c tele.Context) error {
 		userID := c.Sender().ID
-		userWalletTemp[userID] = 0 // ریست کردن مبلغ هنگام ورود به کیف پول
+		userWalletTemp[userID] = 0
 		return c.Send(formatWalletText(0), getWalletKeyboard(), tele.ModeHTML)
 	})
 
@@ -322,7 +320,6 @@ func main() {
 		userID := c.Sender().ID
 		val, _ := strconv.Atoi(c.Data())
 
-		// جمع یا کم کردن از مقدار قبلی کاربر
 		current := userWalletTemp[userID]
 		current += val
 		if current < 0 {
@@ -330,7 +327,6 @@ func main() {
 		}
 		userWalletTemp[userID] = current
 
-		// آپدیت متن پیام با مبلغ جدید
 		err := c.Edit(formatWalletText(current), getWalletKeyboard(), tele.ModeHTML)
 		if err != nil {
 			return c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("مبلغ فعلی: %s تومان", formatMoney(current))})
@@ -346,8 +342,6 @@ func main() {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ لطفاً ابتدا مبلغی را انتخاب کنید."})
 		}
 
-		// محاسبه تعداد کلید (هر کلید ۳,۳۳۳ تومان)
-		// کلید = مبلغ / 3333
 		keys := float64(amount) / 3333.0
 
 		text := fmt.Sprintf(
@@ -361,11 +355,11 @@ func main() {
 			formatMoney(amount), keys,
 		)
 
-		return c.Edit(text, &tele.ReplyMarkup{
-			Inline: [][]tele.InlineButton{
-				{{"🔙 بازگشت به کیف پول", "wallet_back"}},
-			},
-		}, tele.ModeHTML)
+		invoiceMenu := &tele.ReplyMarkup{}
+		btnInvoiceBack := invoiceMenu.Data("🔙 بازگشت به کیف پول", "wallet_back")
+		invoiceMenu.Inline(invoiceMenu.Row(btnInvoiceBack))
+
+		return c.Edit(text, invoiceMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&tele.Btn{Unique: "wallet_back"}, func(c tele.Context) error {

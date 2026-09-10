@@ -12,7 +12,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
-	"github.com/yaa110/go-persian-calendar/ptime"
+	gpc "github.com/yaa110/go-persian-calendar"
 	tele "gopkg.in/telebot.v3"
 )
 
@@ -126,7 +126,6 @@ func main() {
 		log.Fatalf("❌ خطا در راه‌اندازی ربات: %v", err)
 	}
 
-	// --- منوهای اصلی ---
 	userMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
@@ -150,7 +149,6 @@ func main() {
 		adminMenu.Row(btnAdminPanel),
 	)
 
-	// --- منوی حساب کاربری ---
 	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	btnTurnOnSelf := profileMenu.Text("🟢 روشن کردن سلف")
 	btnTurnOffSelf := profileMenu.Text("🔴 خاموش کردن سلف")
@@ -201,38 +199,31 @@ func main() {
 		return c.Send(text, getKeyboard(user.ID), tele.ModeHTML)
 	})
 
-	// --- هندلر دکمه حساب کاربری ---
 	bot.Handle(&btnProfile, func(c tele.Context) error {
 		user := c.Sender()
 
-		// 1. دریافت زمان دقیق عضویت کاربر از دیتابیس
 		var joinedAt time.Time
 		err := db.QueryRow("SELECT joined_at FROM users WHERE id = ?", user.ID).Scan(&joinedAt)
 		if err != nil {
-			joinedAt = time.Now() // در صورتی که کاربری به هر دلیل یافت نشد، زمان فعلی در نظر گرفته شود
+			joinedAt = time.Now()
 		}
 
-		// 2. تنظیم منطقه زمانی ایران
 		loc, _ := time.LoadLocation("Asia/Tehran")
 		now := time.Now().In(loc)
 		joinedAtLocal := joinedAt.In(loc)
 
-		// 3. تبدیل تاریخ امروز به شمسی
-		ptNow := ptime.New(now)
-		todayJalali := ptNow.Format("yyyy/MM/dd")
-		timeNow := ptNow.Format("HH:mm:ss")
+		tNow := gpc.New(now)
+		todayJalali := tNow.Format("yyyy/MM/dd")
+		timeNow := tNow.Format("HH:mm:ss")
 
-		// 4. تبدیل تاریخ عضویت به شمسی
-		ptJoined := ptime.New(joinedAtLocal)
-		joinedJalali := ptJoined.Format("yyyy/MM/dd")
+		tJoined := gpc.New(joinedAtLocal)
+		joinedJalali := tJoined.Format("yyyy/MM/dd")
 
-		// 5. محاسبه تعداد روزهای فعالیت
 		daysActive := int(now.Sub(joinedAtLocal).Hours() / 24)
 		if daysActive < 1 {
-			daysActive = 1 // اگر کمتر از یک روز بود، بنویسد ۱ روز
+			daysActive = 1
 		}
 
-		// موجودی فعلاً صفر در نظر گرفته می‌شود تا بعداً دیتابیس کیف پول را متصل کنیم
 		balance := 0
 
 		text := fmt.Sprintf(
@@ -250,7 +241,6 @@ func main() {
 		return c.Send(text, profileMenu, tele.ModeHTML)
 	})
 
-	// --- هندلرهای دکمه‌های داخل منوی کاربری ---
 	bot.Handle(&btnBack, func(c tele.Context) error {
 		return c.Send("🔙 به منوی اصلی بازگشتید.", getKeyboard(c.Sender().ID))
 	})
@@ -267,7 +257,6 @@ func main() {
 		return c.Send("⏳ این بخش به زودی پس از اتصال سرورهای سلف فعال خواهد شد.")
 	})
 
-	// --- سایر دکمه‌های اصلی ---
 	bot.Handle(&btnBuy, func(c tele.Context) error {
 		return c.Send("🛍️ <b>بخش خرید سلف</b>\n\nلطفاً خدمت مورد نظر خود را انتخاب کنید.", tele.ModeHTML)
 	})

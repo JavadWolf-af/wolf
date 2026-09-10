@@ -26,9 +26,16 @@ type Config struct {
 
 var db *sql.DB
 
-// حافظه‌های موقت برای مدیریت وضعیت کاربران
-var userWalletTemp = make(map[int64]int)     // مبلغ در حال انتخاب
-var userPendingInvoice = make(map[int64]int) // فیش‌های در انتظار تایید (کاربر -> مبلغ)
+var userWalletTemp = make(map[int64]int)
+var userPendingInvoice = make(map[int64]int)
+
+// مدیریت وضعیت‌های ادمین برای تعاملات متنی (ارسال پیام، افزایش موجودی، دلیل رفع مسدودی)
+type AdminAction struct {
+	Action   string // "msg", "manual_add", "unblock_reason"
+	TargetID int64
+}
+
+var adminStates = make(map[int64]AdminAction)
 
 func loadConfig() Config {
 	_ = godotenv.Load()
@@ -93,7 +100,11 @@ func InitDB(cfg Config) {
 		id BIGINT PRIMARY KEY,
 		first_name VARCHAR(255),
 		username VARCHAR(255),
-		joined_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		phone VARCHAR(50) DEFAULT 'ثبت نشده',
+		is_blocked BOOLEAN DEFAULT FALSE,
+		self_status VARCHAR(50) DEFAULT 'خرید نداشته',
+		purchases_count INT DEFAULT 0
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
 
 	_, err = db.Exec(queryUsers)
@@ -139,6 +150,15 @@ func GetUserBalance(userID int64) int {
 
 func AddUserBalance(userID int64, amount int) {
 	_, _ = db.Exec(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, amount, userID)
+}
+
+func IsUserBlocked(userID int64) bool {
+	var blocked bool
+	err := db.QueryRow("SELECT is_blocked FROM users WHERE id = ?", userID).Scan(&blocked)
+	if err != nil {
+		return false
+	}
+	return blocked
 }
 
 func main() {
@@ -201,6 +221,10 @@ func main() {
 
 	bot.Handle("/start", func(c tele.Context) error {
 		user := c.Sender()
+		if IsUserBlocked(user.ID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
+
 		firstName := html.EscapeString(user.FirstName)
 		if firstName == "" {
 			firstName = "کاربر"
@@ -232,6 +256,9 @@ func main() {
 
 	bot.Handle(&btnProfile, func(c tele.Context) error {
 		user := c.Sender()
+		if IsUserBlocked(user.ID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
 
 		var joinedAt time.Time
 		err := db.QueryRow("SELECT joined_at FROM users WHERE id = ?", user.ID).Scan(&joinedAt)
@@ -317,6 +344,9 @@ func main() {
 	}
 
 	bot.Handle(&btnWallet, func(c tele.Context) error {
+		if IsUserBlocked(c.Sender().ID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
 		userID := c.Sender().ID
 		userWalletTemp[userID] = 0
 		return c.Send(formatWalletText(0), getWalletKeyboard(), tele.ModeHTML)
@@ -348,9 +378,7 @@ func main() {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ لطفاً ابتدا مبلغی را انتخاب کنید."})
 		}
 
-		// ثبت مبلغ در صف انتظار فیش کاربر
 		userPendingInvoice[userID] = amount
-
 		keys := float64(amount) / 3333.0
 
 		text := fmt.Sprintf(
@@ -389,23 +417,68 @@ func main() {
 	// دریافت تصویر فیش واریزی از کاربر
 	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
 		user := c.Sender()
+		if IsUserBlocked(user.ID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
+
 		amount, exists := userPendingInvoice[user.ID]
 		if !exists || amount <= 0 {
 			return c.Send("📸 تصویر شما دریافت شد.")
 		}
 
-		// ارسال فیش به تمام ادمین‌ها
+		// استخراج اطلاعات کاربر از دیتابیس جهت نمایش کامل به ادمین
+		var dbJoinedAt time.Time
+		var phone, selfStatus string
+		var purchasesCount int
+		err := db.QueryRow("SELECT joined_at, phone, self_status, purchases_count FROM users WHERE id = ?", user.ID).Scan(&dbJoinedAt, &phone, &selfStatus, &purchasesCount)
+		if err != nil {
+			dbJoinedAt = time.Now()
+			phone = "ثبت نشده"
+			selfStatus = "خرید نداشته"
+			purchasesCount = 0
+		}
+
+		loc, _ := time.LoadLocation("Asia/Tehran")
+		now := time.Now().In(loc)
+		tNow := gpc.New(now)
+		dateNowJalali := tNow.Format("yyyy/MM/dd")
+		timeNowStr := tNow.Format("HH:mm:ss")
+
+		tJoined := gpc.New(dbJoinedAt.In(loc))
+		joinedJalali := tJoined.Format("yyyy/MM/dd")
+
+		keysCount := float64(amount) / 3333.0
+		usernameStr := "ثبت نشده"
+		if user.Username != "" {
+			usernameStr = "@" + html.EscapeString(user.Username)
+		}
+
 		adminKeyboard := &tele.ReplyMarkup{}
-		btnApprove := adminKeyboard.Data("✅ تایید و شارژ", "admin_approve", fmt.Sprintf("%d_%d", user.ID, amount))
+		btnApprove := adminKeyboard.Data("✅ تایید فیش", "admin_approve", fmt.Sprintf("%d_%d", user.ID, amount))
 		btnReject := adminKeyboard.Data("❌ رد فیش", "admin_reject", fmt.Sprintf("%d", user.ID))
-		adminKeyboard.Inline(adminKeyboard.Row(btnApprove, btnReject))
+		btnBlock := adminKeyboard.Data("🚫 مسدود", "admin_block", fmt.Sprintf("%d", user.ID))
+		btnUnblock := adminKeyboard.Data("🔓 رفع مسدود", "admin_unblock", fmt.Sprintf("%d", user.ID))
+		btnMessage := adminKeyboard.Data("💬 پیام به کاربر", "admin_msg", fmt.Sprintf("%d", user.ID))
+		btnManualAdd := adminKeyboard.Data("💰 افزایش موجودی دستی", "admin_manual", fmt.Sprintf("%d", user.ID))
+
+		adminKeyboard.Inline(
+			adminKeyboard.Row(btnReject, btnApprove),
+			adminKeyboard.Row(btnBlock, btnUnblock),
+			adminKeyboard.Row(btnMessage, btnManualAdd),
+		)
 
 		caption := fmt.Sprintf(
 			"🔔 <b>فیش واریزی جدید!</b>\n\n"+
-				"👤 کاربر: %s (@%s)\n"+
-				"🆔 آیدی عددی: <code>%d</code>\n"+
-				"💰 مبلغ درخواستی: <code>%s تومان</code>",
-			html.EscapeString(user.FirstName), user.Username, user.ID, formatMoney(amount),
+				"👤 <b>نام:</b> %s\n"+
+				"🆔 <b>آیدی عددی:</b> <code>%d</code>\n"+
+				"🌐 <b>یوزرنیم:</b> %s\n"+
+				"📅 <b>تاریخ عضویت کاربر:</b> %s\n"+
+				"⏰ <b>ساعت:</b> %s (تاریخ امروز: %s)\n"+
+				"🔥 <b>وضعیت سلف:</b> %s\n"+
+				"🔑 <b>تعداد کلید:</b> <code>%.2f کلید</code> (~%s تومان)\n"+
+				"🛍️ <b>تعداد خریدها:</b> %d\n"+
+				"📞 <b>شماره تماس:</b> %s",
+			html.EscapeString(user.FirstName), user.ID, usernameStr, joinedJalali, timeNowStr, dateNowJalali, selfStatus, keysCount, formatMoney(amount), purchasesCount, phone,
 		)
 
 		for _, adminID := range cfg.AdminIDs {
@@ -415,7 +488,6 @@ func main() {
 			}
 		}
 
-		// پاک کردن حالت انتظار و تایید به کاربر
 		delete(userPendingInvoice, user.ID)
 		userWalletTemp[user.ID] = 0
 
@@ -436,28 +508,123 @@ func main() {
 		targetUserID, _ := strconv.ParseInt(parts[0], 10, 64)
 		amount, _ := strconv.Atoi(parts[1])
 
-		// شارژ کیف پول کاربر در دیتابیس
 		AddUserBalance(targetUserID, amount)
+		_, _ = db.Exec("UPDATE users SET purchases_count = purchases_count + 1 WHERE id = ?", targetUserID)
 
-		// اطلاع‌رسانی به کاربر
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, fmt.Sprintf("🎉 <b>فیش واریزی شما تایید شد!</b>\n\nمبلغ <code>%s تومان</code> به کیف پول شما اضافه گردید. 💳", formatMoney(amount)), tele.ModeHTML)
 
-		// ویرایش پیام ادمین
 		return c.Edit(c.Message().Text + "\n\n✅ <b>تایید شد و موجودی کاربر شارژ گردید.</b>", tele.ModeHTML)
 	})
 
-	// مدیریت کلیک ادمین روی رد فیش
+	// مدیریت رد فیش
 	bot.Handle(&tele.Btn{Unique: "admin_reject"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
 
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
-
-		// اطلاع‌رسانی به کاربر
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, "❌ <b>فیش واریزی شما توسط ادمین رد شد.</b>\n\nلطفاً در صورت وجود مشکل با پشتیبانی ارتباط برقرار کنید.", tele.ModeHTML)
 
 		return c.Edit(c.Message().Text + "\n\n❌ <b>فیش واریزی رد شد.</b>", tele.ModeHTML)
+	})
+
+	// مدیریت مسدود کردن کاربر
+	bot.Handle(&tele.Btn{Unique: "admin_block"}, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
+
+		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
+		_, _ = db.Exec("UPDATE users SET is_blocked = TRUE WHERE id = ?", targetUserID)
+
+		_, _ = bot.Send(&tele.User{ID: targetUserID}, "❌ <b>حساب کاربری شما مسدود شد.</b>", tele.ModeHTML)
+
+		return c.Edit(c.Message().Text + "\n\n🚫 <b>کاربر مسدود گردید.</b>", tele.ModeHTML)
+	})
+
+	// مدیریت رفع مسدود (درخواست دلیل به صورت بولد)
+	bot.Handle(&tele.Btn{Unique: "admin_unblock"}, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
+
+		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
+		adminStates[c.Sender().ID] = AdminAction{Action: "unblock_reason", TargetID: targetUserID}
+
+		return c.Respond(&tele.CallbackResponse{Text: "لطفاً دلیل رفع مسدودی را در قالب پیام متنی ارسال کنید تا به کاربر ارسال شود."})
+	})
+
+	// پیام به کاربر
+	bot.Handle(&tele.Btn{Unique: "admin_msg"}, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
+
+		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
+		adminStates[c.Sender().ID] = AdminAction{Action: "msg", TargetID: targetUserID}
+
+		return c.Respond(&tele.CallbackResponse{Text: "لطفاً متن پیام خود برای کاربر را ارسال کنید."})
+	})
+
+	// افزایش موجودی دستی
+	bot.Handle(&tele.Btn{Unique: "admin_manual"}, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
+
+		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
+		adminStates[c.Sender().ID] = AdminAction{Action: "manual_add", TargetID: targetUserID}
+
+		return c.Respond(&tele.CallbackResponse{Text: "لطفاً مبلغ مورد نظر برای افزایش دستی موجودی را (فقط عدد به تومان) ارسال کنید."})
+	})
+
+	// دریافت پاسخ‌های متنی ادمین برای دستورات تعاملی (پیام، افزایش موجودی، دلیل رفع مسدودی)
+	bot.Handle(tele.OnText, func(c tele.Context) error {
+		adminID := c.Sender().ID
+		if !cfg.IsAdmin(adminID) {
+			return nil // کاربران عادی متن معمولی بفرستند نادیده گرفته شود یا هندل شود
+		}
+
+		state, exists := adminStates[adminID]
+		if !exists {
+			return nil // ادمین در حالت خاصی نیست
+		}
+
+		text := c.Text()
+
+		switch state.Action {
+		case "msg":
+			_, err := bot.Send(&tele.User{ID: state.TargetID}, fmt.Sprintf("💬 <b>پیام از طرف مدیریت:</b>\n\n%s", html.EscapeString(text)), tele.ModeHTML)
+			if err == nil {
+				_ = c.Send("✅ پیام با موفقیت به کاربر ارسال شد.")
+			} else {
+				_ = c.Send("❌ خطا در ارسال پیام به کاربر.")
+			}
+			delete(adminStates, adminID)
+
+		case "manual_add":
+			amount, err := strconv.Atoi(strings.TrimSpace(text))
+			if err != nil || amount <= 0 {
+				_ = c.Send("❌ مبلغ نامعتبر است. لطفاً فقط یک عدد صحیح وارد کنید.")
+				return nil
+			}
+			AddUserBalance(state.TargetID, amount)
+			_, _ = bot.Send(&tele.User{ID: state.TargetID}, fmt.Sprintf("💰 <b>موجودی کیف پول شما به صورت دستی شارژ شد:</b>\n\nمبلغ: <code>%s تومان</code>", formatMoney(amount)), tele.ModeHTML)
+			_ = c.Send(fmt.Sprintf("✅ مبلغ %s تومان با موفقیت به کیف پول کاربر اضافه شد.", formatMoney(amount)))
+			delete(adminStates, adminID)
+
+		case "unblock_reason":
+			_, _ = db.Exec("UPDATE users SET is_blocked = FALSE WHERE id = ?", state.TargetID)
+			_, err := bot.Send(&tele.User{ID: state.TargetID}, fmt.Sprintf("🔓 <b>حساب کاربری شما رفع مسدودی شد.</b>\n\n<b>دلیل:</b> %s", html.EscapeString(text)), tele.ModeHTML)
+			if err == nil {
+				_ = c.Send("✅ کاربر رفع مسدودی شد و دلیل به صورت بولد برایش ارسال گردید.")
+			} else {
+				_ = c.Send("❌ خطا در ارسال پیام به کاربر.")
+			}
+			delete(adminStates, adminID)
+		}
+
+		return nil
 	})
 
 	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {

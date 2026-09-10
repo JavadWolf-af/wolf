@@ -26,6 +26,9 @@ type Config struct {
 
 var db *sql.DB
 
+// حافظه موقت برای نگهداری مبلغ در حال انتخاب هر کاربر
+var userWalletTemp = make(map[int64]int)
+
 func loadConfig() Config {
 	_ = godotenv.Load()
 
@@ -157,7 +160,7 @@ func main() {
 	btnWallet := userMenu.Text("👛 کیف پول 💳")
 	btnSupport := userMenu.Text("🎧 پشتیبانی")
 	btnGuide := userMenu.Text("📚 راهنما")
-	btnAdminPanel := userMenu.Text("⚙️ مدیریت")
+	btnAdminPanel := adminMenu.Text("⚙️ مدیریت")
 
 	userMenu.Reply(
 		userMenu.Row(btnBuy, btnProfile),
@@ -169,7 +172,7 @@ func main() {
 		adminMenu.Row(btnBuy, btnProfile),
 		adminMenu.Row(btnWallet),
 		adminMenu.Row(btnSupport, btnGuide),
-		adminMenu.Row(btnAdminPanel),
+		adminMenu.Row(adminMenu.Text("⚙️ مدیریت")),
 	)
 
 	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
@@ -268,24 +271,24 @@ func main() {
 		return c.Send("🔙 به منوی اصلی بازگشتید.", getKeyboard(c.Sender().ID))
 	})
 
-	// --- بخش کیف پول و افزایش موجودی ---
-	getWalletKeyboard := func(amount int) *tele.ReplyMarkup {
+	// --- بخش کیف پول پیشرفته با قابلیت جمع و تفریق زنده ---
+	getWalletKeyboard := func() *tele.ReplyMarkup {
 		menu := &tele.ReplyMarkup{}
 
-		btnP25k := menu.Data("+ 25,000", "wallet_add", "25000")
-		btnP50k := menu.Data("+ 50,000", "wallet_add", "50000")
-		btnP100k := menu.Data("+ 100,000", "wallet_add", "100000")
+		btnP25k := menu.Data("+ 25,000", "wallet_change", "25000")
+		btnP50k := menu.Data("+ 50,000", "wallet_change", "50000")
+		btnP100k := menu.Data("+ 100,000", "wallet_change", "100000")
 
-		btnM1k := menu.Data("- 1,000", "wallet_sub", "1000")
-		btnP1k := menu.Data("+ 1,000", "wallet_add", "1000")
+		btnM1k := menu.Data("- 1,000", "wallet_change", "-1000")
+		btnP1k := menu.Data("+ 1,000", "wallet_change", "1000")
 
-		btnM5k := menu.Data("- 5,000", "wallet_sub", "5000")
-		btnP5k := menu.Data("+ 5,000", "wallet_add", "5000")
+		btnM5k := menu.Data("- 5,000", "wallet_change", "-5000")
+		btnP5k := menu.Data("+ 5,000", "wallet_change", "5000")
 
-		btnM10k := menu.Data("- 10,000", "wallet_sub", "10000")
-		btnP10k := menu.Data("+ 10,000", "wallet_add", "10000")
+		btnM10k := menu.Data("- 10,000", "wallet_change", "-10000")
+		btnP10k := menu.Data("+ 10,000", "wallet_change", "10000")
 
-		btnConfirm := menu.Data("✅ تایید و ساخت فاکتور", "wallet_confirm", fmt.Sprintf("%d", amount))
+		btnConfirm := menu.Data("✅ تایید و ساخت فاکتور", "wallet_confirm")
 		btnWalletBack := menu.Data("🔙 بازگشت", "wallet_back")
 
 		menu.Inline(
@@ -301,7 +304,7 @@ func main() {
 
 	formatWalletText := func(amount int) string {
 		return fmt.Sprintf(
-			"👛 <b>کیف پول</b>\n\n"+
+			"👛 <b>شارژ کیف پول (کارت به کارت)</b>\n\n"+
 				"🌿 <b>جهت افزایش موجودی با استفاده از دکمه‌های زیر مبلغ مورد نظر را انتخاب کنید:</b> 🫴\n\n"+
 				"••• <b>مبلغ مورد نظر جهت افزایش موجودی:</b> <b>~></b> |\n"+
 				"✨ <code>%s تومان</code> | ⭐️⭐️⭐️⭐️⭐️",
@@ -310,29 +313,65 @@ func main() {
 	}
 
 	bot.Handle(&btnWallet, func(c tele.Context) error {
-		initialAmount := 0
-		return c.Send(formatWalletText(initialAmount), getWalletKeyboard(initialAmount), tele.ModeHTML)
+		userID := c.Sender().ID
+		userWalletTemp[userID] = 0 // ریست کردن مبلغ هنگام ورود به کیف پول
+		return c.Send(formatWalletText(0), getWalletKeyboard(), tele.ModeHTML)
 	})
 
-	bot.Handle(&tele.Btn{Unique: "wallet_add"}, func(c tele.Context) error {
+	bot.Handle(&tele.Btn{Unique: "wallet_change"}, func(c tele.Context) error {
+		userID := c.Sender().ID
 		val, _ := strconv.Atoi(c.Data())
-		// در تلگرام برای نگهداری مبلغ انتخابی موقت می‌توان از دیتابیس یا منطق سشن استفاده کرد
-		// فعلاً مقدار جدید را اضافه می‌کنیم
-		currentAmount := 0 // مقدار فعلی فرضی
-		newAmount := currentAmount + val
-		return c.Edit(formatWalletText(newAmount), getWalletKeyboard(newAmount), tele.ModeHTML)
-	})
 
-	bot.Handle(&tele.Btn{Unique: "wallet_sub"}, func(c tele.Context) error {
-		return c.Respond(&tele.CallbackResponse{Text: "مبلغ کاهش یافت"})
+		// جمع یا کم کردن از مقدار قبلی کاربر
+		current := userWalletTemp[userID]
+		current += val
+		if current < 0 {
+			current = 0
+		}
+		userWalletTemp[userID] = current
+
+		// آپدیت متن پیام با مبلغ جدید
+		err := c.Edit(formatWalletText(current), getWalletKeyboard(), tele.ModeHTML)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: fmt.Sprintf("مبلغ فعلی: %s تومان", formatMoney(current))})
+		}
+		return c.Respond()
 	})
 
 	bot.Handle(&tele.Btn{Unique: "wallet_confirm"}, func(c tele.Context) error {
-		return c.Respond(&tele.CallbackResponse{Text: "فاکتور شما با موفقیت صادر شد."})
+		userID := c.Sender().ID
+		amount := userWalletTemp[userID]
+
+		if amount <= 0 {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ لطفاً ابتدا مبلغی را انتخاب کنید."})
+		}
+
+		// محاسبه تعداد کلید (هر کلید ۳,۳۳۳ تومان)
+		// کلید = مبلغ / 3333
+		keys := float64(amount) / 3333.0
+
+		text := fmt.Sprintf(
+			"🧾 <b>فاکتور شارژ کیف پول</b>\n\n"+
+				"💰 <b>مبلغ قابل پرداخت:</b> <code>%s تومان</code>\n"+
+				"🔑 <b>تعداد کلید دریافتی:</b> <code>%.2f کلید</code>\n"+
+				"(نرخ هر کلید: ۳,۳۳۳ تومان)\n\n"+
+				"💳 لطفاً مبلغ فوق را به کارت زیر واریز کرده و فیش واریزی را ارسال کنید:\n\n"+
+				"<code>6037-9971-XXXX-XXXX</code>\n"+
+				"به نام: <b>جواد ولف</b>",
+			formatMoney(amount), keys,
+		)
+
+		return c.Edit(text, &tele.ReplyMarkup{
+			Inline: [][]tele.InlineButton{
+				{{"🔙 بازگشت به کیف پول", "wallet_back"}},
+			},
+		}, tele.ModeHTML)
 	})
 
 	bot.Handle(&tele.Btn{Unique: "wallet_back"}, func(c tele.Context) error {
-		return c.Edit("🔙 به منوی اصلی بازگشتید.")
+		userID := c.Sender().ID
+		userWalletTemp[userID] = 0
+		return c.Edit(formatWalletText(0), getWalletKeyboard(), tele.ModeHTML)
 	})
 
 	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {

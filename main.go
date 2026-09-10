@@ -26,7 +26,9 @@ type Config struct {
 
 var db *sql.DB
 
-var userWalletTemp = make(map[int64]int)
+// حافظه‌های موقت برای مدیریت وضعیت کاربران
+var userWalletTemp = make(map[int64]int)     // مبلغ در حال انتخاب
+var userPendingInvoice = make(map[int64]int) // فیش‌های در انتظار تایید (کاربر -> مبلغ)
 
 func loadConfig() Config {
 	_ = godotenv.Load()
@@ -133,6 +135,10 @@ func GetUserBalance(userID int64) int {
 		return 0
 	}
 	return balance
+}
+
+func AddUserBalance(userID int64, amount int) {
+	_, _ = db.Exec(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, amount, userID)
 }
 
 func main() {
@@ -342,6 +348,9 @@ func main() {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ لطفاً ابتدا مبلغی را انتخاب کنید."})
 		}
 
+		// ثبت مبلغ در صف انتظار فیش کاربر
+		userPendingInvoice[userID] = amount
+
 		keys := float64(amount) / 3333.0
 
 		text := fmt.Sprintf(
@@ -349,7 +358,7 @@ func main() {
 				"💰 <b>مبلغ قابل پرداخت:</b> <code>%s تومان</code>\n"+
 				"🔑 <b>تعداد کلید دریافتی:</b> <code>%.2f کلید</code>\n"+
 				"(نرخ هر کلید: ۳,۳۳۳ تومان)\n\n"+
-				"💳 لطفاً مبلغ فوق را به کارت زیر واریز کرده و فیش واریزی را ارسال کنید:\n\n"+
+				"💳 لطفاً مبلغ فوق را به کارت زیر واریز کرده و سپس **تصویر رسید (فیش) واریزی** را همینجا برای ربات ارسال کنید:\n\n"+
 				"<code>6037-9971-XXXX-XXXX</code>\n"+
 				"به نام: <b>جواد ولف</b>",
 			formatMoney(amount), keys,
@@ -362,19 +371,93 @@ func main() {
 		return c.Edit(text, invoiceMenu, tele.ModeHTML)
 	})
 
-	// بازگشت از کیف پول به منوی اصلی
 	bot.Handle(&tele.Btn{Unique: "wallet_back_main"}, func(c tele.Context) error {
 		userID := c.Sender().ID
 		userWalletTemp[userID] = 0
+		delete(userPendingInvoice, userID)
 		_ = c.Delete()
 		return c.Send("🔙 به منوی اصلی بازگشتید.", getKeyboard(userID))
 	})
 
-	// بازگشت از فاکتور به صفحه کیف پول
 	bot.Handle(&tele.Btn{Unique: "wallet_back_to_wallet"}, func(c tele.Context) error {
 		userID := c.Sender().ID
+		delete(userPendingInvoice, userID)
 		amount := userWalletTemp[userID]
 		return c.Edit(formatWalletText(amount), getWalletKeyboard(), tele.ModeHTML)
+	})
+
+	// دریافت تصویر فیش واریزی از کاربر
+	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
+		user := c.Sender()
+		amount, exists := userPendingInvoice[user.ID]
+		if !exists || amount <= 0 {
+			return c.Send("📸 تصویر شما دریافت شد.")
+		}
+
+		// ارسال فیش به تمام ادمین‌ها
+		adminKeyboard := &tele.ReplyMarkup{}
+		btnApprove := adminKeyboard.Data("✅ تایید و شارژ", "admin_approve", fmt.Sprintf("%d_%d", user.ID, amount))
+		btnReject := adminKeyboard.Data("❌ رد فیش", "admin_reject", fmt.Sprintf("%d", user.ID))
+		adminKeyboard.Inline(adminKeyboard.Row(btnApprove, btnReject))
+
+		caption := fmt.Sprintf(
+			"🔔 <b>فیش واریزی جدید!</b>\n\n"+
+				"👤 کاربر: %s (@%s)\n"+
+				"🆔 آیدی عددی: <code>%d</code>\n"+
+				"💰 مبلغ درخواستی: <code>%s تومان</code>",
+			html.EscapeString(user.FirstName), user.Username, user.ID, formatMoney(amount),
+		)
+
+		for _, adminID := range cfg.AdminIDs {
+			_, err := bot.Send(&tele.User{ID: adminID}, c.Message().Photo, caption, adminKeyboard, tele.ModeHTML)
+			if err != nil {
+				log.Printf("⚠️ خطا در ارسال فیش به ادمین %d: %v", adminID, err)
+			}
+		}
+
+		// پاک کردن حالت انتظار و تایید به کاربر
+		delete(userPendingInvoice, user.ID)
+		userWalletTemp[user.ID] = 0
+
+		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
+	})
+
+	// مدیریت کلیک ادمین روی تایید فیش
+	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
+
+		parts := strings.Split(c.Data(), "_")
+		if len(parts) != 2 {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در پردازش اطلاعات."})
+		}
+
+		targetUserID, _ := strconv.ParseInt(parts[0], 10, 64)
+		amount, _ := strconv.Atoi(parts[1])
+
+		// شارژ کیف پول کاربر در دیتابیس
+		AddUserBalance(targetUserID, amount)
+
+		// اطلاع‌رسانی به کاربر
+		_, _ = bot.Send(&tele.User{ID: targetUserID}, fmt.Sprintf("🎉 <b>فیش واریزی شما تایید شد!</b>\n\nمبلغ <code>%s تومان</code> به کیف پول شما اضافه گردید. 💳", formatMoney(amount)), tele.ModeHTML)
+
+		// ویرایش پیام ادمین
+		return c.Edit(c.Message().Text + "\n\n✅ <b>تایید شد و موجودی کاربر شارژ گردید.</b>", tele.ModeHTML)
+	})
+
+	// مدیریت کلیک ادمین روی رد فیش
+	bot.Handle(&tele.Btn{Unique: "admin_reject"}, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
+
+		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
+
+		// اطلاع‌رسانی به کاربر
+		_, _ = bot.Send(&tele.User{ID: targetUserID}, "❌ <b>فیش واریزی شما توسط ادمین رد شد.</b>\n\nلطفاً در صورت وجود مشکل با پشتیبانی ارتباط برقرار کنید.", tele.ModeHTML)
+
+		return c.Edit(c.Message().Text + "\n\n❌ <b>فیش واریزی رد شد.</b>", tele.ModeHTML)
 	})
 
 	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {

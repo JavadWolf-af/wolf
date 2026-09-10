@@ -16,8 +16,9 @@ git clone https://github.com/JavadWolf-af/wolf /opt/wolf
 cd /opt/wolf || exit
 
 echo "⚙️ فایل تنظیمات (.env) یافت نشد. لطفاً اطلاعات زیر را وارد کنید:"
-read -p "لطفا توکن ربات (BOT_TOKEN) را وارد کنید: " bot_token
-read -p "لطفا آیدی عددی ادمین (ADMIN_ID) را وارد کنید: " admin_id
+# اضافه شدن /dev/tty برای دریافت صحیح ورودی از کیبورد
+read -p "لطفا توکن ربات (BOT_TOKEN) را وارد کنید: " bot_token < /dev/tty
+read -p "لطفا آیدی عددی ادمین (ADMIN_ID) را وارد کنید: " admin_id < /dev/tty
 
 cat << EOF > .env
 BOT_TOKEN=$bot_token

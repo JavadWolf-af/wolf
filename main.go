@@ -491,10 +491,14 @@ func main() {
 		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
 	})
 
+	// تایید فیش (با پاکسازی فوری دکمه‌ها جهت جلوگیری از دوبار شارژ شدن)
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
+
+		// حذف فوری دکمه‌ها برای جلوگیری از کلیک مجدد و دوبار شارژ شدن
+		_ = c.Edit(c.Message().Caption+"\n\n⏳ <b>در حال پردازش تایید فیش...</b>", tele.ModeHTML, &tele.ReplyMarkup{})
 
 		parts := strings.Split(c.Data(), "_")
 		if len(parts) != 2 {
@@ -509,21 +513,24 @@ func main() {
 
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, fmt.Sprintf("🎉 <b>فیش واریزی شما تایید شد!</b>\n\nمبلغ <code>%s تومان</code> به کیف پول شما اضافه گردید. 💳", formatMoney(amount)), tele.ModeHTML)
 
-		return c.Edit(c.Message().Text + "\n\n✅ <b>تایید شد و موجودی کاربر شارژ گردید.</b>", tele.ModeHTML)
+		return c.Edit(c.Message().Caption + "\n\n✅ <b>تایید شد و موجودی کاربر شارژ گردید.</b>", tele.ModeHTML)
 	})
 
+	// رد فیش (حذف فوری دکمه‌ها)
 	bot.Handle(&tele.Btn{Unique: "admin_reject"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
 
+		_ = c.Edit(c.Message().Caption+"\n\n⏳ <b>در حال پردازش...</b>", tele.ModeHTML, &tele.ReplyMarkup{})
+
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, "❌ <b>فیش واریزی شما توسط ادمین رد شد.</b>\n\nلطفاً در صورت وجود مشکل با پشتیبانی ارتباط برقرار کنید.", tele.ModeHTML)
 
-		return c.Edit(c.Message().Text + "\n\n❌ <b>فیش واریزی رد شد.</b>", tele.ModeHTML)
+		return c.Edit(c.Message().Caption + "\n\n❌ <b>فیش واریزی رد شد.</b>", tele.ModeHTML)
 	})
 
-	// مسدود کردن (درخواست دلیل به صورت بولد برای ارسال به کاربر)
+	// مسدود کردن (درخواست دلیل به صورت پیام ماندگار در چت ادمین)
 	bot.Handle(&tele.Btn{Unique: "admin_block"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
@@ -532,21 +539,23 @@ func main() {
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		adminStates[c.Sender().ID] = AdminAction{Action: "block_reason", TargetID: targetUserID}
 
-		return c.Respond(&tele.CallbackResponse{Text: "لطفاً دلیل مسدودی را ارسال کنید تا به همراه پیام مسدودی به صورت بولد برای کاربر ارسال شود."})
+		return c.Send("🚫 <b>لطفاً دلیل مسدودی را ارسال کنید تا به همراه پیام مسدودی به صورت بولد برای کاربر ارسال شود:</b>", tele.ModeHTML)
 	})
 
-	// رفع مسدودی (بدون نیاز به دلیل، مستقیم رفع مسدود می‌شود)
+	// رفع مسدودی (مستقیماً بدون نیاز به دلیل)
 	bot.Handle(&tele.Btn{Unique: "admin_unblock"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
+
+		_ = c.Edit(c.Message().Caption+"\n\n⏳ <b>در حال پردازش...</b>", tele.ModeHTML, &tele.ReplyMarkup{})
 
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		_, _ = db.Exec("UPDATE users SET is_blocked = FALSE WHERE id = ?", targetUserID)
 
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, "🔓 <b>حساب کاربری شما رفع مسدودی شد.</b>", tele.ModeHTML)
 
-		return c.Edit(c.Message().Text + "\n\n🔓 <b>کاربر رفع مسدودی گردید.</b>", tele.ModeHTML)
+		return c.Edit(c.Message().Caption + "\n\n🔓 <b>کاربر رفع مسدودی گردید.</b>", tele.ModeHTML)
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_msg"}, func(c tele.Context) error {
@@ -557,7 +566,7 @@ func main() {
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		adminStates[c.Sender().ID] = AdminAction{Action: "msg", TargetID: targetUserID}
 
-		return c.Respond(&tele.CallbackResponse{Text: "لطفاً متن پیام خود برای کاربر را ارسال کنید."})
+		return c.Send("💬 <b>لطفاً متن پیام خود برای کاربر را ارسال کنید:</b>", tele.ModeHTML)
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_manual"}, func(c tele.Context) error {
@@ -568,7 +577,7 @@ func main() {
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		adminStates[c.Sender().ID] = AdminAction{Action: "manual_add", TargetID: targetUserID}
 
-		return c.Respond(&tele.CallbackResponse{Text: "لطفاً مبلغ مورد نظر برای افزایش دستی موجودی را (فقط عدد به تومان) ارسال کنید."})
+		return c.Send("💰 <b>لطفاً مبلغ مورد نظر برای افزایش دستی موجودی را (فقط عدد به تومان) ارسال کنید:</b>", tele.ModeHTML)
 	})
 
 	bot.Handle(tele.OnText, func(c tele.Context) error {
@@ -655,6 +664,7 @@ func main() {
 	bot.Start()
 }
 
+// تابع کمکی برای فرمت سه‌رقمی مبالغ (مثلاً 150,000)
 func formatMoney(n int) string {
 	s := fmt.Sprintf("%d", n)
 	var parts []string

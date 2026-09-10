@@ -224,16 +224,16 @@ func main() {
 			daysActive = 1
 		}
 
-		balance := 0
+		balance := "0"
 
 		text := fmt.Sprintf(
-			"💙 تاریخ امروز: %s\n"+
+			"💙 تاریخ امروز: %s\n\n"+
 				"⏰ ساعت: %s\n\n"+
 				"🔒 اطلاعات حساب کاربری\n\n"+
-				"⭐ آیدی عددی:\n<code>%d</code>\n\n"+
-				"📅 تاریخ عضویت در ربات:\n%s\n\n"+
-				"👀 فعالیت در ربات:\n%d روز\n\n"+
-				"💰 موجودی:\n%d\n\n"+
+				"⭐ آیدی عددی: <code>%d</code>\n"+
+				"📅 تاریخ عضویت در ربات: %s\n"+
+				"👀 فعالیت در ربات: %d روز\n"+
+				"💰 موجودی: %s\n"+
 				"🔥 وضعیت سلف: ❌ غیرفعال (سلف نخریدی)",
 			todayJalali, timeNow, user.ID, joinedJalali, daysActive, balance,
 		)

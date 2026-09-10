@@ -133,21 +133,18 @@ func main() {
 	btnWallet := userMenu.Text("👛 کیف پول 💳")
 	btnSupport := userMenu.Text("🎧 پشتیبانی")
 	btnGuide := userMenu.Text("📚 راهنما")
-	btnAgency := userMenu.Text("👑 نمایندگی")
 	btnAdminPanel := adminMenu.Text("⚙️ مدیریت")
 
 	userMenu.Reply(
 		userMenu.Row(btnBuy, btnProfile),
 		userMenu.Row(btnWallet),
 		userMenu.Row(btnSupport, btnGuide),
-		userMenu.Row(btnAgency),
 	)
 
 	adminMenu.Reply(
 		adminMenu.Row(btnBuy, btnProfile),
 		adminMenu.Row(btnWallet),
 		adminMenu.Row(btnSupport, btnGuide),
-		adminMenu.Row(btnAgency),
 		adminMenu.Row(btnAdminPanel),
 	)
 
@@ -220,10 +217,6 @@ func main() {
 
 	bot.Handle(&btnGuide, func(c tele.Context) error {
 		return c.Send("📚 <b>راهنمای استفاده</b>\n\nآموزش‌ها و راهنمای کامل استفاده از ربات.", tele.ModeHTML)
-	})
-
-	bot.Handle(&btnAgency, func(c tele.Context) error {
-		return c.Send("👑 <b>بخش نمایندگی</b>\n\nاطلاعات و شرایط دریافت نمایندگی.", tele.ModeHTML)
 	})
 
 	bot.Handle(&btnAdminPanel, func(c tele.Context) error {

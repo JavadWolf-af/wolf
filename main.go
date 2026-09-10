@@ -198,27 +198,27 @@ func main() {
 		keyboard := map[string]interface{}{
 			"inline_keyboard": [][]map[string]interface{}{
 				{
-					{"text": "+ 25,000", "callback_data": "\fwallet_change|25000", "style": "primary"},
-					{"text": "+ 50,000", "callback_data": "\fwallet_change|50000", "style": "primary"},
-					{"text": "+ 100,000", "callback_data": "\fwallet_change|100000", "style": "primary"},
+					{"text": "+ 25,000", "callback_data": "\fwallet_change|25000", "style": "primary"}, // آبی
+					{"text": "+ 50,000", "callback_data": "\fwallet_change|50000", "style": "primary"}, // آبی
+					{"text": "+ 100,000", "callback_data": "\fwallet_change|100000", "style": "primary"}, // آبی
 				},
 				{
-					{"text": "- 1,000", "callback_data": "\fwallet_change|-1000", "style": "danger"},
-					{"text": "+ 1,000", "callback_data": "\fwallet_change|1000", "style": "primary"},
+					{"text": "- 1,000", "callback_data": "\fwallet_change|-1000", "style": "danger"}, // قرمز
+					{"text": "+ 1,000", "callback_data": "\fwallet_change|1000", "style": "primary"}, // آبی
 				},
 				{
-					{"text": "- 5,000", "callback_data": "\fwallet_change|-5000", "style": "danger"},
-					{"text": "+ 5,000", "callback_data": "\fwallet_change|5000", "style": "primary"},
+					{"text": "- 5,000", "callback_data": "\fwallet_change|-5000", "style": "danger"}, // قرمز
+					{"text": "+ 5,000", "callback_data": "\fwallet_change|5000", "style": "primary"}, // آبی
 				},
 				{
-					{"text": "- 10,000", "callback_data": "\fwallet_change|-10000", "style": "danger"},
-					{"text": "+ 10,000", "callback_data": "\fwallet_change|10000", "style": "primary"},
+					{"text": "- 10,000", "callback_data": "\fwallet_change|-10000", "style": "danger"}, // قرمز
+					{"text": "+ 10,000", "callback_data": "\fwallet_change|10000", "style": "primary"}, // آبی
 				},
 				{
-					{"text": "✅ تایید و ساخت فاکتور", "callback_data": "\fwallet_confirm|", "style": "success"},
+					{"text": "✅ تایید و ساخت فاکتور", "callback_data": "\fwallet_confirm|", "style": "success"}, // سبز
 				},
 				{
-					{"text": "🔙 بازگشت", "callback_data": "\fwallet_back_main|"}, // بدون استایل = پیش‌فرض (خاکستری)
+					{"text": "🔙 بازگشت", "callback_data": "\fwallet_back_main|", "style": "secondary"}, // سفید/خاکستری
 				},
 			},
 		}
@@ -245,7 +245,7 @@ func main() {
 		keyboard := map[string]interface{}{
 			"inline_keyboard": [][]map[string]interface{}{
 				{
-					{"text": "🔙 بازگشت به کیف پول", "callback_data": "\fwallet_back_to_wallet|"},
+					{"text": "🔙 بازگشت به کیف پول", "callback_data": "\fwallet_back_to_wallet|", "style": "secondary"}, // سفید/خاکستری
 				},
 			},
 		}
@@ -265,16 +265,16 @@ func main() {
 		keyboard := map[string]interface{}{
 			"inline_keyboard": [][]map[string]interface{}{
 				{
-					{"text": "❌ رد فیش", "callback_data": fmt.Sprintf("\fadmin_reject|%d", userID), "style": "danger"},
-					{"text": "✅ تایید فیش", "callback_data": fmt.Sprintf("\fadmin_approve|%d_%d", userID, amount), "style": "success"},
+					{"text": "❌ رد فیش", "callback_data": fmt.Sprintf("\fadmin_reject|%d", userID), "style": "danger"}, // قرمز
+					{"text": "✅ تایید فیش", "callback_data": fmt.Sprintf("\fadmin_approve|%d_%d", userID, amount), "style": "success"}, // سبز
 				},
 				{
-					{"text": "🚫 مسدود", "callback_data": fmt.Sprintf("\fadmin_block|%d", userID), "style": "danger"},
-					{"text": "🔓 رفع مسدود", "callback_data": fmt.Sprintf("\fadmin_unblock|%d", userID), "style": "primary"},
+					{"text": "🚫 مسدود", "callback_data": fmt.Sprintf("\fadmin_block|%d", userID), "style": "danger"}, // قرمز
+					{"text": "🔓 رفع مسدود", "callback_data": fmt.Sprintf("\fadmin_unblock|%d", userID), "style": "secondary"}, // سفید/خاکستری
 				},
 				{
-					{"text": "💬 پیام به کاربر", "callback_data": fmt.Sprintf("\fadmin_msg|%d", userID), "style": "primary"},
-					{"text": "💰 افزایش موجودی دستی", "callback_data": fmt.Sprintf("\fadmin_manual|%d", userID), "style": "primary"},
+					{"text": "💬 پیام به کاربر", "callback_data": fmt.Sprintf("\fadmin_msg|%d", userID), "style": "primary"}, // آبی
+					{"text": "💰 افزایش موجودی دستی", "callback_data": fmt.Sprintf("\fadmin_manual|%d", userID), "style": "primary"}, // آبی
 				},
 			},
 		}
@@ -632,10 +632,12 @@ func main() {
 		if !cfg.IsAdmin(adminID) {
 			return nil
 		}
+
 		state, exists := adminStates[adminID]
 		if !exists {
 			return nil
 		}
+
 		text := c.Text()
 
 		switch state.Action {
@@ -669,6 +671,7 @@ func main() {
 			}
 			delete(adminStates, adminID)
 		}
+
 		return nil
 	})
 

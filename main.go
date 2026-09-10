@@ -287,7 +287,7 @@ func main() {
 		btnP10k := menu.Data("+ 10,000", "wallet_change", "10000")
 
 		btnConfirm := menu.Data("✅ تایید و ساخت فاکتور", "wallet_confirm")
-		btnWalletBack := menu.Data("🔙 بازگشت", "wallet_back")
+		btnWalletBack := menu.Data("🔙 بازگشت", "wallet_back_main")
 
 		menu.Inline(
 			menu.Row(btnP25k, btnP50k, btnP100k),
@@ -356,16 +356,25 @@ func main() {
 		)
 
 		invoiceMenu := &tele.ReplyMarkup{}
-		btnInvoiceBack := invoiceMenu.Data("🔙 بازگشت به کیف پول", "wallet_back")
+		btnInvoiceBack := invoiceMenu.Data("🔙 بازگشت به کیف پول", "wallet_back_to_wallet")
 		invoiceMenu.Inline(invoiceMenu.Row(btnInvoiceBack))
 
 		return c.Edit(text, invoiceMenu, tele.ModeHTML)
 	})
 
-	bot.Handle(&tele.Btn{Unique: "wallet_back"}, func(c tele.Context) error {
+	// بازگشت از کیف پول به منوی اصلی
+	bot.Handle(&tele.Btn{Unique: "wallet_back_main"}, func(c tele.Context) error {
 		userID := c.Sender().ID
 		userWalletTemp[userID] = 0
-		return c.Edit(formatWalletText(0), getWalletKeyboard(), tele.ModeHTML)
+		_ = c.Delete()
+		return c.Send("🔙 به منوی اصلی بازگشتید.", getKeyboard(userID))
+	})
+
+	// بازگشت از فاکتور به صفحه کیف پول
+	bot.Handle(&tele.Btn{Unique: "wallet_back_to_wallet"}, func(c tele.Context) error {
+		userID := c.Sender().ID
+		amount := userWalletTemp[userID]
+		return c.Edit(formatWalletText(amount), getWalletKeyboard(), tele.ModeHTML)
 	})
 
 	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {

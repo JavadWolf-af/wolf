@@ -16,7 +16,6 @@ git clone https://github.com/JavadWolf-af/wolf /opt/wolf
 cd /opt/wolf || exit
 
 echo "⚙️ فایل تنظیمات (.env) یافت نشد. لطفاً اطلاعات زیر را وارد کنید:"
-# اضافه شدن /dev/tty برای دریافت صحیح ورودی از کیبورد
 read -p "لطفا توکن ربات (BOT_TOKEN) را وارد کنید: " bot_token < /dev/tty
 read -p "لطفا آیدی عددی ادمین (ADMIN_ID) را وارد کنید: " admin_id < /dev/tty
 
@@ -36,6 +35,8 @@ cd /opt/wolf || exit
 echo "🔄 در حال دریافت تغییرات..."
 git pull origin main
 export CGO_ENABLED=0
+echo "📦 در حال بررسی و دانلود پکیج‌های پیش‌نیاز (مثل تقویم شمسی)..."
+go get github.com/yaa110/go-persian-calendar/ptime
 go mod tidy
 go build -o wolfbot .
 systemctl restart wolfbot

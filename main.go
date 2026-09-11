@@ -506,48 +506,6 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 	}
 	replyMsgID := header.ReplyToMsgID
 
-	getMsgReq := &tg.MessagesGetMessagesRequest{
-		ID: []tg.InputMessageClass{
-			&tg.InputMessageID{ID: replyMsgID},
-		},
-	}
-	msgsRes, err := client.API().MessagesGetMessages(ctx, getMsgReq)
-	if err != nil {
-		if inputPeer != nil {
-			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ خطا در خواندن پیام مورد نظر")
-		}
-		return
-	}
-
-	var sourceMsg *tg.Message
-	switch mSlice := msgsRes.(type) {
-	case *tg.MessagesMessages:
-		if len(mSlice.Messages) > 0 {
-			if m, ok := mSlice.Messages[0].(*tg.Message); ok {
-				sourceMsg = m
-			}
-		}
-	case *tg.MessagesMessagesSlice:
-		if len(mSlice.Messages) > 0 {
-			if m, ok := mSlice.Messages[0].(*tg.Message); ok {
-				sourceMsg = m
-			}
-		}
-	case *tg.MessagesChannelMessages:
-		if len(mSlice.Messages) > 0 {
-			if m, ok := mSlice.Messages[0].(*tg.Message); ok {
-				sourceMsg = m
-			}
-		}
-	}
-
-	if sourceMsg == nil {
-		if inputPeer != nil {
-			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ پیام مورد نظر یافت نشد!")
-		}
-		return
-	}
-
 	dialogsReq := &tg.MessagesGetDialogsRequest{
 		OffsetPeer: &tg.InputPeerEmpty{},
 		Limit:      100,
@@ -615,29 +573,17 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 	_, _ = db.Exec("DELETE FROM pv_broadcasts WHERE user_id = ?", userID)
 
 	for _, target := range targetPeers {
-		var sendRes tg.UpdatesClass
-		var sendErr error
-
-		if sourceMsg.Media != nil {
-			sendMediaReq := &tg.MessagesSendMediaRequest{
-				Peer:     target.Peer,
-				Media:    sourceMsg.Media,
-				Message:  sourceMsg.Message,
-				RandomID: rand.Int63(),
-			}
-			sendRes, sendErr = client.API().MessagesSendMedia(ctx, sendMediaReq)
-		} else {
-			sendMsgReq := &tg.MessagesSendMessageRequest{
-				Peer:     target.Peer,
-				Message:  sourceMsg.Message,
-				RandomID: rand.Int63(),
-			}
-			sendRes, sendErr = client.API().MessagesSendMessage(ctx, sendMsgReq)
+		fwdReq := &tg.MessagesForwardMessagesRequest{
+			DropAuthor: true,
+			FromPeer:   inputPeer,
+			ID:         []int{replyMsgID},
+			RandomID:   []int64{rand.Int63()},
+			ToPeer:     target.Peer,
 		}
-
-		if sendErr == nil && sendRes != nil {
+		fwdRes, err := client.API().MessagesForwardMessages(ctx, fwdReq)
+		if err == nil {
 			var sID int
-			switch upd := sendRes.(type) {
+			switch upd := fwdRes.(type) {
 			case *tg.Updates:
 				for _, u := range upd.Updates {
 					if m, ok := u.(*tg.UpdateNewMessage); ok {
@@ -714,15 +660,15 @@ func handleDeleteBroadcastPV(ctx context.Context, client *telegram.Client, input
 
 	for _, item := range items {
 		accessHash := userAccessMap[item.PeerID]
+		targetPeer := &tg.InputPeerUser{
+			UserID:     item.PeerID,
+			AccessHash: accessHash,
+		}
 
 		_, _ = client.API().MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
 			Revoke: true,
+			Peer:   targetPeer,
 			ID:     []int{item.MsgID},
-		})
-
-		_, _ = client.API().ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
-			Channel: &tg.InputChannel{ChannelID: item.PeerID, AccessHash: accessHash},
-			ID:      []int{item.MsgID},
 		})
 	}
 

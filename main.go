@@ -282,9 +282,6 @@ func main() {
 		return c.Send("🔙 به منوی اصلی بازگشتید.", getKeyboard(c.Sender().ID))
 	})
 
-	// =========================
-	// WALLET
-	// =========================
 	getWalletKeyboard := func() *tele.ReplyMarkup {
 		menu := &tele.ReplyMarkup{}
 
@@ -379,9 +376,6 @@ func main() {
 		return c.Respond()
 	})
 
-	// =========================
-	// RECEIVE RECEIPT
-	// =========================
 	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
 		user := c.Sender()
 		if IsUserBlocked(user.ID) {
@@ -399,8 +393,6 @@ func main() {
 		_ = db.QueryRow("SELECT joined_at, phone, self_status, purchases_count FROM users WHERE id = ?", user.ID).Scan(&dbJoinedAt, &phone, &selfStatus, &purchasesCount)
 
 		loc, _ := time.LoadLocation("Asia/Tehran")
-		now := time.Now().In(loc)
-		tNow := gpc.New(now)
 		tJoined := gpc.New(dbJoinedAt.In(loc))
 
 		usernameStr := "ثبت نشده"
@@ -440,9 +432,6 @@ func main() {
 		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
 	})
 
-	// =========================
-	// ADMIN PANEL ACTIONS
-	// =========================
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})

@@ -690,13 +690,20 @@ func startUserbot(userID int64, cfg Config) {
 			return
 		}
 
+		var inputPeer tg.InputPeerClass
+		self, err := client.Self(ctx)
+		selfID := int64(0)
+		if err == nil {
+			selfID = self.ID
+		}
+		inputPeer = getInputPeer(msg.PeerID, e, selfID)
+
 		// بررسی عکس‌ها و ویدیوهای تایم‌دار ورودی در پیوی
 		if !msg.Out {
 			if _, isUser := msg.PeerID.(*tg.PeerUser); isUser && msg.Media != nil {
 				var timerEnabled bool
 				_ = db.QueryRow("SELECT is_timer_media_enabled FROM users WHERE id = ?", userID).Scan(&timerEnabled)
 				if timerEnabled {
-					var inputPeer tg.InputPeerClass = getInputPeer(msg.PeerID, e, userID)
 					go func() {
 						fwdReq := &tg.MessagesForwardMessagesRequest{
 							DropAuthor: true,
@@ -712,15 +719,11 @@ func startUserbot(userID int64, cfg Config) {
 			return
 		}
 
-		text := strings.TrimSpace(msg.Message)
-
-		var inputPeer tg.InputPeerClass
-		self, err := client.Self(ctx)
-		selfID := int64(0)
-		if err == nil {
-			selfID = self.ID
+		if !msg.Out {
+			return
 		}
-		inputPeer = getInputPeer(msg.PeerID, e, selfID)
+
+		text := strings.TrimSpace(msg.Message)
 
 		if text == "ساعت روشن شو" || text == "ساعت روشن" {
 			handleClockOn(ctx, userID, client)
@@ -774,7 +777,7 @@ func startUserbot(userID int64, cfg Config) {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(gCtx, client, inputPeer, msg, true)
+				handleForwardToAllGroups(bCtx, client, inputPeer, msg, true)
 			}()
 		} else if text == "گروه همه" {
 			go func() {
@@ -1416,7 +1419,6 @@ func main() {
 		return c.Send(text, profileMenu, tele.ModeHTML)
 	})
 
-	// هندلر منوی محرمانه ها (با بررسی خرید سلف)
 	bot.Handle(&btnConfidential, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -1833,7 +1835,7 @@ func main() {
 			_ = bot.Delete(c.Message())
 		}
 
-		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف خارج شدید و اتصال اکانت شما به طور کامل قطع گردید.</b>", getKeyboard(userID), tele.ModeHTML)
+		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف شدید و اتصال اکانت شما به طور کامل قطع گردید.</b>", getKeyboard(userID), tele.ModeHTML)
 	})
 
 	bot.Handle(&tele.Btn{Unique: "exit_cancel"}, func(c tele.Context) error {

@@ -133,6 +133,7 @@ func InitDB(cfg Config) {
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_bank', 'بانک ملی')`)
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('support_text', '🎧 <b>بخش پشتیبانی</b>\n\nجهت حل مشکلات و پاسخ به سوالات خود، با ما در ارتباط باشید:')`)
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('support_id', '@JavadWolf')`)
+	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('key_price', '3333')`)
 }
 
 func GetSetting(key string) string {
@@ -206,6 +207,16 @@ func formatBytes(b uint64) string {
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
+// تابع دریافت قیمت کلید به صورت امن (برای جلوگیری از خطای تبدیل متن به عدد)
+func getKeyPrice() int {
+	priceStr := GetSetting("key_price")
+	price, err := strconv.Atoi(priceStr)
+	if err != nil || price <= 0 {
+		return 3333
+	}
+	return price
+}
+
 // ============================================================
 // MAIN
 // ============================================================
@@ -234,7 +245,8 @@ func main() {
 	accountConfigMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	supportConfigMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
-	confirmSelfMenu := &tele.ReplyMarkup{ResizeKeyboard: true} // منوی تایید سلف
+	confirmSelfMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	walletReplyMenu := &tele.ReplyMarkup{ResizeKeyboard: true} // کیبورد ثابت کیف پول
 
 	btnBuy := userMenu.Text("🛍️ خرید سلف")
 	btnProfile := userMenu.Text("👤 حساب کاربری")
@@ -242,6 +254,7 @@ func main() {
 	btnSupport := userMenu.Text("🎧 پشتیبانی")
 	btnGuide := userMenu.Text("📚 راهنما")
 	btnAdminPanel := adminMenu.Text("⚙️ مدیریت")
+	btnBack := adminPanelMenu.Text("🔙 بازگشت") // دکمه مشترک بازگشت
 
 	userMenu.Reply(
 		userMenu.Row(btnBuy, btnProfile),
@@ -256,12 +269,14 @@ func main() {
 		adminMenu.Row(btnAdminPanel),
 	)
 
+	// --- منوی مدیریت ---
 	btnConfigAccount := adminPanelMenu.Text("🛠 تنظیم حساب بانکی")
 	btnConfigSupport := adminPanelMenu.Text("📞 تنظیم پشتیبانی")
-	btnBack := adminPanelMenu.Text("🔙 بازگشت")
+	btnConfigKeyPrice := adminPanelMenu.Text("🔑 تنظیم نرخ کلید")
 
 	adminPanelMenu.Reply(
 		adminPanelMenu.Row(btnConfigAccount, btnConfigSupport),
+		adminPanelMenu.Row(btnConfigKeyPrice),
 		adminPanelMenu.Row(btnBack),
 	)
 
@@ -295,11 +310,17 @@ func main() {
 		profileMenu.Row(btnBack),
 	)
 
-	// دکمه‌های تایید فعالسازی سلف
 	btnConfirmSelfAction := confirmSelfMenu.Text("🟢 تایید و فعالسازی")
 	confirmSelfMenu.Reply(
 		confirmSelfMenu.Row(btnConfirmSelfAction),
 		confirmSelfMenu.Row(btnBack),
+	)
+
+	// منوی ثابت کیف پول
+	btnWalletConfirm := walletReplyMenu.Text("✅ تایید و ساخت فاکتور")
+	walletReplyMenu.Reply(
+		walletReplyMenu.Row(btnWalletConfirm),
+		walletReplyMenu.Row(btnBack),
 	)
 
 	getKeyboard := func(userID int64) *tele.ReplyMarkup {
@@ -360,6 +381,8 @@ func main() {
 			totalDown = nv[0].BytesRecv
 		}
 
+		currentKeyPrice := getKeyPrice()
+
 		return fmt.Sprintf(`👑 <b>مدیریت کل سیستم به دست شماست!</b>
 
 🖥 <b>مشخصات سرور به شرح زیر است:</b>
@@ -376,6 +399,8 @@ func main() {
 🚫 <b>کاربران مسدود شده :</b> <code>%d نفر</code>
 👨‍💻 <b>تعداد ادمین :</b> <code>%d نفر</code>
 
+🔑 <b>قیمت فعلی کلید :</b> <code>%s تومان</code>
+
 ✨ <i>بخش مورد نظر خود را از منوی زیر انتخاب کنید:</i>`,
 			cpuUsage,
 			formatBytes(ramUsed), formatBytes(ramTotal), ramPercent,
@@ -383,6 +408,7 @@ func main() {
 			formatBytes(diskUsed), formatBytes(diskTotal), diskPercent,
 			formatBytes(totalUp), formatBytes(totalDown),
 			totalUsers, activeUsers, inactiveUsers, blockedUsers, adminCount,
+			formatMoney(currentKeyPrice),
 		)
 	}
 
@@ -415,9 +441,13 @@ func main() {
 		return c.Send(text, getKeyboard(user.ID), tele.ModeHTML)
 	})
 
+	// دکمه مشترک بازگشت (پاک کردن وضعیت‌های موقت و برگشت به منو اصلی)
 	bot.Handle(&btnBack, func(c tele.Context) error {
-		delete(adminStates, c.Sender().ID)
-		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getKeyboard(c.Sender().ID), tele.ModeHTML)
+		userID := c.Sender().ID
+		delete(adminStates, userID)
+		delete(userPendingInvoice, userID)
+		userWalletTemp[userID] = 0
+		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getKeyboard(userID), tele.ModeHTML)
 	})
 
 	backToAdminHandler := func(c tele.Context) error {
@@ -461,7 +491,7 @@ func main() {
 	// =========================
 	// WALLET SYSTEM
 	// =========================
-	getWalletKeyboard := func() *tele.ReplyMarkup {
+	getWalletInlineKeyboard := func() *tele.ReplyMarkup {
 		menu := &tele.ReplyMarkup{}
 		btnP25k := menu.Data("➕ 25,000", "wallet_change", "25000")
 		btnP50k := menu.Data("➕ 50,000", "wallet_change", "50000")
@@ -472,29 +502,37 @@ func main() {
 		btnP5k := menu.Data("➕ 5,000", "wallet_change", "5000")
 		btnM10k := menu.Data("➖ 10,000", "wallet_change", "-10000")
 		btnP10k := menu.Data("➕ 10,000", "wallet_change", "10000")
-		btnConfirm := menu.Data("✅ تایید و ساخت فاکتور", "wallet_confirm")
-		btnWalletBack := menu.Data("🔙 بازگشت", "wallet_back_main")
 
+		// حذف دکمه‌های تایید و بازگشت از کیبورد شیشه‌ای
 		menu.Inline(
 			menu.Row(btnP25k, btnP50k, btnP100k),
 			menu.Row(btnM1k, btnP1k),
 			menu.Row(btnM5k, btnP5k),
 			menu.Row(btnM10k, btnP10k),
-			menu.Row(btnConfirm),
-			menu.Row(btnWalletBack),
 		)
 		return menu
 	}
 
 	formatWalletText := func(amount int) string {
-		return fmt.Sprintf("👛 <b>شارژ کیف پول (کارت به کارت)</b>\n\n🌿 <b>جهت افزایش موجودی با استفاده از دکمه‌های زیر مبلغ مورد نظر را انتخاب کنید:</b> 🫴\n\n••• <b>مبلغ مورد نظر جهت افزایش موجودی:</b> <b>~></b> |\n✨ <code>%s تومان</code> | ⭐️⭐️⭐️⭐️⭐️", formatMoney(amount))
+		price := getKeyPrice()
+		return fmt.Sprintf("👛 <b>شارژ کیف پول (کارت به کارت)</b>\n\n"+
+			"🌿 <b>جهت افزایش موجودی با استفاده از دکمه‌های زیر مبلغ مورد نظر را انتخاب کنید:</b> 🫴\n\n"+
+			"••• <b>مبلغ مورد نظر جهت افزایش موجودی:</b> <b>~></b> |\n"+
+			"✨ <code>%s تومان</code> | ⭐️⭐️⭐️⭐️⭐️\n\n"+
+			"⚠️ <i>حداقل برای فعالسازی سلف شما 30 کلید نیاز دارید</i>\n"+
+			"🔑 <i>قیمت هر کلید : %s تومان</i>", formatMoney(amount), formatMoney(price))
 	}
 
 	bot.Handle(&btnWallet, func(c tele.Context) error {
 		if IsUserBlocked(c.Sender().ID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
 		userID := c.Sender().ID
 		userWalletTemp[userID] = 0
-		return c.Send(formatWalletText(0), getWalletKeyboard(), tele.ModeHTML)
+		
+		// ارسال کیبورد ثابت اول
+		_ = c.Send("🔰 <b>به بخش شارژ کیف پول خوش آمدید!</b>\nلطفاً مبلغ را از پیام زیر تنظیم کرده و سپس دکمه تایید پایین صفحه را بزنید.", walletReplyMenu, tele.ModeHTML)
+		
+		// ارسال منوی شیشه‌ای برای تنظیم مبلغ
+		return c.Send(formatWalletText(0), getWalletInlineKeyboard(), tele.ModeHTML)
 	})
 
 	bot.Handle(&tele.Btn{Unique: "wallet_change"}, func(c tele.Context) error {
@@ -506,49 +544,32 @@ func main() {
 		if current < 0 { current = 0 }
 		userWalletTemp[userID] = current
 
-		_ = c.Edit(formatWalletText(current), getWalletKeyboard(), tele.ModeHTML)
+		_ = c.Edit(formatWalletText(current), getWalletInlineKeyboard(), tele.ModeHTML)
 		return c.Respond()
 	})
 
-	bot.Handle(&tele.Btn{Unique: "wallet_confirm"}, func(c tele.Context) error {
+	bot.Handle(&btnWalletConfirm, func(c tele.Context) error {
 		userID := c.Sender().ID
 		amount := userWalletTemp[userID]
 
 		if amount <= 0 {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ لطفاً ابتدا مبلغی را انتخاب کنید."})
+			return c.Send("❌ <b>لطفاً ابتدا مبلغی را با استفاده از دکمه‌های شیشه‌ای انتخاب کنید.</b>", tele.ModeHTML)
 		}
 
 		userPendingInvoice[userID] = amount
-		keys := amount / 3333
+		price := getKeyPrice()
+		keys := float64(amount) / float64(price)
 
 		cNum := GetSetting("card_number")
 		cName := GetSetting("card_name")
 		cBank := GetSetting("card_bank")
 
 		text := fmt.Sprintf(
-			"🧾 <b>فاکتور شارژ کیف پول</b>\n\n💰 <b>مبلغ قابل پرداخت:</b> <code>%s تومان</code>\n🔑 <b>تعداد کلید دریافتی:</b> <code>%d کلید</code>\n(نرخ هر کلید: ۳,۳۳۳ تومان)\n\n💳 لطفاً مبلغ فوق را به کارت زیر واریز کرده و سپس <b>تصویر رسید (فیش) واریزی</b> را همینجا برای ربات ارسال کنید:\n\n🏦 <b>%s</b>\n💳 <code>%s</code>\n👤 به نام: <b>%s</b>",
-			formatMoney(amount), keys, cBank, cNum, cName,
+			"🧾 <b>فاکتور شارژ کیف پول</b>\n\n💰 <b>مبلغ قابل پرداخت:</b> <code>%s تومان</code>\n🔑 <b>تعداد کلید دریافتی:</b> <code>%.2f کلید</code>\n(نرخ هر کلید: %s تومان)\n\n💳 لطفاً مبلغ فوق را به کارت زیر واریز کرده و سپس <b>تصویر رسید (فیش) واریزی</b> را همینجا برای ربات ارسال کنید:\n\n🏦 <b>%s</b>\n💳 <code>%s</code>\n👤 به نام: <b>%s</b>",
+			formatMoney(amount), keys, formatMoney(price), cBank, cNum, cName,
 		)
 
-		menu := &tele.ReplyMarkup{}
-		menu.Inline(menu.Row(menu.Data("🔙 بازگشت به کیف پول", "wallet_back_to_wallet")))
-		return c.Edit(text, menu, tele.ModeHTML)
-	})
-
-	bot.Handle(&tele.Btn{Unique: "wallet_back_main"}, func(c tele.Context) error {
-		userID := c.Sender().ID
-		userWalletTemp[userID] = 0
-		delete(userPendingInvoice, userID)
-		_ = c.Delete()
-		return c.Send("🔙 به منوی اصلی بازگشتید.", getKeyboard(userID))
-	})
-
-	bot.Handle(&tele.Btn{Unique: "wallet_back_to_wallet"}, func(c tele.Context) error {
-		userID := c.Sender().ID
-		delete(userPendingInvoice, userID)
-		amount := userWalletTemp[userID]
-		_ = c.Edit(formatWalletText(amount), getWalletKeyboard(), tele.ModeHTML)
-		return c.Respond()
+		return c.Send(text, tele.ModeHTML)
 	})
 
 	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
@@ -573,9 +594,10 @@ func main() {
 			usernameStr = "@" + html.EscapeString(user.Username)
 		}
 
+		price := getKeyPrice()
 		captionText := fmt.Sprintf(
-			"🔔 <b>درخواست شارژ (کارت به کارت)</b>\n\n👤 %s (%s)\n🆔 <code>%d</code>\n💰 <b>مبلغ:</b> <code>%s تومان</code>\n🔑 <b>تعداد کلید:</b> <code>%d کلید</code>\n📅 <b>عضویت:</b> %s\n🔥 <b>وضعیت سلف:</b> %s",
-			html.EscapeString(user.FirstName), usernameStr, user.ID, formatMoney(amount), amount/3333, tJoined.Format("yyyy/MM/dd"), html.EscapeString(selfStatus),
+			"🔔 <b>درخواست شارژ (کارت به کارت)</b>\n\n👤 %s (%s)\n🆔 <code>%d</code>\n💰 <b>مبلغ:</b> <code>%s تومان</code>\n🔑 <b>تعداد کلید:</b> <code>%.2f کلید</code>\n📅 <b>عضویت:</b> %s\n🔥 <b>وضعیت سلف:</b> %s",
+			html.EscapeString(user.FirstName), usernameStr, user.ID, formatMoney(amount), float64(amount)/float64(price), tJoined.Format("yyyy/MM/dd"), html.EscapeString(selfStatus),
 		)
 
 		menu := &tele.ReplyMarkup{}
@@ -614,8 +636,9 @@ func main() {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
 
+		price := getKeyPrice()
 		balance := GetUserBalance(userID)
-		keys := balance / 3333
+		keys := balance / price // تعداد کلید کامل و بدون اعشار
 
 		if keys < 30 {
 			text := fmt.Sprintf(
@@ -625,7 +648,6 @@ func main() {
 				"⚠️ <b>برای فعالسازی حداقل باید 30 کلید داشته باشید ..</b>\n\n" +
 				"🛒 <i>لطفا از بخش کیف پول کلید خریداری نمایید.</i>", keys,
 			)
-			// ارسال پیام با همون کیبورد قبلی کاربر
 			return c.Send(text, tele.ModeHTML)
 		}
 
@@ -636,20 +658,19 @@ func main() {
 			"✅ <b>برای فعالسازی سلف و شروع کسر کلید روی دکمه زیر کلیک کنید.</b>", keys,
 		)
 
-		// نمایش کیبورد جدید برای تایید
 		return c.Send(text, confirmSelfMenu, tele.ModeHTML)
 	}
 
 	bot.Handle(&btnBuy, handleSelfActivation)
 	bot.Handle(&btnTurnOnSelf, handleSelfActivation)
 
-	// پردازش دکمه ثابتِ تایید و فعالسازی
 	bot.Handle(&btnConfirmSelfAction, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
 
+		price := getKeyPrice()
 		balance := GetUserBalance(userID)
-		keys := balance / 3333
+		keys := balance / price
 
 		if keys < 30 {
 			return c.Send("❌ <b>شما کلید کافی برای فعالسازی ندارید!</b>", getKeyboard(userID), tele.ModeHTML)
@@ -733,6 +754,14 @@ func main() {
 		current := GetSetting("support_id")
 		text := fmt.Sprintf("🆔 <b>تنظیم آیدی پشتیبانی</b>\n\n🔹 مقدار فعلی: <b>%s</b>\n\n✏️ <i>لطفاً آیدی جدید پشتیبانی (مثال: @YourID) را ارسال کنید:</i>", current)
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_support_id"}
+		return c.Send(text, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnConfigKeyPrice, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		currentPrice := getKeyPrice()
+		text := fmt.Sprintf("🔑 <b>تنظیم نرخ کلید</b>\n\n🔹 قیمت فعلی: <code>%s تومان</code>\n\n✏️ <i>لطفاً مبلغ جدید را (فقط عدد به تومان) ارسال کنید:</i>", formatMoney(currentPrice))
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_key_price"}
 		return c.Send(text, tele.ModeHTML)
 	})
 
@@ -876,6 +905,16 @@ func main() {
 		case "set_support_id":
 			SetSetting("support_id", text)
 			_ = c.Send("✅ <b>آیدی پشتیبانی با موفقیت به‌روزرسانی شد.</b>", tele.ModeHTML)
+			delete(adminStates, adminID)
+
+		case "set_key_price":
+			price, err := strconv.Atoi(text)
+			if err != nil || price <= 0 {
+				_ = c.Send("❌ <b>مبلغ نامعتبر است.</b>\nلطفاً فقط یک عدد صحیح (بدون کاما، حرف یا ریال) وارد کنید.", tele.ModeHTML)
+				return nil
+			}
+			SetSetting("key_price", strconv.Itoa(price))
+			_ = c.Send(fmt.Sprintf("✅ <b>نرخ کلید با موفقیت به %s تومان تغییر یافت.</b>\n\nاز این پس تمامی محاسبات ربات بر اساس نرخ جدید انجام خواهد شد.", formatMoney(price)), tele.ModeHTML)
 			delete(adminStates, adminID)
 
 		case "msg":

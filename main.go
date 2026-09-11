@@ -268,6 +268,10 @@ func (b *botAuthenticator) AcceptTermsOfService(ctx context.Context, tos tg.Help
 	return nil
 }
 
+func (b *botAuthenticator) SignUp(ctx context.Context) (auth.UserInfo, error) {
+	return auth.UserInfo{}, fmt.Errorf("ثبت‌نام حساب جدید پشتیبانی نمی‌شود")
+}
+
 func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan string, passwordChan chan string, need2FA *bool) error {
 	ctx := context.Background()
 

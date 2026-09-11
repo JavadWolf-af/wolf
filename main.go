@@ -241,6 +241,10 @@ type botAuthenticator struct {
 	need2FA      *bool
 }
 
+func (b *botAuthenticator) Phone(ctx context.Context) (string, error) {
+	return b.phone, nil
+}
+
 func (b *botAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
 	select {
 	case code := <-b.codeChan:

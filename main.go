@@ -603,52 +603,60 @@ func stopUserbot(userID int64) {
 	}
 }
 
-// کارگر اختصاصی تغییر دقیقه به دقیقه ساعت روی پروفایل
+func updateClocks() {
+	if db == nil {
+		return
+	}
+	rows, err := db.Query("SELECT id FROM users WHERE self_status = 'روشن' AND is_clock_enabled = TRUE")
+	if err != nil {
+		return
+	}
+
+	var uids []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err == nil {
+			uids = append(uids, uid)
+		}
+	}
+	rows.Close()
+
+	if len(uids) == 0 {
+		return
+	}
+
+	boldTime := getTehranBoldTime()
+
+	activeUserbotsMu.RLock()
+	for _, uid := range uids {
+		if ub, ok := activeUserbots[uid]; ok && ub.Client != nil {
+			go func(cl *telegram.Client) {
+				cTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				req := &tg.AccountUpdateProfileRequest{}
+				req.SetLastName(boldTime)
+				_, _ = cl.API().AccountUpdateProfile(cTimeout, req)
+			}(ub.Client)
+		}
+	}
+	activeUserbotsMu.RUnlock()
+}
+
 func startClockWorker() {
-	ticker := time.NewTicker(1 * time.Minute)
 	go func() {
+		now := time.Now()
+		nextMinute := now.Truncate(time.Minute).Add(time.Minute)
+		time.Sleep(time.Until(nextMinute))
+
+		updateClocks()
+
+		ticker := time.NewTicker(1 * time.Minute)
 		for range ticker.C {
-			if db == nil {
-				continue
-			}
-			rows, err := db.Query("SELECT id FROM users WHERE self_status = 'روشن' AND is_clock_enabled = TRUE")
-			if err != nil {
-				continue
-			}
-
-			var uids []int64
-			for rows.Next() {
-				var uid int64
-				if err := rows.Scan(&uid); err == nil {
-					uids = append(uids, uid)
-				}
-			}
-			rows.Close()
-
-			if len(uids) == 0 {
-				continue
-			}
-
-			boldTime := getTehranBoldTime()
-
-			activeUserbotsMu.RLock()
-			for _, uid := range uids {
-				if ub, ok := activeUserbots[uid]; ok && ub.Client != nil {
-					go func(cl *telegram.Client) {
-						cTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-						defer cancel()
-						req := &tg.AccountUpdateProfileRequest{}
-						req.SetLastName(boldTime)
-						_, _ = cl.API().AccountUpdateProfile(cTimeout, req)
-					}(ub.Client)
-				}
-			}
-			activeUserbotsMu.RUnlock()
+			updateClocks()
 		}
 	}()
 }
 
-// کارگر اختصاصی تغییر هر ۱۰ دقیقه اموجی رندوم کنار اسم
 func startEmojiWorker() {
 	ticker := time.NewTicker(10 * time.Minute)
 	go func() {
@@ -695,7 +703,6 @@ func startEmojiWorker() {
 	}()
 }
 
-// کارگر تمدید روزانه و کسر خودکار کلید (Billing Worker)
 func startBillingWorker(bot *tele.Bot) {
 	ticker := time.NewTicker(2 * time.Minute)
 	go func() {
@@ -1420,7 +1427,6 @@ func main() {
 			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
 			startUserbot(userID, cfg)
 
-			// بازیابی خودکار قابلیت‌هایی که قبل از خاموشی روشن بودند (ساعت و اموجی)
 			go func(uid int64) {
 				time.Sleep(2 * time.Second)
 				activeUserbotsMu.RLock()
@@ -1474,7 +1480,6 @@ func main() {
 			return c.Send("❌ <b>شما سلف فعالی ندارید.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
-		// بازگردانی موقت اسم و فامیل اصلی قبل از خاموش شدن بات
 		var isClock, isEmoji bool
 		var origLast, origFirst string
 		_ = db.QueryRow("SELECT is_clock_enabled, original_last_name, is_emoji_enabled, original_first_name FROM users WHERE id = ?", userID).Scan(&isClock, &origLast, &isEmoji, &origFirst)
@@ -2113,9 +2118,6 @@ func main() {
 		return c.Send(text, tele.ModeHTML)
 	})
 
-	// ============================================================
-	// HELP / GUIDE (فقط برای خریداران سلف)
-	// ============================================================
 	getGuideInlineKeyboard := func() *tele.ReplyMarkup {
 		guideMenu := &tele.ReplyMarkup{}
 		btnGuideClock := guideMenu.Data("⏱ ساعت", "guide_clock")

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"html"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +20,10 @@ import (
 	"github.com/shirou/gopsutil/v3/net"
 	gpc "github.com/yaa110/go-persian-calendar"
 	tele "gopkg.in/telebot.v3"
+
+	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/telegram/session"
 )
 
 type Config struct {
@@ -40,9 +46,13 @@ type AdminAction struct {
 	TargetID int64
 }
 
+// ساختار حالت لاگین کاربر همراه با کانال موقت برای دریافت کد ۵ رقمی
 type UserState struct {
-	Action string
-	Phone  string
+	Action     string
+	Phone      string
+	CodeChan   chan string
+	SignInErr  error
+	IsLoggedIn bool
 }
 
 var adminStates = make(map[int64]AdminAction)
@@ -207,6 +217,46 @@ func GetUserSelfStatus(userID int64) string {
 		return "خرید نداشته"
 	}
 	return status
+}
+
+// ============================================================
+// MTPROTO USERBOT LOGIN HANDLER
+// ============================================================
+func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan string) error {
+	ctx := context.Background()
+
+	// ایجاد پوشه برای ذخیره سشن‌های کاربران به صورت امن
+	sessionDir := "/opt/wolf/sessions"
+	_ = os.MkdirAll(sessionDir, 0700)
+	sessionPath := filepath.Join(sessionDir, fmt.Sprintf("user_%d.json", userID))
+
+	// بارگذاری یا ساخت فایل سشن اختصاصی کاربر
+	loader := &session.FileStorage{Path: sessionPath}
+
+	client := telegram.NewClient(cfg.APIID, cfg.APIHash, telegram.Options{
+		SessionStorage: loader,
+	})
+
+	// جریان احراز هویت تلگرام
+	flow := auth.NewFlow(
+		auth.Constant(phone, "", auth.CodeAuthenticatorFunc(func(ctx context.Context, sentCode *telegram.Code) (string, error) {
+			// منتظر می‌مانیم تا کاربر کد ۵ رقمی را از طریق ربات تلگرام ارسال کند
+			select {
+			case code := <-codeChan:
+				return code, nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		})),
+		auth.SendCodeOptions{},
+	)
+
+	return client.Run(ctx, func(ctx context.Context) error {
+		if err := client.Auth().IfNecessary(ctx, flow); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // ============================================================
@@ -754,16 +804,35 @@ func main() {
 			return c.Send("❌ <b>خطا!</b> لطفاً شماره خودتان را ارسال کنید، نه شخص دیگر!", tele.ModeHTML)
 		}
 
-		userStates[userID] = UserState{Action: "waiting_for_code", Phone: contact.PhoneNumber}
+		codeChan := make(chan string, 1)
+		userStates[userID] = UserState{
+			Action:   "waiting_for_code",
+			Phone:    contact.PhoneNumber,
+			CodeChan: codeChan,
+		}
+
+		// اجرای فرآیند MTProto در یک گوروتین مجزا به صورت پس‌زمینه
+		go func() {
+			err := startTelegramLogin(userID, contact.PhoneNumber, cfg, codeChan)
+			if err != nil {
+				// اگر لاگین با خطا مواجه شد یا کنسل شد
+				stateStruct := userStates[userID]
+				stateStruct.SignInErr = err
+				userStates[userID] = stateStruct
+			} else {
+				stateStruct := userStates[userID]
+				stateStruct.IsLoggedIn = true
+				userStates[userID] = stateStruct
+			}
+		}()
 
 		codeMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 		btnB := codeMenu.Text("🔙 بازگشت")
 		codeMenu.Reply(codeMenu.Row(btnB))
 
-		text := fmt.Sprintf("✅ <b>شماره %s تایید شد.</b>\n\n"+
+		text := fmt.Sprintf("✅ <b>شماره %s تایید شد و درخواست کد به تلگرام ارسال گردید.</b>\n\n"+
 			"📲 <b>مرحله دوم: ورود کد تایید</b>\n"+
-			"هم‌اکنون یک کد ۵ رقمی از طرف پیام‌رسان تلگرام برای اکانت شما ارسال شده است.\n\n"+
-			"✏️ <i>لطفاً کد تایید را همینجا برای ربات ارسال کنید:</i>", contact.PhoneNumber)
+			"کد ۵ رقمی ارسال شده توسط تلگرام را همینجا ارسال کنید:", contact.PhoneNumber)
 
 		return c.Send(text, codeMenu, tele.ModeHTML)
 	})
@@ -955,16 +1024,28 @@ func main() {
 		userID := c.Sender().ID
 		text := strings.TrimSpace(c.Text())
 
+		// دریافت و ارسال کد ۵ رقمی به چنل MTProto
 		if uState, exists := userStates[userID]; exists {
 			if uState.Action == "waiting_for_code" {
-				_, _ = db.Exec("UPDATE users SET self_status = 'روشن', phone = ? WHERE id = ?", uState.Phone, userID)
-				delete(userStates, userID)
+				select {
+				case uState.CodeChan <- text:
+					// چک کردن موفقیت لاگین پس از ارسال کد
+					time.Sleep(2 * time.Second)
+					if uState.SignInErr != nil {
+						return c.Send(fmt.Sprintf("❌ <b>خطا در ورود به اکانت:</b> %v\n\nلطفاً دوباره کد صحیح را ارسال کنید:", uState.SignInErr), tele.ModeHTML)
+					}
 
-				successText := "🎉 <b>تبریک! سلف شما با موفقیت به اکانت متصل و فعال شد!</b> 🐺\n\n" +
-					"✅ <i>وضعیت اکانت شما هم‌اکنون به حالت روشن تغییر یافت.</i>\n" +
-					"از این پس روزانه ۱ کلید از حساب شما کسر خواهد شد و امکانات ویژه سلف روی اکانت شما اعمال می‌گردد. 🚀"
-				
-				return c.Send(successText, getKeyboard(userID), tele.ModeHTML)
+					_, _ = db.Exec("UPDATE users SET self_status = 'روشن', phone = ? WHERE id = ?", uState.Phone, userID)
+					delete(userStates, userID)
+
+					successText := "🎉 <b>تبریک! سلف شما با موفقیت به اکانت متصل و فعال شد!</b> 🐺\n\n" +
+						"✅ <i>وضعیت اکانت شما هم‌اکنون به حالت روشن تغییر یافت.</i>\n" +
+						"از این پس روزانه ۱ کلید از حساب شما کسر خواهد شد و امکانات ویژه سلف روی اکانت شما اعمال می‌گردد. 🚀"
+					
+					return c.Send(successText, getKeyboard(userID), tele.ModeHTML)
+				default:
+					return c.Send("⏳ در حال پردازش کد...")
+				}
 			}
 		}
 
@@ -1054,6 +1135,6 @@ func main() {
 		return c.Send("📚 <b>راهنمای استفاده</b>\n\nآموزش‌ها و راهنمای کامل استفاده از ربات.", tele.ModeHTML)
 	})
 
-	log.Println("⚡ ربات ولف سلف با دیتابیس MySQL آماده و روشن شد!")
+	log.Println("⚡ ربات ولف سلف با موتور قدرتمند MTProto آماده و روشن شد!")
 	bot.Start()
 }

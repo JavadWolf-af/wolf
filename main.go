@@ -207,7 +207,6 @@ func formatBytes(b uint64) string {
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
-// تابع دریافت قیمت کلید به صورت امن (برای جلوگیری از خطای تبدیل متن به عدد)
 func getKeyPrice() int {
 	priceStr := GetSetting("key_price")
 	price, err := strconv.Atoi(priceStr)
@@ -246,7 +245,7 @@ func main() {
 	supportConfigMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	confirmSelfMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
-	walletReplyMenu := &tele.ReplyMarkup{ResizeKeyboard: true} // کیبورد ثابت کیف پول
+	walletReplyMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
 	btnBuy := userMenu.Text("🛍️ خرید سلف")
 	btnProfile := userMenu.Text("👤 حساب کاربری")
@@ -254,7 +253,7 @@ func main() {
 	btnSupport := userMenu.Text("🎧 پشتیبانی")
 	btnGuide := userMenu.Text("📚 راهنما")
 	btnAdminPanel := adminMenu.Text("⚙️ مدیریت")
-	btnBack := adminPanelMenu.Text("🔙 بازگشت") // دکمه مشترک بازگشت
+	btnBack := adminPanelMenu.Text("🔙 بازگشت") 
 
 	userMenu.Reply(
 		userMenu.Row(btnBuy, btnProfile),
@@ -269,7 +268,6 @@ func main() {
 		adminMenu.Row(btnAdminPanel),
 	)
 
-	// --- منوی مدیریت ---
 	btnConfigAccount := adminPanelMenu.Text("🛠 تنظیم حساب بانکی")
 	btnConfigSupport := adminPanelMenu.Text("📞 تنظیم پشتیبانی")
 	btnConfigKeyPrice := adminPanelMenu.Text("🔑 تنظیم نرخ کلید")
@@ -316,7 +314,6 @@ func main() {
 		confirmSelfMenu.Row(btnBack),
 	)
 
-	// منوی ثابت کیف پول
 	btnWalletConfirm := walletReplyMenu.Text("✅ تایید و ساخت فاکتور")
 	walletReplyMenu.Reply(
 		walletReplyMenu.Row(btnWalletConfirm),
@@ -441,7 +438,6 @@ func main() {
 		return c.Send(text, getKeyboard(user.ID), tele.ModeHTML)
 	})
 
-	// دکمه مشترک بازگشت (پاک کردن وضعیت‌های موقت و برگشت به منو اصلی)
 	bot.Handle(&btnBack, func(c tele.Context) error {
 		userID := c.Sender().ID
 		delete(adminStates, userID)
@@ -503,7 +499,6 @@ func main() {
 		btnM10k := menu.Data("➖ 10,000", "wallet_change", "-10000")
 		btnP10k := menu.Data("➕ 10,000", "wallet_change", "10000")
 
-		// حذف دکمه‌های تایید و بازگشت از کیبورد شیشه‌ای
 		menu.Inline(
 			menu.Row(btnP25k, btnP50k, btnP100k),
 			menu.Row(btnM1k, btnP1k),
@@ -513,14 +508,14 @@ func main() {
 		return menu
 	}
 
-	formatWalletText := func(amount int) string {
+	formatWalletText := func(amountToAdd int, currentKeys int) string {
 		price := getKeyPrice()
 		return fmt.Sprintf("👛 <b>شارژ کیف پول (کارت به کارت)</b>\n\n"+
-			"🌿 <b>جهت افزایش موجودی با استفاده از دکمه‌های زیر مبلغ مورد نظر را انتخاب کنید:</b> 🫴\n\n"+
-			"••• <b>مبلغ مورد نظر جهت افزایش موجودی:</b> <b>~></b> |\n"+
-			"✨ <code>%s تومان</code> | ⭐️⭐️⭐️⭐️⭐️\n\n"+
+			"🌿 <b>جهت افزایش موجودی با استفاده از دکمه‌های زیر مبلغ مورد نظر را انتخاب کنید:</b>\n\n"+
+			"💰 <b>مبلغ مورد نظر جهت افزایش موجودی:</b> <code>%s تومان</code>\n"+
+			"🔑 <b>کلیدهای موجود :</b> <code>%d</code>\n\n"+
 			"⚠️ <i>حداقل برای فعالسازی سلف شما 30 کلید نیاز دارید</i>\n"+
-			"🔑 <i>قیمت هر کلید : %s تومان</i>", formatMoney(amount), formatMoney(price))
+			"🏷 <i>قیمت هر کلید : %s تومان</i>", formatMoney(amountToAdd), currentKeys, formatMoney(price))
 	}
 
 	bot.Handle(&btnWallet, func(c tele.Context) error {
@@ -528,11 +523,13 @@ func main() {
 		userID := c.Sender().ID
 		userWalletTemp[userID] = 0
 		
-		// ارسال کیبورد ثابت اول
+		price := getKeyPrice()
+		currentBalance := GetUserBalance(userID)
+		currentKeys := currentBalance / price
+		
 		_ = c.Send("🔰 <b>به بخش شارژ کیف پول خوش آمدید!</b>\nلطفاً مبلغ را از پیام زیر تنظیم کرده و سپس دکمه تایید پایین صفحه را بزنید.", walletReplyMenu, tele.ModeHTML)
 		
-		// ارسال منوی شیشه‌ای برای تنظیم مبلغ
-		return c.Send(formatWalletText(0), getWalletInlineKeyboard(), tele.ModeHTML)
+		return c.Send(formatWalletText(0, currentKeys), getWalletInlineKeyboard(), tele.ModeHTML)
 	})
 
 	bot.Handle(&tele.Btn{Unique: "wallet_change"}, func(c tele.Context) error {
@@ -544,7 +541,11 @@ func main() {
 		if current < 0 { current = 0 }
 		userWalletTemp[userID] = current
 
-		_ = c.Edit(formatWalletText(current), getWalletInlineKeyboard(), tele.ModeHTML)
+		price := getKeyPrice()
+		currentBalance := GetUserBalance(userID)
+		currentKeys := currentBalance / price
+
+		_ = c.Edit(formatWalletText(current, currentKeys), getWalletInlineKeyboard(), tele.ModeHTML)
 		return c.Respond()
 	})
 
@@ -638,7 +639,7 @@ func main() {
 
 		price := getKeyPrice()
 		balance := GetUserBalance(userID)
-		keys := balance / price // تعداد کلید کامل و بدون اعشار
+		keys := balance / price
 
 		if keys < 30 {
 			text := fmt.Sprintf(

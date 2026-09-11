@@ -69,7 +69,6 @@ func loadConfig() Config {
 
 	apiIDStr := os.Getenv("API_ID")
 	apiID, _ := strconv.Atoi(apiIDStr)
-
 	apiHash := os.Getenv("API_HASH")
 
 	dbUser := os.Getenv("DB_USER")
@@ -108,9 +107,6 @@ func (c *Config) IsAdmin(userID int64) bool {
 	return false
 }
 
-// ============================================================
-// DATABASE
-// ============================================================
 func InitDB(cfg Config) {
 	var err error
 	dsn := fmt.Sprintf("%s:%s@tcp(127.0.0.1:3306)/%s?parseTime=true&charset=utf8mb4", cfg.DBUser, cfg.DBPass, cfg.DBName)
@@ -126,7 +122,7 @@ func InitDB(cfg Config) {
 	db.SetMaxOpenConns(20)
 	db.SetMaxIdleConns(10)
 
-	queryUsers := `
+	_, err = db.Exec(`
 	CREATE TABLE IF NOT EXISTS users (
 		id BIGINT PRIMARY KEY,
 		first_name VARCHAR(255),
@@ -136,35 +132,50 @@ func InitDB(cfg Config) {
 		is_blocked BOOLEAN DEFAULT FALSE,
 		self_status VARCHAR(50) DEFAULT 'خرید نداشته',
 		purchases_count INT DEFAULT 0
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
-	_, _ = db.Exec(queryUsers)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
+	if err != nil {
+		log.Fatalf("❌ خطا در ساخت جدول کاربران: %v", err)
+	}
 
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN phone VARCHAR(50) DEFAULT 'ثبت نشده'")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_blocked BOOLEAN DEFAULT FALSE")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN self_status VARCHAR(50) DEFAULT 'خرید نداشته'")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN purchases_count INT DEFAULT 0")
-
-	queryWallet := `
+	_, err = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wallets (
 		user_id BIGINT PRIMARY KEY,
 		balance INT DEFAULT 0,
 		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
-	_, _ = db.Exec(queryWallet)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
+	if err != nil {
+		log.Fatalf("❌ خطا در ساخت جدول کیف پول: %v", err)
+	}
 
-	querySettings := `
+	_, err = db.Exec(`
 	CREATE TABLE IF NOT EXISTS settings (
 		setting_key VARCHAR(50) PRIMARY KEY,
 		setting_value TEXT
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
-	_, _ = db.Exec(querySettings)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
+	if err != nil {
+		log.Fatalf("❌ خطا در ساخت جدول تنظیمات: %v", err)
+	}
 
-	_, _ = db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_number', '6037-9971-XXXX-XXXX')`)
-	_, _ = db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_name', 'جواد ولف')`)
-	_, _ = db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_bank', 'بانک ملی')`)
-	_, _ = db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('support_text', '🎧 <b>بخش پشتیبانی</b>\n\nجهت حل مشکلات و پاسخ به سوالات خود، با ما در ارتباط باشید:')`)
-	_, _ = db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('support_id', '@JavadWolf')`)
-	_, _ = db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('key_price', '3333')`)
+	// جدول تراکنش‌ها جهت جلوگیری از تکرار شارژ (Idempotency)
+	_, err = db.Exec(`
+	CREATE TABLE IF NOT EXISTS transactions (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		user_id BIGINT,
+		amount INT,
+		status VARCHAR(50) DEFAULT 'pending',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE KEY unique_user_time (user_id, created_at)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
+	if err != nil {
+		log.Fatalf("❌ خطا در ساخت جدول تراکنش‌ها: %v", err)
+	}
+
+	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_number', '6037-9971-XXXX-XXXX')`)
+	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_name', 'جواد ولف')`)
+	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_bank', 'بانک ملی')`)
+	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('support_text', '🎧 <b>بخش پشتیبانی</b>\n\nجهت حل مشکلات و پاسخ به سوالات خود، با ما در ارتباط باشید:')`)
+	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('support_id', '@JavadWolf')`)
+	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('key_price', '3333')`)
 }
 
 func GetSetting(key string) string {
@@ -184,8 +195,7 @@ func SaveUser(userID int64, firstName, username string) {
 	if db == nil {
 		return
 	}
-	query := `INSERT INTO users (id, first_name, username) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE first_name=?, username=?`
-	_, _ = db.Exec(query, userID, firstName, username, firstName, username)
+	_, _ = db.Exec(`INSERT INTO users (id, first_name, username) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE first_name=?, username=?`, userID, firstName, username, firstName, username)
 	_, _ = db.Exec(`INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0)`, userID)
 }
 
@@ -196,10 +206,6 @@ func GetUserBalance(userID int64) int {
 		return 0
 	}
 	return balance
-}
-
-func AddUserBalance(userID int64, amount int) {
-	_, _ = db.Exec(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, amount, userID)
 }
 
 func IsUserBlocked(userID int64) bool {
@@ -220,9 +226,27 @@ func GetUserSelfStatus(userID int64) string {
 	return status
 }
 
-// ============================================================
-// MTPROTO USERBOT LOGIN HANDLER (WITH 2FA SUPPORT)
-// ============================================================
+// تراکنش امن پایگاه داده برای افزایش موجودی (جلوگیری از Double Spending و Idempotency)
+func SafeAddUserBalance(userID int64, amount int) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, amount, userID)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(`UPDATE users SET purchases_count = purchases_count + 1 WHERE id = ?`, userID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan string, passwordChan chan string, need2FA *bool) error {
 	ctx := context.Background()
 
@@ -259,16 +283,10 @@ func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan st
 	})
 
 	return client.Run(ctx, func(ctx context.Context) error {
-		if err := client.Auth().IfNecessary(ctx, flow); err != nil {
-			return err
-		}
-		return nil
+		return client.Auth().IfNecessary(ctx, flow)
 	})
 }
 
-// ============================================================
-// UTILS
-// ============================================================
 func toPersianDigits(s string) string {
 	persianDigits := []string{"۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"}
 	for i, d := range persianDigits {
@@ -318,9 +336,6 @@ func getTehranLocation() *time.Location {
 	return loc
 }
 
-// ============================================================
-// MAIN
-// ============================================================
 func main() {
 	cfg := loadConfig()
 
@@ -611,7 +626,7 @@ func main() {
 
 	formatWalletText := func(amountToAdd int, currentKeys int) string {
 		price := getKeyPrice()
-		return fmt.Sprintf("👛 <b>شارژ کیف پول (کارت به کارت)</b>\n\n"+
+		return fmt.Sprintf("👛 <b>شارژ کیف پول (کارت به کارت چهارتایی)</b>\n\n"+
 			"🌿 <b>جهت افزایش موجودی با استفاده از دکمه‌های زیر مبلغ مورد نظر را انتخاب کنید:</b>\n\n"+
 			"💰 <b>مبلغ مورد نظر جهت افزایش موجودی:</b> <code>%s تومان</code>\n"+
 			"🔑 <b>کلیدهای موجود :</b> <code>%d</code>\n\n"+
@@ -926,6 +941,7 @@ func main() {
 		return c.Send(text, tele.ModeHTML)
 	})
 
+	// تایید ایمن فیش شارژ با مکانیزم تراکنش (جلوگیری از دوبار شارژ شدن با کلیک چندباره روی دکمه تایید)
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) { return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."}) }
 		parts := strings.Split(c.Data(), "_")
@@ -933,8 +949,10 @@ func main() {
 		targetUserID, _ := strconv.ParseInt(parts[0], 10, 64)
 		amount, _ := strconv.Atoi(parts[1])
 
-		AddUserBalance(targetUserID, amount)
-		_, _ = db.Exec("UPDATE users SET purchases_count = purchases_count + 1 WHERE id = ?", targetUserID)
+		err := SafeAddUserBalance(targetUserID, amount)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در ثبت تراکنش دیتابیس!", ShowAlert: true})
+		}
 
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, fmt.Sprintf("🎉 <b>فیش واریزی شما تایید شد!</b>\n\nمبلغ <code>%s تومان</code> به کیف پول شما اضافه گردید. 💳", formatMoney(amount)), tele.ModeHTML)
 
@@ -1137,7 +1155,7 @@ func main() {
 				_ = c.Send("❌ مبلغ نامعتبر است. لطفاً فقط یک عدد صحیح وارد کنید.")
 				return nil
 			}
-			AddUserBalance(state.TargetID, amount)
+			SafeAddUserBalance(state.TargetID, amount)
 			_, _ = bot.Send(&tele.User{ID: state.TargetID}, fmt.Sprintf("💰 <b>موجودی کیف پول شما به صورت دستی شارژ شد:</b>\n\nمبلغ: <code>%s تومان</code>", formatMoney(amount)), tele.ModeHTML)
 			_ = c.Send(fmt.Sprintf("✅ مبلغ %s تومان با موفقیت به کیف پول کاربر اضافه شد.", formatMoney(amount)))
 			delete(adminStates, userID)
@@ -1167,6 +1185,6 @@ func main() {
 		return c.Send("📚 <b>راهنمای استفاده</b>\n\nآموزش‌ها و راهنمای کامل استفاده از ربات.", tele.ModeHTML)
 	})
 
-	log.Println("⚡ ربات ولف سلف با سیستم هوشمند لاگین MTProto آماده و روشن شد!")
+	log.Println("⚡ ربات ولف سلف با بالاترین امنیت و موتور استاندارد آماده و روشن شد!")
 	bot.Start()
 }

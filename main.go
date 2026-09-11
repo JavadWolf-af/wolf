@@ -234,6 +234,7 @@ func main() {
 	accountConfigMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	supportConfigMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	confirmSelfMenu := &tele.ReplyMarkup{ResizeKeyboard: true} // منوی تایید سلف
 
 	btnBuy := userMenu.Text("🛍️ خرید سلف")
 	btnProfile := userMenu.Text("👤 حساب کاربری")
@@ -292,6 +293,13 @@ func main() {
 		profileMenu.Row(btnTurnOnSelf, btnTurnOffSelf),
 		profileMenu.Row(btnExitSelf),
 		profileMenu.Row(btnBack),
+	)
+
+	// دکمه‌های تایید فعالسازی سلف
+	btnConfirmSelfAction := confirmSelfMenu.Text("🟢 تایید و فعالسازی")
+	confirmSelfMenu.Reply(
+		confirmSelfMenu.Row(btnConfirmSelfAction),
+		confirmSelfMenu.Row(btnBack),
 	)
 
 	getKeyboard := func(userID int64) *tele.ReplyMarkup {
@@ -617,6 +625,7 @@ func main() {
 				"⚠️ <b>برای فعالسازی حداقل باید 30 کلید داشته باشید ..</b>\n\n" +
 				"🛒 <i>لطفا از بخش کیف پول کلید خریداری نمایید.</i>", keys,
 			)
+			// ارسال پیام با همون کیبورد قبلی کاربر
 			return c.Send(text, tele.ModeHTML)
 		}
 
@@ -627,29 +636,28 @@ func main() {
 			"✅ <b>برای فعالسازی سلف و شروع کسر کلید روی دکمه زیر کلیک کنید.</b>", keys,
 		)
 
-		menu := &tele.ReplyMarkup{}
-		btnConfirmSelf := menu.Data("🟢 تایید و فعالسازی", "confirm_buy_self")
-		menu.Inline(menu.Row(btnConfirmSelf))
-
-		return c.Send(text, menu, tele.ModeHTML)
+		// نمایش کیبورد جدید برای تایید
+		return c.Send(text, confirmSelfMenu, tele.ModeHTML)
 	}
 
 	bot.Handle(&btnBuy, handleSelfActivation)
 	bot.Handle(&btnTurnOnSelf, handleSelfActivation)
 
-	bot.Handle(&tele.Btn{Unique: "confirm_buy_self"}, func(c tele.Context) error {
+	// پردازش دکمه ثابتِ تایید و فعالسازی
+	bot.Handle(&btnConfirmSelfAction, func(c tele.Context) error {
 		userID := c.Sender().ID
+		if IsUserBlocked(userID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
+
 		balance := GetUserBalance(userID)
 		keys := balance / 3333
 
 		if keys < 30 {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ شما کلید کافی ندارید!", ShowAlert: true})
+			return c.Send("❌ <b>شما کلید کافی برای فعالسازی ندارید!</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 		
 		_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
 		
-		_ = c.Edit("✅ <b>سلف شما با موفقیت فعال شد!</b> 🐺\n\nاز این پس روزانه ۱ کلید از حساب شما کسر خواهد شد.", tele.ModeHTML)
-		return c.Respond(&tele.CallbackResponse{Text: "✅ سلف فعال شد!"})
+		return c.Send("✅ <b>سلف شما با موفقیت فعال شد!</b> 🐺\n\nاز این پس روزانه ۱ کلید از حساب شما کسر خواهد شد.", getKeyboard(userID), tele.ModeHTML)
 	})
 
 	bot.Handle(&btnTurnOffSelf, func(c tele.Context) error {

@@ -412,11 +412,13 @@ func main() {
 		btnUnblock := menu.Data("🔓 رفع مسدود", "admin_unblock", strconv.FormatInt(user.ID, 10))
 		btnMessage := menu.Data("💬 پیام", "admin_msg", strconv.FormatInt(user.ID, 10))
 		btnManual := menu.Data("💰 شارژ دستی", "admin_manual", strconv.FormatInt(user.ID, 10))
+		btnClose := menu.Data("❌ بستن پنل", "admin_close")
 
 		menu.Inline(
 			menu.Row(btnApprove, btnReject),
 			menu.Row(btnBlock, btnUnblock),
 			menu.Row(btnMessage, btnManual),
+			menu.Row(btnClose),
 		)
 
 		photo := c.Message().Photo
@@ -551,6 +553,19 @@ func main() {
 		}
 		
 		return c.Respond()
+	})
+
+	bot.Handle(&tele.Btn{Unique: "admin_close"}, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
+		
+		if c.Message() != nil {
+			updatedCaption := c.Message().Caption + "\n\n❌ <b>وضعیت: پنل دستی بسته شد.</b>"
+			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
+		}
+		
+		return c.Respond(&tele.CallbackResponse{Text: "✅ پنل بسته شد."})
 	})
 
 	bot.Handle(tele.OnText, func(c tele.Context) error {

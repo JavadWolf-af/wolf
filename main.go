@@ -231,7 +231,35 @@ func GetUserSelfStatus(userID int64) string {
 	return status
 }
 
-// تسک پس‌زمینه برای کسر خودکار هزینه روزانه سلف (Billing CronJob)
+func SafeAddUserBalance(userID int64, amount int) error {
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("❌ DB Begin Error: %v", err)
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`INSERT IGNORE INTO users (id, first_name, username) VALUES (?, 'کاربر', 'ثبت_نشده')`, userID)
+	if err != nil {
+		log.Printf("❌ DB Insert User Error: %v", err)
+		return err
+	}
+
+	_, err = tx.Exec(`INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON DUPLICATE KEY UPDATE balance = balance + ?`, userID, amount, amount)
+	if err != nil {
+		log.Printf("❌ DB Wallet Update Error: %v", err)
+		return err
+	}
+
+	_, err = tx.Exec(`UPDATE users SET purchases_count = purchases_count + 1 WHERE id = ?`, userID)
+	if err != nil {
+		log.Printf("❌ DB Purchases Count Error: %v", err)
+		return err
+	}
+
+	return tx.Commit()
+}
+
 func startBillingWorker(bot *tele.Bot) {
 	ticker := time.NewTicker(2 * time.Minute)
 	go func() {
@@ -270,14 +298,12 @@ func processDailyBilling(bot *tele.Bot) {
 	for _, uid := range userIDs {
 		balance := GetUserBalance(uid)
 		if balance < keyPrice {
-			// موجودی کافی نیست؛ سلف خاموش می‌شود
 			_, _ = db.Exec("UPDATE users SET self_status = 'خاموش' WHERE id = ?", uid)
 			msg := "⚠️ <b>شارژ کلیدهای شما به پایان رسید!</b>\n\n" +
 				"موجودی شما برای کسر هزینه روزانه سلف (۱ کلید) کافی نبود و سلف شما به صورت خودکار خاموش شد.\n\n" +
 				"🛒 <i>لطفاً جهت فعالسازی مجدد، از بخش کیف پول اقدام به شارژ حساب نمایید.</i>"
 			_, _ = bot.Send(&tele.User{ID: uid}, msg, tele.ModeHTML)
 		} else {
-			// کسر ۱ کلید و تمدید ۲۴ ساعته
 			_, err := db.Exec(`UPDATE wallets SET balance = balance - ? WHERE user_id = ? AND balance >= ?`, keyPrice, uid, keyPrice)
 			if err == nil {
 				_, _ = db.Exec("UPDATE users SET last_billed_at = NOW() WHERE id = ?", uid)
@@ -863,7 +889,7 @@ func main() {
 		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
 	})
 
-	// هندلر دکمه "خرید سلف": در صورت داشتن سلف (روشن یا خاموش) مشخصات و تاریخ/ساعت را نشان می‌دهد
+	// دکمه خرید سلف: در صورت داشتن سلف (روشن یا خاموش)، مشخصات را نشان می‌دهد
 	bot.Handle(&btnBuy, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -913,7 +939,7 @@ func main() {
 		return c.Send(text, confirmSelfMenu, tele.ModeHTML)
 	})
 
-	// هندلر دکمه "روشن کردن سلف": در صورت غیرفعال بودن سلف، ارجاع به بخش خرید سلف می‌دهد
+	// دکمه روشن کردن سلف: اگر سلف فعال نباشد، ارجاع به خرید سلف می‌دهد
 	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -930,19 +956,17 @@ func main() {
 		_, statErr := os.Stat(sessionPath)
 		hasSession := (statErr == nil)
 
-		// اگر کاربر قبلاً سلف داشته و خاموشش کرده بود
 		if selfStatus == "خاموش" && hasSession {
 			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
 			return c.Send("🟢 <b>سلف شما با موفقیت روشن شد و امکانات مجدداً فعال گردید.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
-		// اگر سلف فعال نیست یا خروج زده یا اصلاً خریداری نکرده
 		text := "❌ <b>سلف شما فعال نیست!</b>\n\n" +
 			"لطفاً برای راه‌اندازی و اتصال سلف، ابتدا از بخش <b>🛍️ خرید سلف</b> اقدام نمایید."
 		return c.Send(text, getKeyboard(userID), tele.ModeHTML)
 	})
 
-	// خاموش کردن سلف و بازگشت کیبورد به صفحه اصلی/مدیریت
+	// خاموش کردن سلف و بازگشت کیبورد به صفحه اصلی
 	bot.Handle(&btnTurnOffSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -1562,7 +1586,6 @@ func main() {
 		return c.Send("📚 <b>راهنمای استفاده</b>\n\nآموزش‌ها و راهنمای کامل استفاده از ربات.", tele.ModeHTML)
 	})
 
-	// راه‌اندازی کارگر پس‌زمینه کسر روزانه کلید
 	startBillingWorker(bot)
 
 	log.Println("⚡ ربات ولف سلف با بالاترین امنیت و موتور استاندارد آماده و روشن شد!")

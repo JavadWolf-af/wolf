@@ -698,7 +698,6 @@ func startUserbot(userID int64, cfg Config) {
 		}
 		inputPeer = getInputPeer(msg.PeerID, e, selfID)
 
-		// بررسی عکس‌ها و ویدیوهای تایم‌دار ورودی در پیوی
 		if !msg.Out {
 			if _, isUser := msg.PeerID.(*tg.PeerUser); isUser && msg.Media != nil {
 				var timerEnabled bool
@@ -716,10 +715,6 @@ func startUserbot(userID int64, cfg Config) {
 					}()
 				}
 			}
-			return
-		}
-
-		if !msg.Out {
 			return
 		}
 
@@ -777,7 +772,7 @@ func startUserbot(userID int64, cfg Config) {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(bCtx, client, inputPeer, msg, true)
+				handleForwardToAllGroups(gCtx, client, inputPeer, msg, true)
 			}()
 		} else if text == "گروه همه" {
 			go func() {
@@ -2034,7 +2029,7 @@ func main() {
 
 		tx, err := db.Begin()
 		if err != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ خطای سرور دیتابیس!", ShowAlert: true})
+			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در سرور دیتابیس!", ShowAlert: true})
 		}
 		defer tx.Rollback()
 

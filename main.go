@@ -648,7 +648,7 @@ func handleForwardToAllGroups(ctx context.Context, client *telegram.Client, inpu
 	}
 }
 
-// تابع دانلود بایت‌به‌بایت و ارسال رسانه تایمردار طبق الگوی پایتون
+// تابع دانلود مستقیم بایت‌های رسانه تایمردار و ارسال دائمی آن به کاربر
 func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele.Bot, targetUserID int64, msg *tg.Message, e tg.Entities) {
 	var (
 		isTTL      bool
@@ -679,8 +679,13 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 	senderName := "ناشناس"
 	usernameStr := "ثبت نشده"
 
-	if peerUser, ok := msg.PeerID.(*tg.PeerUser); ok {
+	if fromUser, ok := msg.FromID.(*tg.PeerUser); ok {
+		senderID = fromUser.UserID
+	} else if peerUser, ok := msg.PeerID.(*tg.PeerUser); ok {
 		senderID = peerUser.UserID
+	}
+
+	if senderID != 0 {
 		if u, exists := e.Users[senderID]; exists {
 			if u.FirstName != "" || u.LastName != "" {
 				senderName = strings.TrimSpace(u.FirstName + " " + u.LastName)
@@ -708,6 +713,9 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 			case *tg.PhotoSizeProgressive:
 				thumbSize = sz.Type
 			}
+		}
+		if thumbSize == "" {
+			thumbSize = "x"
 		}
 		loc = &tg.InputPhotoFileLocation{
 			ID:            photo.ID,
@@ -746,6 +754,7 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 		})
 		cancel()
 		if err != nil {
+			log.Printf("❌ UploadGetFile error: %v", err)
 			break
 		}
 
@@ -794,13 +803,19 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 			File:    tele.FromDisk(tmpFile),
 			Caption: caption,
 		}
-		_, _ = bot.Send(&tele.User{ID: targetUserID}, p, tele.ModeHTML)
+		_, err := bot.Send(&tele.User{ID: targetUserID}, p, tele.ModeHTML)
+		if err != nil {
+			log.Printf("❌ Bot send TTL photo error: %v", err)
+		}
 	} else {
 		v := &tele.Video{
 			File:    tele.FromDisk(tmpFile),
 			Caption: caption,
 		}
-		_, _ = bot.Send(&tele.User{ID: targetUserID}, v, tele.ModeHTML)
+		_, err := bot.Send(&tele.User{ID: targetUserID}, v, tele.ModeHTML)
+		if err != nil {
+			log.Printf("❌ Bot send TTL video error: %v", err)
+		}
 	}
 }
 
@@ -854,7 +869,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		}
 		inputPeer = getInputPeer(msg.PeerID, e, selfID)
 
-		// رصد و دانلود مستقیم مدیاهای تایمردار
+		// رصد و دانلود مستقیم مدیاهای تایمردار در پیوی
 		if !msg.Out {
 			if _, isUser := msg.PeerID.(*tg.PeerUser); isUser && msg.Media != nil {
 				var timerEnabled bool

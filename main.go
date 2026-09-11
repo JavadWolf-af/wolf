@@ -147,8 +147,11 @@ func InitDB(cfg Config) {
 		phone VARCHAR(50) DEFAULT 'ثبت نشده',
 		is_blocked BOOLEAN DEFAULT FALSE,
 		self_status VARCHAR(50) DEFAULT 'خرید نداشته',
-		purchases_count INT DEFAULT 0
+		purchases_count INT DEFAULT 0,
+		last_billed_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
+
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN last_billed_at DATETIME DEFAULT CURRENT_TIMESTAMP")
 
 	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wallets (
@@ -228,33 +231,68 @@ func GetUserSelfStatus(userID int64) string {
 	return status
 }
 
-func SafeAddUserBalance(userID int64, amount int) error {
-	tx, err := db.Begin()
-	if err != nil {
-		log.Printf("❌ DB Begin Error: %v", err)
-		return err
-	}
-	defer tx.Rollback()
+// تسک پس‌زمینه برای کسر خودکار هزینه روزانه سلف (Billing CronJob)
+func startBillingWorker(bot *tele.Bot) {
+	ticker := time.NewTicker(2 * time.Minute)
+	go func() {
+		for range ticker.C {
+			processDailyBilling(bot)
+		}
+	}()
+}
 
-	_, err = tx.Exec(`INSERT IGNORE INTO users (id, first_name, username) VALUES (?, 'کاربر', 'ثبت_نشده')`, userID)
-	if err != nil {
-		log.Printf("❌ DB Insert User Error: %v", err)
-		return err
-	}
-
-	_, err = tx.Exec(`INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON DUPLICATE KEY UPDATE balance = balance + ?`, userID, amount, amount)
-	if err != nil {
-		log.Printf("❌ DB Wallet Update Error: %v", err)
-		return err
+func processDailyBilling(bot *tele.Bot) {
+	if db == nil {
+		return
 	}
 
-	_, err = tx.Exec(`UPDATE users SET purchases_count = purchases_count + 1 WHERE id = ?`, userID)
+	rows, err := db.Query(`
+		SELECT id FROM users 
+		WHERE self_status = 'روشن' 
+		AND (last_billed_at IS NULL OR last_billed_at <= DATE_SUB(NOW(), INTERVAL 24 HOUR))
+	`)
 	if err != nil {
-		log.Printf("❌ DB Purchases Count Error: %v", err)
-		return err
+		log.Printf("❌ Billing Worker Error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var userIDs []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err == nil {
+			userIDs = append(userIDs, uid)
+		}
 	}
 
-	return tx.Commit()
+	keyPrice := getKeyPrice()
+
+	for _, uid := range userIDs {
+		balance := GetUserBalance(uid)
+		if balance < keyPrice {
+			// موجودی کافی نیست؛ سلف خاموش می‌شود
+			_, _ = db.Exec("UPDATE users SET self_status = 'خاموش' WHERE id = ?", uid)
+			msg := "⚠️ <b>شارژ کلیدهای شما به پایان رسید!</b>\n\n" +
+				"موجودی شما برای کسر هزینه روزانه سلف (۱ کلید) کافی نبود و سلف شما به صورت خودکار خاموش شد.\n\n" +
+				"🛒 <i>لطفاً جهت فعالسازی مجدد، از بخش کیف پول اقدام به شارژ حساب نمایید.</i>"
+			_, _ = bot.Send(&tele.User{ID: uid}, msg, tele.ModeHTML)
+		} else {
+			// کسر ۱ کلید و تمدید ۲۴ ساعته
+			_, err := db.Exec(`UPDATE wallets SET balance = balance - ? WHERE user_id = ? AND balance >= ?`, keyPrice, uid, keyPrice)
+			if err == nil {
+				_, _ = db.Exec("UPDATE users SET last_billed_at = NOW() WHERE id = ?", uid)
+				newBalance := balance - keyPrice
+				remainingKeys := newBalance / keyPrice
+				msg := fmt.Sprintf(
+					"🔔 <b>تمدید روزانه سلف 🐺</b>\n\n"+
+						"✅ ۱ کلید بابت تمدید ۲۴ ساعته سلف از موجودی شما کسر شد.\n"+
+						"🔑 <b>کلیدهای باقی‌مانده شما:</b> <code>%d</code> عدد",
+					remainingKeys,
+				)
+				_, _ = bot.Send(&tele.User{ID: uid}, msg, tele.ModeHTML)
+			}
+		}
+	}
 }
 
 type botAuthenticator struct {
@@ -764,7 +802,6 @@ func main() {
 			return c.Send("📸 تصویر شما دریافت شد.")
 		}
 
-		// ثبت تراکنش در وضعیت انتظار جهت جلوگیری از دوبار شارژ شدن (Idempotency)
 		res, err := db.Exec(`INSERT INTO transactions (user_id, amount, status) VALUES (?, ?, 'pending')`, user.ID, amount)
 		if err != nil {
 			log.Printf("❌ خطا در ثبت تراکنش: %v", err)
@@ -876,7 +913,7 @@ func main() {
 		return c.Send(text, confirmSelfMenu, tele.ModeHTML)
 	})
 
-	// روشن کردن سلف و بازگشت کیبورد به صفحه اصلی/مدیریت
+	// هندلر دکمه "روشن کردن سلف": در صورت غیرفعال بودن سلف، ارجاع به بخش خرید سلف می‌دهد
 	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -893,34 +930,16 @@ func main() {
 		_, statErr := os.Stat(sessionPath)
 		hasSession := (statErr == nil)
 
+		// اگر کاربر قبلاً سلف داشته و خاموشش کرده بود
 		if selfStatus == "خاموش" && hasSession {
 			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
 			return c.Send("🟢 <b>سلف شما با موفقیت روشن شد و امکانات مجدداً فعال گردید.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
-		price := getKeyPrice()
-		balance := GetUserBalance(userID)
-		keys := balance / price
-
-		if keys < 30 {
-			text := fmt.Sprintf(
-				"❌ <b>سلام شما کلید لازم برای شروع ندارید !</b>\n\n"+
-					"⏳ <i>سلف روزانه بیلینگ میشه : هر روز یک کلید از حسابت کم میشه !</i>\n\n"+
-					"🔑 تعداد کلید های موجود شما <b>%d</b> عدد هست!\n\n"+
-					"⚠️ <b>برای فعالسازی حداقل باید 30 کلید داشته باشید ..</b>\n\n"+
-					"🛒 <i>لطفا از بخش کیف پول کلید خریداری نمایید.</i>", keys,
-			)
-			return c.Send(text, tele.ModeHTML)
-		}
-
-		text := fmt.Sprintf(
-			"🎉 <b>سلام شما کلید لازم برای شروع را دارید !</b>\n\n"+
-				"⏳ <i>سلف روزانه بیلینگ میشه : هر روز یک کلید از حسابت کم میشه !</i>\n\n"+
-				"🔑 تعداد کلید های موجود شما <b>%d</b> عدد هست!\n\n"+
-				"✅ <b>برای فعالسازی سلف و شروع کسر کلید روی دکمه زیر کلیک کنید.</b>", keys,
-		)
-
-		return c.Send(text, confirmSelfMenu, tele.ModeHTML)
+		// اگر سلف فعال نیست یا خروج زده یا اصلاً خریداری نکرده
+		text := "❌ <b>سلف شما فعال نیست!</b>\n\n" +
+			"لطفاً برای راه‌اندازی و اتصال سلف، ابتدا از بخش <b>🛍️ خرید سلف</b> اقدام نمایید."
+		return c.Send(text, getKeyboard(userID), tele.ModeHTML)
 	})
 
 	// خاموش کردن سلف و بازگشت کیبورد به صفحه اصلی/مدیریت
@@ -942,7 +961,7 @@ func main() {
 		return c.Send("🔴 <b>سلف شما خاموش شد.</b>\nامکانات سلف غیرفعال گردید، اما اتصال اکانت شما برقرار است.", getKeyboard(userID), tele.ModeHTML)
 	})
 
-	// دکمه خروج سلف همراه با تأییدیه دو مرحله‌ای
+	// خروج سلف با تأییدیه دو مرحله‌ای
 	bot.Handle(&btnExitSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -1170,7 +1189,6 @@ func main() {
 		return c.Send(text, tele.ModeHTML)
 	})
 
-	// تایید فاکتور همراه با تراکنش امن و ممانعت قطعی از دوبار شارژ شدن
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
@@ -1355,7 +1373,6 @@ func main() {
 			if uState.Action == "waiting_for_code" {
 				select {
 				case uState.CodeChan <- text:
-					// منتظر پاسخ دقیق تلگرام می‌مانیم بدون حدس زدن با Sleep
 					select {
 					case res := <-uState.ResultChan:
 						if res.Type == AuthResultNeeds2FA {
@@ -1364,7 +1381,7 @@ func main() {
 							stateMu.Unlock()
 							return c.Send("🔒 <b>حساب شما دارای رمز عبور تایید دو مرحله‌ای (2FA) است.</b>\n\nلطفاً رمز عبور خود را ارسال کنید:", tele.ModeHTML)
 						} else if res.Type == AuthResultSuccess {
-							_, _ = db.Exec("UPDATE users SET self_status = 'روشن', phone = ? WHERE id = ?", uState.Phone, userID)
+							_, _ = db.Exec("UPDATE users SET self_status = 'روشن', phone = ?, last_billed_at = NOW() WHERE id = ?", uState.Phone, userID)
 							stateMu.Lock()
 							delete(userStates, userID)
 							stateMu.Unlock()
@@ -1400,7 +1417,7 @@ func main() {
 					select {
 					case res := <-uState.ResultChan:
 						if res.Type == AuthResultSuccess {
-							_, _ = db.Exec("UPDATE users SET self_status = 'روشن', phone = ? WHERE id = ?", uState.Phone, userID)
+							_, _ = db.Exec("UPDATE users SET self_status = 'روشن', phone = ?, last_billed_at = NOW() WHERE id = ?", uState.Phone, userID)
 							stateMu.Lock()
 							delete(userStates, userID)
 							stateMu.Unlock()
@@ -1544,6 +1561,9 @@ func main() {
 	bot.Handle(&btnGuide, func(c tele.Context) error {
 		return c.Send("📚 <b>راهنمای استفاده</b>\n\nآموزش‌ها و راهنمای کامل استفاده از ربات.", tele.ModeHTML)
 	})
+
+	// راه‌اندازی کارگر پس‌زمینه کسر روزانه کلید
+	startBillingWorker(bot)
 
 	log.Println("⚡ ربات ولف سلف با بالاترین امنیت و موتور استاندارد آماده و روشن شد!")
 	bot.Start()

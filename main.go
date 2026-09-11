@@ -779,8 +779,58 @@ func main() {
 		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
 	})
 
-	// مدیریت هوشمند دکمه‌های خرید، روشن کردن سلف و جلوگیری از عمل تکراری
-	handleTurnOnOrBuy := func(c tele.Context) error {
+	// هندلر دکمه "خرید سلف": در صورت فعال یا خاموش بودن سلف، مشخصات و تاریخ و زمان را نشان می‌دهد
+	bot.Handle(&btnBuy, func(c tele.Context) error {
+		userID := c.Sender().ID
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
+
+		selfStatus := GetUserSelfStatus(userID)
+		price := getKeyPrice()
+		balance := GetUserBalance(userID)
+		keys := balance / price
+
+		if selfStatus == "روشن" || selfStatus == "خاموش" {
+			loc := getTehranLocation()
+			now := time.Now().In(loc)
+			tNow := gpc.New(now)
+			tNowStr := toPersianDigits(tNow.Format("yyyy/MM/dd"))
+			tTimeStr := toPersianDigits(tNow.Format("HH:mm:ss"))
+
+			text := fmt.Sprintf(
+				"🎉 <b>سلف شما فعال هست!</b> 🐺\n\n"+
+					"🔑 <b>تعداد کلیدهای شما:</b> <code>%d</code> عدد\n"+
+					"📅 <b>تاریخ:</b> %s\n"+
+					"⏰ <b>ساعت:</b> %s",
+				keys, tNowStr, tTimeStr,
+			)
+			return c.Send(text, getKeyboard(userID), tele.ModeHTML)
+		}
+
+		if keys < 30 {
+			text := fmt.Sprintf(
+				"❌ <b>سلام شما کلید لازم برای شروع ندارید !</b>\n\n"+
+					"⏳ <i>سلف روزانه بیلینگ میشه : هر روز یک کلید از حسابت کم میشه !</i>\n\n"+
+					"🔑 تعداد کلید های موجود شما <b>%d</b> عدد هست!\n\n"+
+					"⚠️ <b>برای فعالسازی حداقل باید 30 کلید داشته باشید ..</b>\n\n"+
+					"🛒 <i>لطفا از بخش کیف پول کلید خریداری نمایید.</i>", keys,
+			)
+			return c.Send(text, tele.ModeHTML)
+		}
+
+		text := fmt.Sprintf(
+			"🎉 <b>سلام شما کلید لازم برای شروع را دارید !</b>\n\n"+
+				"⏳ <i>سلف روزانه بیلینگ میشه : هر روز یک کلید از حسابت کم میشه !</i>\n\n"+
+				"🔑 تعداد کلید های موجود شما <b>%d</b> عدد هست!\n\n"+
+				"✅ <b>برای فعالسازی سلف و شروع کسر کلید روی دکمه زیر کلیک کنید.</b>", keys,
+		)
+
+		return c.Send(text, confirmSelfMenu, tele.ModeHTML)
+	})
+
+	// روشن کردن سلف و بازگشت کیبورد به صفحه اصلی/مدیریت
+	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
 			return c.Send("❌ حساب کاربری شما مسدود شده است.")
@@ -789,21 +839,18 @@ func main() {
 		selfStatus := GetUserSelfStatus(userID)
 
 		if selfStatus == "روشن" {
-			return c.Send("⚠️ <b>سلف روشن است.</b>", tele.ModeHTML)
+			return c.Send("⚠️ <b>سلف روشن است.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
-		// بررسی وجود فایل سشن قبلی در سرور
 		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
 		_, statErr := os.Stat(sessionPath)
 		hasSession := (statErr == nil)
 
-		// اگر سلف خاموش بوده اما کاربر قبلاً لاگین کرده و سشن دارد، بدون نیاز به کد دوباره روشن می‌شود
 		if selfStatus == "خاموش" && hasSession {
 			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
 			return c.Send("🟢 <b>سلف شما با موفقیت روشن شد و امکانات مجدداً فعال گردید.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
-		// در غیر این صورت (اولین بار یا بعد از خروج کامل)، بررسی موجودی کلید
 		price := getKeyPrice()
 		balance := GetUserBalance(userID)
 		keys := balance / price
@@ -827,12 +874,9 @@ func main() {
 		)
 
 		return c.Send(text, confirmSelfMenu, tele.ModeHTML)
-	}
+	})
 
-	bot.Handle(&btnBuy, handleTurnOnOrBuy)
-	bot.Handle(&btnTurnOnSelf, handleTurnOnOrBuy)
-
-	// خاموش کردن هوشمند سلف (غیرفعال کردن امکانات بدون خروج از اکانت)
+	// خاموش کردن سلف و بازگشت کیبورد به صفحه اصلی/مدیریت
 	bot.Handle(&btnTurnOffSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -841,17 +885,17 @@ func main() {
 
 		selfStatus := GetUserSelfStatus(userID)
 		if selfStatus == "خاموش" {
-			return c.Send("⚠️ <b>سلف خاموش هست.</b>", tele.ModeHTML)
+			return c.Send("⚠️ <b>سلف خاموش هست.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 		if selfStatus != "روشن" {
-			return c.Send("❌ <b>شما سلف فعالی ندارید.</b>", tele.ModeHTML)
+			return c.Send("❌ <b>شما سلف فعالی ندارید.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
 		_, _ = db.Exec("UPDATE users SET self_status = 'خاموش' WHERE id = ?", userID)
-		return c.Send("🔴 <b>سلف شما خاموش شد.</b>\nامکانات سلف غیرفعال گردید، اما اتصال اکانت شما برقرار است.", tele.ModeHTML)
+		return c.Send("🔴 <b>سلف شما خاموش شد.</b>\nامکانات سلف غیرفعال گردید، اما اتصال اکانت شما برقرار است.", getKeyboard(userID), tele.ModeHTML)
 	})
 
-	// خروج کامل از اکانت و حذف سشن
+	// دکمه خروج سلف با دریافت تاییدیه قطعی
 	bot.Handle(&btnExitSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -863,12 +907,35 @@ func main() {
 			return c.Send("❌ <b>شما سلف فعالی ندارید که از آن خارج شوید.</b>", tele.ModeHTML)
 		}
 
-		// حذف فایل سشن برای قطع کامل دسترسی
+		exitMenu := &tele.ReplyMarkup{}
+		btnConfirm := exitMenu.Data("🛑 بله، خروج قطعی", "exit_confirm")
+		btnCancel := exitMenu.Data("❌ انصراف", "exit_cancel")
+		exitMenu.Inline(exitMenu.Row(btnConfirm, btnCancel))
+
+		text := "⚠️ <b>آیا مطمئن هستید که می‌خواهید از سلف خارج شوید؟</b>\n\nبا تایید این گزینه، اتصال اکانت شما به طور کامل قطع شده و فایل نشست (Session) شما از سرور حذف خواهد شد."
+		return c.Send(text, exitMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&tele.Btn{Unique: "exit_confirm"}, func(c tele.Context) error {
+		userID := c.Sender().ID
+
 		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
 		_ = os.Remove(sessionPath)
 
 		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده' WHERE id = ?", userID)
+
+		if c.Message() != nil {
+			_ = bot.Delete(c.Message())
+		}
+
 		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف خارج شدید و اتصال اکانت شما به طور کامل قطع گردید.</b>", getKeyboard(userID), tele.ModeHTML)
+	})
+
+	bot.Handle(&tele.Btn{Unique: "exit_cancel"}, func(c tele.Context) error {
+		if c.Message() != nil {
+			_ = bot.Delete(c.Message())
+		}
+		return c.Send("✅ <b>عملیات خروج لغو شد و سلف شما دست‌نخورده باقی ماند.</b>", getKeyboard(c.Sender().ID), tele.ModeHTML)
 	})
 
 	bot.Handle(&btnConfirmSelfAction, func(c tele.Context) error {

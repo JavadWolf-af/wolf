@@ -7,6 +7,6 @@ require (
 	github.com/gotd/td v0.110.0
 	github.com/joho/godotenv v1.5.1
 	github.com/shirou/gopsutil/v3 v3.24.5
-	github.com/yaa110/go-persian-calendar v1.1.2
+	github.com/yaa110/go-persian-calendar v1.3.0
 	gopkg.in/telebot.v3 v3.3.8
 )

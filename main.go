@@ -488,7 +488,6 @@ func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPe
 	deleteMsg(ctx, client, inputPeer, msgID)
 }
 
-// ارسال پیام ریپلای شده به تمام پیوی‌ها
 func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, userID int64) {
 	if msg.ReplyTo == nil {
 		if inputPeer != nil {
@@ -563,7 +562,6 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 		return
 	}
 
-	// پاک کردن رکوردهای برودکست قبلی
 	_, _ = db.Exec("DELETE FROM pv_broadcasts WHERE user_id = ?", userID)
 
 	for _, target := range targetPeers {
@@ -586,14 +584,14 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 						}
 					}
 				}
-			case *tg.UpdatesShortSentMessage:
+			case *tg.UpdateShortSentMessage:
 				sID = upd.ID
 			}
 			if sID != 0 {
 				_, _ = db.Exec("INSERT INTO pv_broadcasts (user_id, message_id) VALUES (?, ?)", userID, sID)
 			}
 		}
-		time.Sleep(80 * time.Millisecond) // تاخیر ایمن برای پیشگیری از لیمیت تلگرام
+		time.Sleep(80 * time.Millisecond)
 	}
 
 	if inputPeer != nil {
@@ -601,7 +599,6 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 	}
 }
 
-// حذف دو طرفه آخرین پیام ارسالی به تمام پیوی‌ها
 func handleDeleteBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, userID int64) {
 	rows, err := db.Query("SELECT message_id FROM pv_broadcasts WHERE user_id = ?", userID)
 	if err != nil {

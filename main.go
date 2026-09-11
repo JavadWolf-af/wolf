@@ -174,7 +174,8 @@ func InitDB(cfg Config) {
 		is_clock_enabled BOOLEAN DEFAULT FALSE,
 		original_last_name VARCHAR(255) DEFAULT '',
 		is_emoji_enabled BOOLEAN DEFAULT FALSE,
-		original_first_name VARCHAR(255) DEFAULT ''
+		original_first_name VARCHAR(255) DEFAULT '',
+		is_timer_media_enabled BOOLEAN DEFAULT FALSE
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN last_billed_at DATETIME DEFAULT CURRENT_TIMESTAMP")
@@ -182,6 +183,7 @@ func InitDB(cfg Config) {
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN original_last_name VARCHAR(255) DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_emoji_enabled BOOLEAN DEFAULT FALSE")
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN original_first_name VARCHAR(255) DEFAULT ''")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_timer_media_enabled BOOLEAN DEFAULT FALSE")
 
 	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wallets (
@@ -684,9 +686,32 @@ func startUserbot(userID int64, cfg Config) {
 
 	handleMsg := func(ctx context.Context, e tg.Entities, message tg.MessageClass) {
 		msg, ok := message.(*tg.Message)
-		if !ok || !msg.Out {
+		if !ok {
 			return
 		}
+
+		// بررسی عکس‌ها و ویدیوهای تایم‌دار ورودی در پیوی
+		if !msg.Out {
+			if _, isUser := msg.PeerID.(*tg.PeerUser); isUser && msg.Media != nil {
+				var timerEnabled bool
+				_ = db.QueryRow("SELECT is_timer_media_enabled FROM users WHERE id = ?", userID).Scan(&timerEnabled)
+				if timerEnabled {
+					var inputPeer tg.InputPeerClass = getInputPeer(msg.PeerID, e, userID)
+					go func() {
+						fwdReq := &tg.MessagesForwardMessagesRequest{
+							DropAuthor: true,
+							FromPeer:   inputPeer,
+							ID:         []int{msg.ID},
+							RandomID:   []int64{rand.Int63()},
+							ToPeer:     &tg.InputPeerSelf{},
+						}
+						_, _ = client.API().MessagesForwardMessages(ctx, fwdReq)
+					}()
+				}
+			}
+			return
+		}
+
 		text := strings.TrimSpace(msg.Message)
 
 		var inputPeer tg.InputPeerClass
@@ -1122,10 +1147,13 @@ func main() {
 	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	confirmSelfMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	walletReplyMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	confidentialMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	timerMediaMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
 	btnBuy := userMenu.Text("🛍️ خرید سلف")
 	btnProfile := userMenu.Text("👤 حساب کاربری")
 	btnWallet := userMenu.Text("👛 کیف پول 💳")
+	btnConfidential := userMenu.Text("🔐 محرمانه ها")
 	btnSupport := userMenu.Text("🎧 پشتیبانی")
 	btnGuide := userMenu.Text("📚 راهنما")
 	btnAdminPanel := adminMenu.Text("⚙️ مدیریت")
@@ -1133,13 +1161,13 @@ func main() {
 
 	userMenu.Reply(
 		userMenu.Row(btnBuy, btnProfile),
-		userMenu.Row(btnWallet),
+		userMenu.Row(btnWallet, btnConfidential),
 		userMenu.Row(btnSupport, btnGuide),
 	)
 
 	adminMenu.Reply(
 		adminMenu.Row(btnBuy, btnProfile),
-		adminMenu.Row(btnWallet),
+		adminMenu.Row(btnWallet, btnConfidential),
 		adminMenu.Row(btnSupport, btnGuide),
 		adminMenu.Row(btnAdminPanel),
 	)
@@ -1194,6 +1222,19 @@ func main() {
 	walletReplyMenu.Reply(
 		walletReplyMenu.Row(btnWalletConfirm),
 		walletReplyMenu.Row(btnBack),
+	)
+
+	btnTimerMedia := confidentialMenu.Text("📸 رسانه تایمردار")
+	confidentialMenu.Reply(
+		confidentialMenu.Row(btnTimerMedia),
+		confidentialMenu.Row(btnBack),
+	)
+
+	btnTurnOnTimer := timerMediaMenu.Text("🟢 روشن کردن رسانه تایمردار")
+	btnTurnOffTimer := timerMediaMenu.Text("🔴 خاموش کردن رسانه تایمردار")
+	timerMediaMenu.Reply(
+		timerMediaMenu.Row(btnTurnOnTimer, btnTurnOffTimer),
+		timerMediaMenu.Row(btnBack),
 	)
 
 	getKeyboard := func(userID int64) *tele.ReplyMarkup {
@@ -1373,6 +1414,54 @@ func main() {
 			tNowStr, tTimeStr, user.ID, tJoinedStr, daysActive, formatMoney(GetUserBalance(user.ID)), statusIcon, selfStatus)
 
 		return c.Send(text, profileMenu, tele.ModeHTML)
+	})
+
+	// هندلر منوی محرمانه ها (با بررسی خرید سلف)
+	bot.Handle(&btnConfidential, func(c tele.Context) error {
+		userID := c.Sender().ID
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
+
+		selfStatus := GetUserSelfStatus(userID)
+		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
+			return c.Send("❌ <b>دسترسی محدود!</b>\n\nبخش محرمانه ها فقط برای کاربرانی که اشتراک سلف را خریداری کرده‌اند فعال می‌باشد.", getKeyboard(userID), tele.ModeHTML)
+		}
+
+		return c.Send("🔐 <b>به بخش محرمانه ها خوش آمدید!</b>\n\nامکانات امنیتی و ویژه سلف در این بخش قرار دارد:", confidentialMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnTimerMedia, func(c tele.Context) error {
+		userID := c.Sender().ID
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
+
+		var isTimerEnabled bool
+		_ = db.QueryRow("SELECT is_timer_media_enabled FROM users WHERE id = ?", userID).Scan(&isTimerEnabled)
+
+		statusStr := "🔴 خاموش"
+		if isTimerEnabled {
+			statusStr = "🟢 روشن"
+		}
+
+		text := fmt.Sprintf("📸 <b>مدیریت رسانه های تایمردار (View-Once)</b>\n\n"+
+			"با فعالسازی این قابلیت، به محض دریافت عکس یا ویدیوی تایم‌دار در پیوی، یک نسخه پشتیبان از آن به صورت خودکار در <b>پیام‌های ذخیره شده (Saved Messages)</b> شما ذخیره می‌شود تا پیش از باز کردن یا انقضای تایمر آن را از دست ندهید.\n\n"+
+			"📌 <b>وضعیت فعلی شما:</b> %s", statusStr)
+
+		return c.Send(text, timerMediaMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnTurnOnTimer, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_timer_media_enabled = TRUE WHERE id = ?", userID)
+		return c.Send("🟢 <b>قابلیت ذخیره رسانه تایمردار با موفقیت روشن شد.</b>", timerMediaMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnTurnOffTimer, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_timer_media_enabled = FALSE WHERE id = ?", userID)
+		return c.Send("🔴 <b>قابلیت ذخیره رسانه تایمردار خاموش شد.</b>", timerMediaMenu, tele.ModeHTML)
 	})
 
 	getWalletInlineKeyboard := func() *tele.ReplyMarkup {
@@ -1738,7 +1827,7 @@ func main() {
 		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
 		_ = os.Remove(sessionPath)
 
-		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE WHERE id = ?", userID)
+		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE WHERE id = ?", userID)
 
 		if c.Message() != nil {
 			_ = bot.Delete(c.Message())
@@ -2314,7 +2403,7 @@ func main() {
 		btnGuideClock := guideMenu.Data("⏱ ساعت", "guide_clock")
 		btnGuideEmoji := guideMenu.Data("🎭 اموجی", "guide_emoji")
 		btnGuidePV := guideMenu.Data("📩 پیوی همه", "guide_pv")
-		btnGuideGroup := guideMenu.Data("گروه همه", "guide_group")
+		btnGuideGroup := guideMenu.Data("👥 گروه همه", "guide_group")
 		guideMenu.Inline(
 			guideMenu.Row(btnGuideClock, btnGuideEmoji),
 			guideMenu.Row(btnGuidePV, btnGuideGroup),
@@ -2407,7 +2496,7 @@ func main() {
 		text := "📩 <b>راهنمای فوروارد به تمام پیوی‌ها</b>\n\n" +
 			"روی پیام مورد نظر ریپلای کنید و بنویسید:\n" +
 			"🔸 <code>بفرست پیوی همه</code> (بدون نام فرستنده)\n" +
-			"🔸 <code>پیوی همه</code> (با نام فرستنده اصلی)"
+			"🔸 <code>پیوی همه</code> (با درج نام فرستنده)"
 
 		if c.Message() != nil {
 			_ = c.Edit(text, backMenu, tele.ModeHTML)
@@ -2431,7 +2520,7 @@ func main() {
 		text := "👥 <b>راهنمای فوروارد به تمام گروه‌ها</b>\n\n" +
 			"روی پیام مورد نظر ریپلای کنید و بنویسید:\n" +
 			"🔸 <code>بفرست گروه همه</code> (بدون نام فرستنده)\n" +
-			"🔸 <code>گروه همه</code> (با نام فرستنده اصلی)"
+			"🔸 <code>گروه همه</code> (با درج نام فرستنده)"
 
 		if c.Message() != nil {
 			_ = c.Edit(text, backMenu, tele.ModeHTML)

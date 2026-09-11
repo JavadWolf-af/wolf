@@ -128,9 +128,12 @@ func InitDB(cfg Config) {
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
 	_, _ = db.Exec(querySettings)
 
+	// مقادیر پیش‌فرض دیتابیس (شماره کارت و پشتیبانی)
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_number', '6037-9971-XXXX-XXXX')`)
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_name', 'جواد ولف')`)
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_bank', 'بانک ملی')`)
+	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('support_text', '🎧 <b>بخش پشتیبانی</b>\n\nجهت حل مشکلات و پاسخ به سوالات خود، با ما در ارتباط باشید:')`)
+	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('support_id', '@JavadWolf')`)
 }
 
 func GetSetting(key string) string {
@@ -191,7 +194,6 @@ func formatMoney(n int) string {
 	return strings.Join(parts, ",")
 }
 
-// تابع تبدیل بایت به مگابایت و گیگابایت برای خوانایی پنل سرور
 func formatBytes(b uint64) string {
 	const unit = 1024
 	if b < unit {
@@ -231,6 +233,7 @@ func main() {
 	adminMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminPanelMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	accountConfigMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	supportConfigMenu := &tele.ReplyMarkup{ResizeKeyboard: true} // منوی جدید تنظیم پشتیبانی
 	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
 	btnBuy := userMenu.Text("🛍️ خرید سلف")
@@ -253,25 +256,39 @@ func main() {
 		adminMenu.Row(btnAdminPanel),
 	)
 
+	// --- دکمه‌های پنل مدیریت ---
 	btnConfigAccount := adminPanelMenu.Text("🛠 تنظیم حساب بانکی")
+	btnConfigSupport := adminPanelMenu.Text("📞 تنظیم پشتیبانی")
 	btnBack := adminPanelMenu.Text("🔙 بازگشت")
 
 	adminPanelMenu.Reply(
-		adminPanelMenu.Row(btnConfigAccount),
+		adminPanelMenu.Row(btnConfigAccount, btnConfigSupport),
 		adminPanelMenu.Row(btnBack),
 	)
 
+	// --- دکمه‌های زیرمنوی تنظیم حساب بانکی ---
 	btnConfigCardNum := accountConfigMenu.Text("💳 شماره کارت")
 	btnConfigCardName := accountConfigMenu.Text("👤 نام صاحب حساب")
 	btnConfigCardBank := accountConfigMenu.Text("🏦 نام بانک")
-	btnBackToAdmin := accountConfigMenu.Text("🔙 بازگشت به مدیریت")
+	btnBackToAdminAcc := accountConfigMenu.Text("🔙 بازگشت به مدیریت")
 
 	accountConfigMenu.Reply(
 		accountConfigMenu.Row(btnConfigCardNum, btnConfigCardName),
 		accountConfigMenu.Row(btnConfigCardBank),
-		accountConfigMenu.Row(btnBackToAdmin),
+		accountConfigMenu.Row(btnBackToAdminAcc),
 	)
 
+	// --- دکمه‌های زیرمنوی تنظیم پشتیبانی ---
+	btnConfigSupportText := supportConfigMenu.Text("📝 تنظیم متن پشتیبانی")
+	btnConfigSupportID := supportConfigMenu.Text("🆔 تنظیم آیدی پشتیبانی")
+	btnBackToAdminSup := supportConfigMenu.Text("🔙 بازگشت به مدیریت")
+
+	supportConfigMenu.Reply(
+		supportConfigMenu.Row(btnConfigSupportText, btnConfigSupportID),
+		supportConfigMenu.Row(btnBackToAdminSup),
+	)
+
+	// --- دکمه‌های پروفایل ---
 	btnTurnOnSelf := profileMenu.Text("🟢 روشن کردن سلف")
 	btnTurnOffSelf := profileMenu.Text("🔴 خاموش کردن سلف")
 	btnExitSelf := profileMenu.Text("🛑 خروج سلف")
@@ -300,7 +317,6 @@ func main() {
 		inactiveUsers := totalUsers - activeUsers
 		adminCount := len(cfg.AdminIDs)
 
-		// محاسبه زنده مشخصات سرور
 		var cpuUsage float64
 		c, err := cpu.Percent(0, false)
 		if err == nil && len(c) > 0 {
@@ -401,10 +417,13 @@ func main() {
 		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getKeyboard(c.Sender().ID), tele.ModeHTML)
 	})
 
-	bot.Handle(&btnBackToAdmin, func(c tele.Context) error {
+	// مدیریت دکمه‌های بازگشت به داشبورد
+	backToAdminHandler := func(c tele.Context) error {
 		delete(adminStates, c.Sender().ID)
 		return c.Send(getAdminDashboard(), adminPanelMenu, tele.ModeHTML)
-	})
+	}
+	bot.Handle(&btnBackToAdminAcc, backToAdminHandler)
+	bot.Handle(&btnBackToAdminSup, backToAdminHandler)
 
 	bot.Handle(&btnProfile, func(c tele.Context) error {
 		user := c.Sender()
@@ -429,22 +448,20 @@ func main() {
 		return c.Send(text, profileMenu, tele.ModeHTML)
 	})
 
+	// =========================
+	// WALLET SYSTEM
+	// =========================
 	getWalletKeyboard := func() *tele.ReplyMarkup {
 		menu := &tele.ReplyMarkup{}
-
 		btnP25k := menu.Data("➕ 25,000", "wallet_change", "25000")
 		btnP50k := menu.Data("➕ 50,000", "wallet_change", "50000")
 		btnP100k := menu.Data("➕ 100,000", "wallet_change", "100000")
-
 		btnM1k := menu.Data("➖ 1,000", "wallet_change", "-1000")
 		btnP1k := menu.Data("➕ 1,000", "wallet_change", "1000")
-
 		btnM5k := menu.Data("➖ 5,000", "wallet_change", "-5000")
 		btnP5k := menu.Data("➕ 5,000", "wallet_change", "5000")
-
 		btnM10k := menu.Data("➖ 10,000", "wallet_change", "-10000")
 		btnP10k := menu.Data("➕ 10,000", "wallet_change", "10000")
-
 		btnConfirm := menu.Data("✅ تایید و ساخت فاکتور", "wallet_confirm")
 		btnWalletBack := menu.Data("🔙 بازگشت", "wallet_back_main")
 
@@ -589,24 +606,21 @@ func main() {
 	})
 
 	// =========================
-	// ADMIN PANEL (DASHBOARD)
+	// ADMIN PANEL MENUS
 	// =========================
 	bot.Handle(&btnAdminPanel, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Send("❌ شما دسترسی به بخش مدیریت را ندارید.")
 		}
-		
 		return c.Send(getAdminDashboard(), adminPanelMenu, tele.ModeHTML)
 	})
 
+	// زیرمنوی تنظیم حساب بانکی
 	bot.Handle(&btnConfigAccount, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Send("❌ شما دسترسی ندارید.")
 		}
-
-		text := "💳 <b>بخش تنظیمات اطلاعات بانکی</b>\n\n" +
-			"لطفاً برای مشاهده و تغییر اطلاعات، از دکمه‌های زیر استفاده کنید:"
-
+		text := "💳 <b>بخش تنظیمات اطلاعات بانکی</b>\n\nلطفاً برای مشاهده و تغییر اطلاعات، از دکمه‌های زیر استفاده کنید:"
 		return c.Send(text, accountConfigMenu, tele.ModeHTML)
 	})
 
@@ -631,6 +645,31 @@ func main() {
 		current := GetSetting("card_bank")
 		text := fmt.Sprintf("🏦 <b>تنظیم نام بانک</b>\n\n🔹 مقدار فعلی: <b>%s</b>\n\n✏️ <i>لطفاً نام بانک جدید را ارسال کنید:</i>", current)
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_bank"}
+		return c.Send(text, tele.ModeHTML)
+	})
+
+	// زیرمنوی تنظیم پشتیبانی
+	bot.Handle(&btnConfigSupport, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Send("❌ شما دسترسی ندارید.")
+		}
+		text := "📞 <b>بخش تنظیمات پشتیبانی</b>\n\nاز طریق منوی زیر می‌توانید متن و آیدی پشتیبانی که به کاربران نمایش داده می‌شود را تغییر دهید:"
+		return c.Send(text, supportConfigMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnConfigSupportText, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		current := GetSetting("support_text")
+		text := fmt.Sprintf("📝 <b>تنظیم متن پشتیبانی</b>\n\n🔹 مقدار فعلی:\n<i>%s</i>\n\n✏️ <i>لطفاً متن جدید پشتیبانی را ارسال کنید:</i>", current)
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_support_text"}
+		return c.Send(text, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnConfigSupportID, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		current := GetSetting("support_id")
+		text := fmt.Sprintf("🆔 <b>تنظیم آیدی پشتیبانی</b>\n\n🔹 مقدار فعلی: <b>%s</b>\n\n✏️ <i>لطفاً آیدی جدید پشتیبانی (مثال: @YourID) را ارسال کنید:</i>", current)
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_support_id"}
 		return c.Send(text, tele.ModeHTML)
 	})
 
@@ -789,6 +828,16 @@ func main() {
 			_ = c.Send("✅ <b>نام بانک با موفقیت به‌روزرسانی شد.</b>", tele.ModeHTML)
 			delete(adminStates, adminID)
 
+		case "set_support_text":
+			SetSetting("support_text", text)
+			_ = c.Send("✅ <b>متن پشتیبانی با موفقیت به‌روزرسانی شد.</b>", tele.ModeHTML)
+			delete(adminStates, adminID)
+
+		case "set_support_id":
+			SetSetting("support_id", text)
+			_ = c.Send("✅ <b>آیدی پشتیبانی با موفقیت به‌روزرسانی شد.</b>", tele.ModeHTML)
+			delete(adminStates, adminID)
+
 		case "msg":
 			_, err := bot.Send(&tele.User{ID: state.TargetID}, fmt.Sprintf("💬 <b>پیام از طرف مدیریت:</b>\n\n%s", html.EscapeString(text)), tele.ModeHTML)
 			if err == nil {
@@ -822,6 +871,21 @@ func main() {
 		return nil
 	})
 
+	// =========================
+	// USER MAIN MENU HANDLERS
+	// =========================
+	bot.Handle(&btnSupport, func(c tele.Context) error {
+		if IsUserBlocked(c.Sender().ID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
+		
+		sText := GetSetting("support_text")
+		sID := GetSetting("support_id")
+
+		text := fmt.Sprintf("%s\n\n🆔 <b>آیدی ارتباط:</b> %s", sText, sID)
+		return c.Send(text, tele.ModeHTML)
+	})
+
 	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {
 		return c.Send("⏳ این بخش به زودی پس از اتصال سرورهای سلف فعال خواهد شد.")
 	})
@@ -833,9 +897,6 @@ func main() {
 	})
 	bot.Handle(&btnBuy, func(c tele.Context) error {
 		return c.Send("🛍️ <b>بخش خرید سلف</b>\n\nلطفاً خدمت مورد نظر خود را انتخاب کنید.", tele.ModeHTML)
-	})
-	bot.Handle(&btnSupport, func(c tele.Context) error {
-		return c.Send("🎧 <b>پشتیبانی</b>\n\nجهت ارتباط با پشتیبانی، پیام خود را ارسال کنید.", tele.ModeHTML)
 	})
 	bot.Handle(&btnGuide, func(c tele.Context) error {
 		return c.Send("📚 <b>راهنمای استفاده</b>\n\nآموزش‌ها و راهنمای کامل استفاده از ربات.", tele.ModeHTML)

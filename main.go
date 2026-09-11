@@ -64,6 +64,21 @@ func getRandomEmoji() string {
 	return randomEmojiPool[rand.Intn(len(randomEmojiPool))]
 }
 
+func cleanName(name string) string {
+	name = strings.TrimSpace(name)
+	changed := true
+	for changed {
+		changed = false
+		for _, em := range randomEmojiPool {
+			if strings.HasSuffix(name, em) {
+				name = strings.TrimSpace(strings.TrimSuffix(name, em))
+				changed = true
+			}
+		}
+	}
+	return strings.TrimSpace(name)
+}
+
 type UserbotSession struct {
 	UserID int64
 	Client *telegram.Client
@@ -356,7 +371,7 @@ func handleEmojiOn(ctx context.Context, userID int64, client *telegram.Client) {
 	if !isEnabled || origFirst == "" {
 		self, err := client.Self(ctx)
 		if err == nil {
-			origFirst = self.FirstName
+			origFirst = cleanName(self.FirstName)
 			_, _ = db.Exec("UPDATE users SET original_first_name = ? WHERE id = ?", origFirst, userID)
 		}
 	}
@@ -959,21 +974,37 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 	go func() {
 		err := client.Run(ctx, func(ctx context.Context) error {
-			// بروزرسانی آنی ساعت و اموجی بلافاصله پس از اتصال و بالا آمدن سرور
-			var isClock, isEmoji bool
-			var origFirst string
-			_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, original_first_name FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &origFirst)
+			go func() {
+				time.Sleep(1500 * time.Millisecond)
+				cTimeout, cancel := context.WithTimeout(ctx, 15*time.Second)
+				defer cancel()
 
-			if isClock {
-				req := &tg.AccountUpdateProfileRequest{}
-				req.SetLastName(getTehranBoldTime())
-				_, _ = client.API().AccountUpdateProfile(ctx, req)
-			}
-			if isEmoji && origFirst != "" {
-				req := &tg.AccountUpdateProfileRequest{}
-				req.SetFirstName(fmt.Sprintf("%s %s", origFirst, getRandomEmoji()))
-				_, _ = client.API().AccountUpdateProfile(ctx, req)
-			}
+				var isClock, isEmoji bool
+				var origFirst string
+				_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, original_first_name FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &origFirst)
+
+				if isClock {
+					req := &tg.AccountUpdateProfileRequest{}
+					req.SetLastName(getTehranBoldTime())
+					_, _ = client.API().AccountUpdateProfile(cTimeout, req)
+				}
+				if isEmoji {
+					if origFirst == "" {
+						self, err := client.Self(cTimeout)
+						if err == nil {
+							origFirst = cleanName(self.FirstName)
+							if origFirst != "" {
+								_, _ = db.Exec("UPDATE users SET original_first_name = ? WHERE id = ?", origFirst, userID)
+							}
+						}
+					}
+					if origFirst != "" {
+						req := &tg.AccountUpdateProfileRequest{}
+						req.SetFirstName(fmt.Sprintf("%s %s", origFirst, getRandomEmoji()))
+						_, _ = client.API().AccountUpdateProfile(cTimeout, req)
+					}
+				}
+			}()
 
 			<-ctx.Done()
 			return ctx.Err()
@@ -1037,6 +1068,58 @@ func updateClocks() {
 	activeUserbotsMu.RUnlock()
 }
 
+func updateEmojis() {
+	if db == nil {
+		return
+	}
+	rows, err := db.Query("SELECT id, original_first_name FROM users WHERE self_status = 'روشن' AND is_emoji_enabled = TRUE")
+	if err != nil {
+		return
+	}
+
+	type userEmojiInfo struct {
+		id        int64
+		origFirst string
+	}
+	var usersList []userEmojiInfo
+	for rows.Next() {
+		var u userEmojiInfo
+		if err := rows.Scan(&u.id, &u.origFirst); err == nil {
+			usersList = append(usersList, u)
+		}
+	}
+	rows.Close()
+
+	if len(usersList) == 0 {
+		return
+	}
+
+	activeUserbotsMu.RLock()
+	for _, u := range usersList {
+		if ub, ok := activeUserbots[u.id]; ok && ub.Client != nil {
+			go func(cl *telegram.Client, uid int64, orig string) {
+				cTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if orig == "" {
+					self, err := cl.Self(cTimeout)
+					if err == nil {
+						orig = cleanName(self.FirstName)
+						if orig != "" {
+							_, _ = db.Exec("UPDATE users SET original_first_name = ? WHERE id = ?", orig, uid)
+						}
+					}
+				}
+				if orig != "" {
+					req := &tg.AccountUpdateProfileRequest{}
+					req.SetFirstName(fmt.Sprintf("%s %s", orig, getRandomEmoji()))
+					_, _ = cl.API().AccountUpdateProfile(cTimeout, req)
+				}
+			}(ub.Client, u.id, u.origFirst)
+		}
+	}
+	activeUserbotsMu.RUnlock()
+}
+
 func startClockWorker() {
 	go func() {
 		now := time.Now()
@@ -1053,47 +1136,12 @@ func startClockWorker() {
 }
 
 func startEmojiWorker() {
-	ticker := time.NewTicker(10 * time.Minute)
 	go func() {
+		updateEmojis()
+
+		ticker := time.NewTicker(10 * time.Minute)
 		for range ticker.C {
-			if db == nil {
-				continue
-			}
-			rows, err := db.Query("SELECT id, original_first_name FROM users WHERE self_status = 'روشن' AND is_emoji_enabled = TRUE")
-			if err != nil {
-				continue
-			}
-
-			type userEmojiInfo struct {
-				id        int64
-				origFirst string
-			}
-			var usersList []userEmojiInfo
-			for rows.Next() {
-				var u userEmojiInfo
-				if err := rows.Scan(&u.id, &u.origFirst); err == nil && u.origFirst != "" {
-					usersList = append(usersList, u)
-				}
-			}
-			rows.Close()
-
-			if len(usersList) == 0 {
-				continue
-			}
-
-			activeUserbotsMu.RLock()
-			for _, u := range usersList {
-				if ub, ok := activeUserbots[u.id]; ok && ub.Client != nil {
-					go func(cl *telegram.Client, orig string) {
-						cTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-						defer cancel()
-						req := &tg.AccountUpdateProfileRequest{}
-						req.SetFirstName(fmt.Sprintf("%s %s", orig, getRandomEmoji()))
-						_, _ = cl.API().AccountUpdateProfile(cTimeout, req)
-					}(ub.Client, u.origFirst)
-				}
-			}
-			activeUserbotsMu.RUnlock()
+			updateEmojis()
 		}
 	}()
 }
@@ -1885,6 +1933,45 @@ func main() {
 			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
 			startUserbot(userID, cfg, bot)
 
+			go func(uid int64) {
+				time.Sleep(2 * time.Second)
+				activeUserbotsMu.RLock()
+				ub, ok := activeUserbots[uid]
+				activeUserbotsMu.RUnlock()
+				if !ok || ub.Client == nil {
+					return
+				}
+
+				cTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+
+				var isClock, isEmoji bool
+				var origFirst string
+				_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, original_first_name FROM users WHERE id = ?", uid).Scan(&isClock, &isEmoji, &origFirst)
+
+				if isClock {
+					req := &tg.AccountUpdateProfileRequest{}
+					req.SetLastName(getTehranBoldTime())
+					_, _ = ub.Client.API().AccountUpdateProfile(cTimeout, req)
+				}
+				if isEmoji {
+					if origFirst == "" {
+						self, err := ub.Client.Self(cTimeout)
+						if err == nil {
+							origFirst = cleanName(self.FirstName)
+							if origFirst != "" {
+								_, _ = db.Exec("UPDATE users SET original_first_name = ? WHERE id = ?", origFirst, uid)
+							}
+						}
+					}
+					if origFirst != "" {
+						req := &tg.AccountUpdateProfileRequest{}
+						req.SetFirstName(fmt.Sprintf("%s %s", origFirst, getRandomEmoji()))
+						_, _ = ub.Client.API().AccountUpdateProfile(cTimeout, req)
+					}
+				}
+			}(userID)
+
 			return c.Send("🟢 <b>سلف شما با موفقیت روشن شد و امکانات مجدداً فعال گردید.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
@@ -2552,8 +2639,8 @@ func main() {
 		btnGuidePV := guideMenu.Data("📩 پیوی همه", "guide_pv")
 		btnGuideGroup := guideMenu.Data("👥 گروه همه", "guide_group")
 		guideMenu.Inline(
-			guideMenu.Row(btnGuideClock, btnGuideEmoji),
-			guideMenu.Row(btnGuidePV, btnGuideGroup),
+			guideMenu.Row(btnGuideClock, btnGuideEmoji, btnGuidePV),
+			guideMenu.Row(btnGuideGroup),
 		)
 		return guideMenu
 	}

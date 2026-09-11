@@ -113,6 +113,12 @@ func InitDB(cfg Config) {
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
 	_, _ = db.Exec(queryUsers)
 
+	// آپدیت خودکار تیبل برای کاربرانی که از نسخه‌های قبلی بودن (جلوگیری از ارور و خرابی تاریخ)
+	_ = db.Exec("ALTER TABLE users ADD COLUMN phone VARCHAR(50) DEFAULT 'ثبت نشده'")
+	_ = db.Exec("ALTER TABLE users ADD COLUMN is_blocked BOOLEAN DEFAULT FALSE")
+	_ = db.Exec("ALTER TABLE users ADD COLUMN self_status VARCHAR(50) DEFAULT 'خرید نداشته'")
+	_ = db.Exec("ALTER TABLE users ADD COLUMN purchases_count INT DEFAULT 0")
+
 	queryWallet := `
 	CREATE TABLE IF NOT EXISTS wallets (
 		user_id BIGINT PRIMARY KEY,
@@ -183,6 +189,14 @@ func IsUserBlocked(userID int64) bool {
 // ============================================================
 // UTILS
 // ============================================================
+func toPersianDigits(s string) string {
+	persianDigits := []string{"۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"}
+	for i, d := range persianDigits {
+		s = strings.ReplaceAll(s, strconv.Itoa(i), d)
+	}
+	return s
+}
+
 func formatMoney(n int) string {
 	s := fmt.Sprintf("%d", n)
 	var parts []string
@@ -214,6 +228,15 @@ func getKeyPrice() int {
 		return 3333
 	}
 	return price
+}
+
+// تابع قدرتمند و امن برای زمان ایران
+func getTehranLocation() *time.Location {
+	loc, err := time.LoadLocation("Asia/Tehran")
+	if err != nil {
+		return time.FixedZone("Asia/Tehran", 12600) // 12600 ثانیه = 3.5 ساعت (جایگزین قطعی در صورت نبود پکیج در لینوکس)
+	}
+	return loc
 }
 
 // ============================================================
@@ -461,9 +484,14 @@ func main() {
 
 		var joinedAt time.Time
 		var selfStatus string
-		_ = db.QueryRow("SELECT joined_at, self_status FROM users WHERE id = ?", user.ID).Scan(&joinedAt, &selfStatus)
+		
+		// جلوگیری از ارور دیتابیس با مدیریت خطا
+		err := db.QueryRow("SELECT joined_at, self_status FROM users WHERE id = ?", user.ID).Scan(&joinedAt, &selfStatus)
+		if err != nil || joinedAt.IsZero() {
+			joinedAt = time.Now()
+		}
 
-		loc, _ := time.LoadLocation("Asia/Tehran")
+		loc := getTehranLocation()
 		now := time.Now().In(loc)
 		tNow := gpc.New(now)
 		tJoined := gpc.New(joinedAt.In(loc))
@@ -480,7 +508,14 @@ func main() {
 			statusIcon = "⏸️"
 		}
 
-		text := fmt.Sprintf("💙 تاریخ امروز: %s\n\n⏰ ساعت: %s\n\n🔒 اطلاعات حساب کاربری\n\n⭐ آیدی عددی: <code>%d</code>\n📅 تاریخ عضویت در ربات: %s\n👀 فعالیت در ربات: %d روز\n💰 موجودی: %d تومان\n🔥 وضعیت سلف: %s %s", tNow.Format("yyyy/MM/dd"), tNow.Format("HH:mm:ss"), user.ID, tJoined.Format("yyyy/MM/dd"), daysActive, GetUserBalance(user.ID), statusIcon, selfStatus)
+		// زیباسازی اعداد تاریخ به فارسی
+		tNowStr := toPersianDigits(tNow.Format("yyyy/MM/dd"))
+		tTimeStr := toPersianDigits(tNow.Format("HH:mm:ss"))
+		tJoinedStr := toPersianDigits(tJoined.Format("yyyy/MM/dd"))
+
+		text := fmt.Sprintf("💙 تاریخ امروز: %s\n\n⏰ ساعت: %s\n\n🔒 اطلاعات حساب کاربری\n\n⭐ آیدی عددی: <code>%d</code>\n📅 تاریخ عضویت در ربات: %s\n👀 فعالیت در ربات: %d روز\n💰 موجودی: %s تومان\n🔥 وضعیت سلف: %s %s", 
+			tNowStr, tTimeStr, user.ID, tJoinedStr, daysActive, formatMoney(GetUserBalance(user.ID)), statusIcon, selfStatus)
+		
 		return c.Send(text, profileMenu, tele.ModeHTML)
 	})
 
@@ -585,10 +620,15 @@ func main() {
 		var dbJoinedAt time.Time
 		var phone, selfStatus string
 		var purchasesCount int
-		_ = db.QueryRow("SELECT joined_at, phone, self_status, purchases_count FROM users WHERE id = ?", user.ID).Scan(&dbJoinedAt, &phone, &selfStatus, &purchasesCount)
+		
+		err = db.QueryRow("SELECT joined_at, phone, self_status, purchases_count FROM users WHERE id = ?", user.ID).Scan(&dbJoinedAt, &phone, &selfStatus, &purchasesCount)
+		if err != nil || dbJoinedAt.IsZero() {
+			dbJoinedAt = time.Now()
+		}
 
-		loc, _ := time.LoadLocation("Asia/Tehran")
+		loc := getTehranLocation()
 		tJoined := gpc.New(dbJoinedAt.In(loc))
+		tJoinedStr := toPersianDigits(tJoined.Format("yyyy/MM/dd"))
 
 		usernameStr := "ثبت نشده"
 		if user.Username != "" {
@@ -598,7 +638,7 @@ func main() {
 		price := getKeyPrice()
 		captionText := fmt.Sprintf(
 			"🔔 <b>درخواست شارژ (کارت به کارت)</b>\n\n👤 %s (%s)\n🆔 <code>%d</code>\n💰 <b>مبلغ:</b> <code>%s تومان</code>\n🔑 <b>تعداد کلید:</b> <code>%.2f کلید</code>\n📅 <b>عضویت:</b> %s\n🔥 <b>وضعیت سلف:</b> %s",
-			html.EscapeString(user.FirstName), usernameStr, user.ID, formatMoney(amount), float64(amount)/float64(price), tJoined.Format("yyyy/MM/dd"), html.EscapeString(selfStatus),
+			html.EscapeString(user.FirstName), usernameStr, user.ID, formatMoney(amount), float64(amount)/float64(price), tJoinedStr, html.EscapeString(selfStatus),
 		)
 
 		menu := &tele.ReplyMarkup{}

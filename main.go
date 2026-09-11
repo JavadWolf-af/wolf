@@ -234,7 +234,6 @@ func SafeAddUserBalance(userID int64, amount int) error {
 	return tx.Commit()
 }
 
-// ساختار احراز هویت سفارشی برای سازگاری کامل با نسخه جدید gotd/td
 type botAuthenticator struct {
 	phone        string
 	codeChan     chan string
@@ -259,6 +258,10 @@ func (b *botAuthenticator) Password(ctx context.Context) (string, error) {
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
+}
+
+func (b *botAuthenticator) AcceptTermsOfService(ctx context.Context, tos tg.HelpTermsOfService) (bool, error) {
+	return true, nil
 }
 
 func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan string, passwordChan chan string, need2FA *bool) error {

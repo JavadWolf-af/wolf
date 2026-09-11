@@ -453,14 +453,15 @@ func main() {
 
 		if c.Message() != nil {
 			updatedCaption := c.Message().Caption + "\n\n✅ <b>وضعیت: فیش تایید شد و موجودی کاربر شارژ گردید.</b>"
-			// ویرایش حرفه‌ای برای عکس‌ها جهت حذف دکمه
 			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
+			
+			// ریپلای پیام تایید دقیقاً روی همین فیش
+			_ = c.Reply(fmt.Sprintf("✅ <b>شارژ با موفقیت انجام شد!</b>\nمبلغ <code>%s تومان</code> به کیف پول کاربر اضافه گردید.", formatMoney(amount)), tele.ModeHTML)
+		} else {
+			_ = c.Send(fmt.Sprintf("✅ <b>شارژ با موفقیت انجام شد!</b>\nمبلغ <code>%s تومان</code> به کیف پول کاربر اضافه گردید.", formatMoney(amount)), tele.ModeHTML)
 		}
 		
-		// پیام در چت
-		_ = c.Send(fmt.Sprintf("✅ <b>شارژ با موفقیت انجام شد!</b>\nمبلغ <code>%s تومان</code> به کیف پول کاربر اضافه گردید.", formatMoney(amount)), tele.ModeHTML)
-
-		return c.Respond() // پنل بسته می‌شود و پاپ‌آپ موقت نمایش داده نمی‌شود
+		return c.Respond()
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_reject"}, func(c tele.Context) error {
@@ -472,14 +473,15 @@ func main() {
 
 		if c.Message() != nil {
 			updatedCaption := c.Message().Caption + "\n\n❌ <b>وضعیت: فیش واریزی رد شد.</b>"
-			// ویرایش حرفه‌ای برای عکس‌ها جهت حذف دکمه
 			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
+			
+			// ریپلای روی فیش
+			_ = c.Reply("❌ <b>فیش رد شد و به کاربر اطلاع داده شد.</b>", tele.ModeHTML)
+		} else {
+			_ = c.Send("❌ <b>فیش رد شد و به کاربر اطلاع داده شد.</b>", tele.ModeHTML)
 		}
-		
-		// پیام در چت
-		_ = c.Send("❌ <b>فیش رد شد و به کاربر اطلاع داده شد.</b>", tele.ModeHTML)
 
-		return c.Respond() // پنل بسته می‌شود و پاپ‌آپ موقت نمایش داده نمی‌شود
+		return c.Respond()
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_block"}, func(c tele.Context) error {
@@ -488,7 +490,14 @@ func main() {
 		}
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		adminStates[c.Sender().ID] = AdminAction{Action: "block_reason", TargetID: targetUserID}
-		return c.Send("🚫 <b>لطفاً دلیل مسدودی را ارسال کنید تا به همراه پیام مسدودی به صورت بولد برای کاربر ارسال شود:</b>", tele.ModeHTML)
+		
+		if c.Message() != nil {
+			_ = c.Reply("🚫 <b>لطفاً دلیل مسدودی را ارسال کنید تا به همراه پیام مسدودی به صورت بولد برای کاربر ارسال شود:</b>", tele.ModeHTML)
+		} else {
+			_ = c.Send("🚫 <b>لطفاً دلیل مسدودی را ارسال کنید تا به همراه پیام مسدودی به صورت بولد برای کاربر ارسال شود:</b>", tele.ModeHTML)
+		}
+		
+		return c.Respond()
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_unblock"}, func(c tele.Context) error {
@@ -502,9 +511,12 @@ func main() {
 		if c.Message() != nil {
 			updatedCaption := c.Message().Caption + "\n\n🔓 <b>وضعیت: کاربر رفع مسدودی گردید.</b>"
 			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
+			
+			// ریپلای روی عکس
+			_ = c.Reply("🔓 <b>کاربر با موفقیت رفع مسدود شد.</b>", tele.ModeHTML)
+		} else {
+			_ = c.Send("🔓 <b>کاربر با موفقیت رفع مسدود شد.</b>", tele.ModeHTML)
 		}
-
-		_ = c.Send("🔓 <b>کاربر با موفقیت رفع مسدود شد.</b>", tele.ModeHTML)
 		
 		return c.Respond()
 	})
@@ -515,7 +527,14 @@ func main() {
 		}
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		adminStates[c.Sender().ID] = AdminAction{Action: "msg", TargetID: targetUserID}
-		return c.Send("💬 <b>لطفاً متن پیام خود برای کاربر را ارسال کنید:</b>", tele.ModeHTML)
+		
+		if c.Message() != nil {
+			_ = c.Reply("💬 <b>لطفاً متن پیام خود برای کاربر را ارسال کنید:</b>", tele.ModeHTML)
+		} else {
+			_ = c.Send("💬 <b>لطفاً متن پیام خود برای کاربر را ارسال کنید:</b>", tele.ModeHTML)
+		}
+		
+		return c.Respond()
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_manual"}, func(c tele.Context) error {
@@ -524,7 +543,14 @@ func main() {
 		}
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		adminStates[c.Sender().ID] = AdminAction{Action: "manual_add", TargetID: targetUserID}
-		return c.Send("💰 <b>لطفاً مبلغ مورد نظر برای افزایش دستی موجودی را (فقط عدد به تومان) ارسال کنید:</b>", tele.ModeHTML)
+		
+		if c.Message() != nil {
+			_ = c.Reply("💰 <b>لطفاً مبلغ مورد نظر برای افزایش دستی موجودی را (فقط عدد به تومان) ارسال کنید:</b>", tele.ModeHTML)
+		} else {
+			_ = c.Send("💰 <b>لطفاً مبلغ مورد نظر برای افزایش دستی موجودی را (فقط عدد به تومان) ارسال کنید:</b>", tele.ModeHTML)
+		}
+		
+		return c.Respond()
 	})
 
 	bot.Handle(tele.OnText, func(c tele.Context) error {

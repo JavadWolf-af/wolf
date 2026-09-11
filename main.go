@@ -260,8 +260,8 @@ func (b *botAuthenticator) Password(ctx context.Context) (string, error) {
 	}
 }
 
-func (b *botAuthenticator) AcceptTermsOfService(ctx context.Context, tos tg.HelpTermsOfService) (bool, error) {
-	return true, nil
+func (b *botAuthenticator) AcceptTermsOfService(ctx context.Context, tos tg.HelpTermsOfService) error {
+	return nil
 }
 
 func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan string, passwordChan chan string, need2FA *bool) error {

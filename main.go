@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
@@ -273,9 +274,6 @@ func SafeAddUserBalance(userID int64, amount int) error {
 	return tx.Commit()
 }
 
-// ============================================================
-// CLOCK & TIME HELPERS
-// ============================================================
 func toBoldDigits(t string) string {
 	boldDigits := map[rune]string{
 		'0': "𝟎", '1': "𝟏", '2': "𝟐", '3': "𝟑", '4': "𝟒",
@@ -330,9 +328,6 @@ func handleClockOff(ctx context.Context, userID int64, client *telegram.Client) 
 	_, _ = db.Exec("UPDATE users SET is_clock_enabled = FALSE WHERE id = ?", userID)
 }
 
-// ============================================================
-// USERBOT ENGINE (MTPROTO RUNNER)
-// ============================================================
 func startUserbot(userID int64, cfg Config) {
 	activeUserbotsMu.Lock()
 	if _, exists := activeUserbots[userID]; exists {
@@ -353,6 +348,13 @@ func startUserbot(userID int64, cfg Config) {
 	client := telegram.NewClient(cfg.APIID, cfg.APIHash, telegram.Options{
 		SessionStorage: loader,
 		UpdateHandler:  dispatcher,
+		Device: telegram.DeviceConfig{
+			DeviceModel:   "PC 64bit",
+			SystemVersion: "Windows 11",
+			AppVersion:    "5.4.1 x64",
+			LangCode:      "en",
+			SystemLangCode: "en",
+		},
 	})
 
 	activeUserbots[userID] = &UserbotSession{
@@ -409,7 +411,6 @@ func stopUserbot(userID int64) {
 	}
 }
 
-// کارگر اختصاصی تغییر دقیقه به دقیقه ساعت روی پروفایل
 func startClockWorker() {
 	ticker := time.NewTicker(1 * time.Minute)
 	go func() {
@@ -454,7 +455,6 @@ func startClockWorker() {
 	}()
 }
 
-// کارگر تمدید روزانه و کسر خودکار کلید (Billing Worker)
 func startBillingWorker(bot *tele.Bot) {
 	ticker := time.NewTicker(2 * time.Minute)
 	go func() {
@@ -570,6 +570,13 @@ func startTelegramLogin(ctx context.Context, userID int64, cfg Config, authHandl
 
 	client := telegram.NewClient(cfg.APIID, cfg.APIHash, telegram.Options{
 		SessionStorage: loader,
+		Device: telegram.DeviceConfig{
+			DeviceModel:   "PC 64bit",
+			SystemVersion: "Windows 11",
+			AppVersion:    "5.4.1 x64",
+			LangCode:      "en",
+			SystemLangCode: "en",
+		},
 	})
 
 	flow := auth.NewFlow(authHandler, auth.SendCodeOptions{})
@@ -591,6 +598,25 @@ func toPersianDigits(s string) string {
 		s = strings.ReplaceAll(s, strconv.Itoa(i), d)
 	}
 	return s
+}
+
+// استخراج ایمن اعداد انگلیسی از متن با پشتیبانی از ارقام فارسی و جداکننده‌ها
+func extractDigits(s string) string {
+	persianDigits := map[rune]rune{
+		'۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
+		'۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
+	}
+	var sb strings.Builder
+	for _, r := range s {
+		if unicode.IsDigit(r) {
+			if en, ok := persianDigits[r]; ok {
+				sb.WriteRune(en)
+			} else {
+				sb.WriteRune(r)
+			}
+		}
+	}
+	return sb.String()
 }
 
 func formatMoney(n int) string {
@@ -1085,7 +1111,6 @@ func main() {
 		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
 	})
 
-	// دکمه خرید سلف: در صورت داشتن سلف (روشن یا خاموش)، مشخصات را نشان می‌دهد
 	bot.Handle(&btnBuy, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -1135,7 +1160,6 @@ func main() {
 		return c.Send(text, confirmSelfMenu, tele.ModeHTML)
 	})
 
-	// دکمه روشن کردن سلف
 	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -1163,7 +1187,6 @@ func main() {
 		return c.Send(text, getKeyboard(userID), tele.ModeHTML)
 	})
 
-	// خاموش کردن سلف
 	bot.Handle(&btnTurnOffSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -1184,7 +1207,6 @@ func main() {
 		return c.Send("🔴 <b>سلف شما خاموش شد.</b>\nامکانات سلف غیرفعال گردید، اما اتصال اکانت شما برقرار است.", getKeyboard(userID), tele.ModeHTML)
 	})
 
-	// خروج سلف با تأییدیه دو مرحله‌ای
 	bot.Handle(&btnExitSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -1313,8 +1335,9 @@ func main() {
 		codeMenu.Reply(codeMenu.Row(btnB))
 
 		text := fmt.Sprintf("✅ <b>شماره %s تایید شد و درخواست کد به تلگرام ارسال گردید.</b>\n\n"+
-			"📲 <b>مرحله دوم: ورود کد تایید</b>\n"+
-			"کد ۵ رقمی ارسال شده توسط تلگرام را همینجا ارسال کنید:", contact.PhoneNumber)
+			"📲 <b>مرحله دوم: ورود کد تایید</b>\n\n"+
+			"⚠️ <b>نکته امنیتی بسیار مهم:</b> برای جلوگیری از حساسیت تلگرام و نسوختن کد، لطفاً ارقام کد را <b>با فاصله یا خط تیره</b> ارسال کنید!\n\n"+
+			"مثال: <code>1-2-3-4-5</code> یا <code>1 2 3 4 5</code>", contact.PhoneNumber)
 
 		return c.Send(text, codeMenu, tele.ModeHTML)
 	})
@@ -1596,8 +1619,13 @@ func main() {
 
 		if userHasState && uState != nil {
 			if uState.Action == "waiting_for_code" {
+				cleanCode := extractDigits(text)
+				if len(cleanCode) < 5 {
+					return c.Send("❌ <b>کد وارد شده نامعتبر است!</b>\nلطفاً کد ۵ رقمی را به همراه خط‌تیره یا فاصله ارسال کنید (مثال: <code>1-2-3-4-5</code>):", tele.ModeHTML)
+				}
+
 				select {
-				case uState.CodeChan <- text:
+				case uState.CodeChan <- cleanCode:
 					select {
 					case res := <-uState.ResultChan:
 						if res.Type == AuthResultNeeds2FA {
@@ -1851,11 +1879,11 @@ func main() {
 		return c.Respond()
 	})
 
-	// راه‌اندازی کارگرهای پس‌زمینه
+	// راه‌اندازی تسک‌های پس‌زمینه
 	startBillingWorker(bot)
 	startClockWorker()
 
-	// اتصال خودکار سلف‌بات برای تمام کاربرانی که وضعیت سلف آن‌ها روشن است
+	// اتصال خودکار تمام سلف‌بات‌های روشن
 	rows, err := db.Query("SELECT id FROM users WHERE self_status = 'روشن'")
 	if err == nil {
 		for rows.Next() {

@@ -209,6 +209,7 @@ func InitDB(cfg Config) {
 	CREATE TABLE IF NOT EXISTS pv_broadcasts (
 		id INT AUTO_INCREMENT PRIMARY KEY,
 		user_id BIGINT,
+		peer_id BIGINT,
 		message_id INT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		INDEX (user_id)
@@ -505,6 +506,49 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 	}
 	replyMsgID := header.ReplyToMsgID
 
+	// دریافت متن یا محتوای پیام ریپلای شده برای کپی کردن واقعی
+	getMsgReq := &tg.MessagesGetMessagesRequest{
+		ID: []tg.InputMessageClass{
+			&tg.InputMessageID{ID: replyMsgID},
+		},
+	}
+	msgsRes, err := client.API().MessagesGetMessages(ctx, getMsgReq)
+	if err != nil {
+		if inputPeer != nil {
+			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ خطا در خواندن پیام مورد نظر")
+		}
+		return
+	}
+
+	var sourceMsg *tg.Message
+	switch mSlice := msgsRes.(type) {
+	case *tg.MessagesMessages:
+		if len(mSlice.Messages) > 0 {
+			if m, ok := mSlice.Messages[0].(*tg.Message); ok {
+				sourceMsg = m
+			}
+		}
+	case *tg.MessagesMessagesSlice:
+		if len(mSlice.Messages) > 0 {
+			if m, ok := mSlice.Messages[0].(*tg.Message); ok {
+				sourceMsg = m
+			}
+		}
+	case *tg.MessagesChannelMessages:
+		if len(mSlice.Messages) > 0 {
+			if m, ok := mSlice.Messages[0].(*tg.Message); ok {
+				sourceMsg = m
+			}
+		}
+	}
+
+	if sourceMsg == nil {
+		if inputPeer != nil {
+			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ پیام مورد نظر یافت نشد!")
+		}
+		return
+	}
+
 	dialogsReq := &tg.MessagesGetDialogsRequest{
 		OffsetPeer: &tg.InputPeerEmpty{},
 		Limit:      100,
@@ -535,7 +579,11 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 		}
 	}
 
-	var targetPeers []tg.InputPeerClass
+	type TargetPeerInfo struct {
+		Peer tg.InputPeerClass
+		ID   int64
+	}
+	var targetPeers []TargetPeerInfo
 	for _, dlg := range dialogs {
 		d, ok := dlg.(*tg.Dialog)
 		if !ok {
@@ -549,9 +597,12 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 		if !exists || u.Bot || u.Self || u.Deleted {
 			continue
 		}
-		targetPeers = append(targetPeers, &tg.InputPeerUser{
-			UserID:     u.ID,
-			AccessHash: u.AccessHash,
+		targetPeers = append(targetPeers, TargetPeerInfo{
+			Peer: &tg.InputPeerUser{
+				UserID:     u.ID,
+				AccessHash: u.AccessHash,
+			},
+			ID: u.ID,
 		})
 	}
 
@@ -565,17 +616,31 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 	_, _ = db.Exec("DELETE FROM pv_broadcasts WHERE user_id = ?", userID)
 
 	for _, target := range targetPeers {
-		fwdReq := &tg.MessagesForwardMessagesRequest{
-			DropAuthor: true,
-			FromPeer:   inputPeer,
-			ID:         []int{replyMsgID},
-			RandomID:   []int64{rand.Int63()},
-			ToPeer:     target,
+		var sendRes tg.UpdatesClass
+		var sendErr error
+
+		// اگر پیام شامل مدیا (عکس، ویدیو، ویس، فایل) باشد
+		if sourceMsg.Media != nil {
+			sendMediaReq := &tg.MessagesSendMediaRequest{
+				Peer:     target.Peer,
+				Media:    sourceMsg.Media,
+				Message:  sourceMsg.Message,
+				RandomID: rand.Int63(),
+			}
+			sendRes, sendErr = client.API().MessagesSendMedia(ctx, sendMediaReq)
+		} else {
+			// پیام متنی معمولی
+			sendMsgReq := &tg.MessagesSendMessageRequest{
+				Peer:     target.Peer,
+				Message:  sourceMsg.Message,
+				RandomID: rand.Int63(),
+			}
+			sendRes, sendErr = client.API().MessagesSendMessage(ctx, sendMsgReq)
 		}
-		fwdRes, err := client.API().MessagesForwardMessages(ctx, fwdReq)
-		if err == nil {
+
+		if sendErr == nil && sendRes != nil {
 			var sID int
-			switch upd := fwdRes.(type) {
+			switch upd := sendRes.(type) {
 			case *tg.Updates:
 				for _, u := range upd.Updates {
 					if m, ok := u.(*tg.UpdateNewMessage); ok {
@@ -588,7 +653,7 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 				sID = upd.ID
 			}
 			if sID != 0 {
-				_, _ = db.Exec("INSERT INTO pv_broadcasts (user_id, message_id) VALUES (?, ?)", userID, sID)
+				_, _ = db.Exec("INSERT INTO pv_broadcasts (user_id, peer_id, message_id) VALUES (?, ?, ?)", userID, target.ID, sID)
 			}
 		}
 		time.Sleep(80 * time.Millisecond)
@@ -600,38 +665,74 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 }
 
 func handleDeleteBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, userID int64) {
-	rows, err := db.Query("SELECT message_id FROM pv_broadcasts WHERE user_id = ?", userID)
+	rows, err := db.Query("SELECT peer_id, message_id FROM pv_broadcasts WHERE user_id = ?", userID)
 	if err != nil {
 		if inputPeer != nil {
 			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ خطا در بررسی دیتابیس")
 		}
 		return
 	}
-	var ids []int
+
+	type PeerMsg struct {
+		PeerID int64
+		MsgID  int
+	}
+	var items []PeerMsg
 	for rows.Next() {
-		var mid int
-		if err := rows.Scan(&mid); err == nil {
-			ids = append(ids, mid)
+		var pID int64
+		var mID int
+		if err := rows.Scan(&pID, &mID); err == nil {
+			items = append(items, PeerMsg{PeerID: pID, MsgID: mID})
 		}
 	}
 	rows.Close()
 
-	if len(ids) == 0 {
+	if len(items) == 0 {
 		if inputPeer != nil {
 			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ پیامی برای پاک کردن یافت نشد")
 		}
 		return
 	}
 
-	for i := 0; i < len(ids); i += 100 {
-		end := i + 100
-		if end > len(ids) {
-			end = len(ids)
+	// استخراج کاربران برای گرفتن AccessHash
+	dialogsReq := &tg.MessagesGetDialogsRequest{
+		OffsetPeer: &tg.InputPeerEmpty{},
+		Limit:      100,
+	}
+	res, _ := client.API().MessagesGetDialogs(ctx, dialogsReq)
+	userAccessMap := make(map[int64]int64)
+	if res != nil {
+		var users []tg.UserClass
+		switch d := res.(type) {
+		case *tg.MessagesDialogs:
+			users = d.Users
+		case *tg.MessagesDialogsSlice:
+			users = d.Users
 		}
-		chunk := ids[i:end]
+		for _, uClass := range users {
+			if u, ok := uClass.(*tg.User); ok {
+				userAccessMap[u.ID] = u.AccessHash
+			}
+		}
+	}
+
+	for _, item := range items {
+		accessHash := userAccessMap[item.PeerID]
+		targetPeer := &tg.InputPeerUser{
+			UserID:     item.PeerID,
+			AccessHash: accessHash,
+		}
+
+		// حذف دوطرفه در چت مخاطب
 		_, _ = client.API().MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
 			Revoke: true,
-			ID:     chunk,
+			ID:     []int{item.MsgID},
+		})
+
+		// حذف در چت شخصی (خودم) با استفاده از InputPeer مناسب
+		_, _ = client.API().ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: item.PeerID, AccessHash: accessHash},
+			ID:      []int{item.MsgID},
 		})
 	}
 
@@ -919,7 +1020,7 @@ func processDailyBilling(bot *tele.Bot) {
 			_, _ = db.Exec("UPDATE users SET self_status = 'خاموش' WHERE id = ?", uid)
 			stopUserbot(uid)
 			msg := "⚠️ <b>شارژ کلیدهای شما به پایان رسید!</b>\n\n" +
-				"موجودی شما برای کسر هزینه روزانه سلف (۱ کلید) کافی نبود و سلف شما به صورت خودکار خاموش شد.\n\n" +
+				"مودی شما برای کسر هزینه روزانه سلف (۱ کلید) کافی نبود و سلف شما به صورت خودکار خاموش شد.\n\n" +
 				"🛒 <i>لطفاً جهت فعالسازی مجدد، از بخش کیف پول اقدام به شارژ حساب نمایید.</i>"
 			_, _ = bot.Send(&tele.User{ID: uid}, msg, tele.ModeHTML)
 		} else {
@@ -1693,7 +1794,7 @@ func main() {
 
 		selfStatus := GetUserSelfStatus(userID)
 		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
-			return c.Send("❌ <b>شما سلف فعالی ندارید که از آن خارج شوید.</b>", tele.ModeHTML)
+			return c.Send("❌ <b>شما سلف فعالی ندارید که از آن خارج شوید.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
 		exitMenu := &tele.ReplyMarkup{}
@@ -2297,7 +2398,7 @@ func main() {
 		guideMenu := &tele.ReplyMarkup{}
 		btnGuideClock := guideMenu.Data("⏱ ساعت", "guide_clock")
 		btnGuideEmoji := guideMenu.Data("🎭 اموجی", "guide_emoji")
-		btnGuidePV := guideMenu.Data("📩 پیوی همه", "guide_pv")
+		btnGuidePV := guideMenu.Data("پیوی همه", "guide_pv")
 		guideMenu.Inline(
 			guideMenu.Row(btnGuideClock, btnGuideEmoji),
 			guideMenu.Row(btnGuidePV),

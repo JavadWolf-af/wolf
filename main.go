@@ -12,6 +12,10 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v3/net"
 	gpc "github.com/yaa110/go-persian-calendar"
 	tele "gopkg.in/telebot.v3"
 )
@@ -107,7 +111,6 @@ func InitDB(cfg Config) {
 		self_status VARCHAR(50) DEFAULT 'خرید نداشته',
 		purchases_count INT DEFAULT 0
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
-
 	_, _ = db.Exec(queryUsers)
 
 	queryWallet := `
@@ -116,16 +119,13 @@ func InitDB(cfg Config) {
 		balance INT DEFAULT 0,
 		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
-
 	_, _ = db.Exec(queryWallet)
 
-	// جدول تنظیمات بات
 	querySettings := `
 	CREATE TABLE IF NOT EXISTS settings (
 		setting_key VARCHAR(50) PRIMARY KEY,
 		setting_value TEXT
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
-
 	_, _ = db.Exec(querySettings)
 
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_number', '6037-9971-XXXX-XXXX')`)
@@ -133,7 +133,6 @@ func InitDB(cfg Config) {
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_bank', 'بانک ملی')`)
 }
 
-// توابع مدیریت تنظیمات
 func GetSetting(key string) string {
 	var val string
 	err := db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = ?", key).Scan(&val)
@@ -178,6 +177,9 @@ func IsUserBlocked(userID int64) bool {
 	return blocked
 }
 
+// ============================================================
+// UTILS
+// ============================================================
 func formatMoney(n int) string {
 	s := fmt.Sprintf("%d", n)
 	var parts []string
@@ -189,6 +191,23 @@ func formatMoney(n int) string {
 	return strings.Join(parts, ",")
 }
 
+// تابع تبدیل بایت به مگابایت و گیگابایت برای خوانایی پنل سرور
+func formatBytes(b uint64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := uint64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// ============================================================
+// MAIN
+// ============================================================
 func main() {
 	cfg := loadConfig()
 
@@ -210,8 +229,8 @@ func main() {
 	// =========================
 	userMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
-	adminPanelMenu := &tele.ReplyMarkup{ResizeKeyboard: true} 
-	accountConfigMenu := &tele.ReplyMarkup{ResizeKeyboard: true} 
+	adminPanelMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	accountConfigMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
 	btnBuy := userMenu.Text("🛍️ خرید سلف")
@@ -234,16 +253,14 @@ func main() {
 		adminMenu.Row(btnAdminPanel),
 	)
 
-	// دکمه‌های پنل مدیریت
 	btnConfigAccount := adminPanelMenu.Text("🛠 تنظیم حساب بانکی")
-	btnBack := adminPanelMenu.Text("🔙 بازگشت") 
+	btnBack := adminPanelMenu.Text("🔙 بازگشت")
 
 	adminPanelMenu.Reply(
 		adminPanelMenu.Row(btnConfigAccount),
 		adminPanelMenu.Row(btnBack),
 	)
 
-	// دکمه‌های زیرمنوی تنظیم حساب
 	btnConfigCardNum := accountConfigMenu.Text("💳 شماره کارت")
 	btnConfigCardName := accountConfigMenu.Text("👤 نام صاحب حساب")
 	btnConfigCardBank := accountConfigMenu.Text("🏦 نام بانک")
@@ -255,7 +272,6 @@ func main() {
 		accountConfigMenu.Row(btnBackToAdmin),
 	)
 
-	// دکمه‌های پروفایل
 	btnTurnOnSelf := profileMenu.Text("🟢 روشن کردن سلف")
 	btnTurnOffSelf := profileMenu.Text("🔴 خاموش کردن سلف")
 	btnExitSelf := profileMenu.Text("🛑 خروج سلف")
@@ -271,6 +287,84 @@ func main() {
 			return adminMenu
 		}
 		return userMenu
+	}
+
+	// =========================
+	// DASHBOARD GENERATOR
+	// =========================
+	getAdminDashboard := func() string {
+		var totalUsers, activeUsers, blockedUsers int
+		_ = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
+		_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE is_blocked = TRUE").Scan(&blockedUsers)
+		_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE self_status = 'روشن'").Scan(&activeUsers)
+		inactiveUsers := totalUsers - activeUsers
+		adminCount := len(cfg.AdminIDs)
+
+		// محاسبه زنده مشخصات سرور
+		var cpuUsage float64
+		c, err := cpu.Percent(0, false)
+		if err == nil && len(c) > 0 {
+			cpuUsage = c[0]
+		}
+
+		var ramUsed, ramTotal uint64
+		var ramPercent float64
+		v, err := mem.VirtualMemory()
+		if err == nil {
+			ramUsed = v.Used
+			ramTotal = v.Total
+			ramPercent = v.UsedPercent
+		}
+
+		var swapUsed, swapTotal uint64
+		var swapPercent float64
+		s, err := mem.SwapMemory()
+		if err == nil {
+			swapUsed = s.Used
+			swapTotal = s.Total
+			swapPercent = s.UsedPercent
+		}
+
+		var diskUsed, diskTotal uint64
+		var diskPercent float64
+		d, err := disk.Usage("/")
+		if err == nil {
+			diskUsed = d.Used
+			diskTotal = d.Total
+			diskPercent = d.UsedPercent
+		}
+
+		var totalUp, totalDown uint64
+		nv, err := net.IOCounters(false)
+		if err == nil && len(nv) > 0 {
+			totalUp = nv[0].BytesSent
+			totalDown = nv[0].BytesRecv
+		}
+
+		return fmt.Sprintf(`👑 <b>مدیریت کل سیستم به دست شماست!</b>
+
+🖥 <b>مشخصات سرور به شرح زیر است:</b>
+⚙️ <b>CPU :</b> <code>%.1f%%</code>
+🧮 <b>RAM :</b> <code>%s / %s (%.1f%%)</code>
+🔄 <b>Swap :</b> <code>%s / %s (%.1f%%)</code>
+💾 <b>Storage :</b> <code>%s / %s (%.1f%%)</code>
+🌐 <b>Traffic :</b> 🔺 Up: <code>%s</code> | 🔻 Down: <code>%s</code>
+
+👥 <b>مشخصات سلف به شرح زیر است:</b>
+🔹 <b>تعداد کل کاربران :</b> <code>%d نفر</code>
+🟢 <b>کاربران فعال :</b> <code>%d نفر</code>
+🔴 <b>کاربران غیر فعال :</b> <code>%d نفر</code>
+🚫 <b>کاربران مسدود شده :</b> <code>%d نفر</code>
+👨‍💻 <b>تعداد ادمین :</b> <code>%d نفر</code>
+
+✨ <i>بخش مورد نظر خود را از منوی زیر انتخاب کنید:</i>`,
+			cpuUsage,
+			formatBytes(ramUsed), formatBytes(ramTotal), ramPercent,
+			formatBytes(swapUsed), formatBytes(swapTotal), swapPercent,
+			formatBytes(diskUsed), formatBytes(diskTotal), diskPercent,
+			formatBytes(totalUp), formatBytes(totalDown),
+			totalUsers, activeUsers, inactiveUsers, blockedUsers, adminCount,
+		)
 	}
 
 	// =========================
@@ -309,34 +403,7 @@ func main() {
 
 	bot.Handle(&btnBackToAdmin, func(c tele.Context) error {
 		delete(adminStates, c.Sender().ID)
-		
-		// برای بازگشت شیک‌تر، همان داشبورد را دوباره محاسبه و نشان می‌دهیم
-		var totalUsers, activeUsers, blockedUsers int
-		_ = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
-		_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE is_blocked = TRUE").Scan(&blockedUsers)
-		_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE self_status = 'روشن'").Scan(&activeUsers)
-		inactiveUsers := totalUsers - activeUsers
-		adminCount := len(cfg.AdminIDs)
-
-		adminText := fmt.Sprintf(`👑 <b>مدیریت کل سیستم به دست شماست!</b>
-
-🖥 <b>مشخصات سرور به شرح زیر است:</b>
-⚙️ CPU : <b>در حال محاسبه...</b>
-🧮 RAM : <b>در حال محاسبه...</b>
-🔄 Swap : <b>در حال محاسبه...</b>
-💾 Storage : <b>در حال محاسبه...</b>
-🌐 Trafic : 🔺 Up: <b>--</b> | 🔻 Down: <b>--</b>
-
-👥 <b>مشخصات سلف به شرح زیر است:</b>
-🔹 تعداد کل کاربران : <b>%d نفر</b>
-🟢 کاربران فعال : <b>%d نفر</b>
-🔴 کاربران غیر فعال : <b>%d نفر</b>
-🚫 کاربران مسدود شده : <b>%d نفر</b>
-👨‍💻 تعداد ادمین : <b>%d نفر</b>
-
-✨ <i>بخش مورد نظر خود را از منوی زیر انتخاب کنید:</i>`, totalUsers, activeUsers, inactiveUsers, blockedUsers, adminCount)
-
-		return c.Send(adminText, adminPanelMenu, tele.ModeHTML)
+		return c.Send(getAdminDashboard(), adminPanelMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnProfile, func(c tele.Context) error {
@@ -529,37 +596,7 @@ func main() {
 			return c.Send("❌ شما دسترسی به بخش مدیریت را ندارید.")
 		}
 		
-		// محاسبه زنده آمار از دیتابیس
-		var totalUsers, activeUsers, blockedUsers int
-		
-		_ = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
-		_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE is_blocked = TRUE").Scan(&blockedUsers)
-		// در مراحل بعدی وقتی کاربر سلف رو روشن کرد، وضعیتش میشه 'روشن'
-		_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE self_status = 'روشن'").Scan(&activeUsers)
-		
-		inactiveUsers := totalUsers - activeUsers
-		adminCount := len(cfg.AdminIDs)
-
-		// متن داشبورد شیک و حرفه‌ای
-		adminText := fmt.Sprintf(`👑 <b>مدیریت کل سیستم به دست شماست!</b>
-
-🖥 <b>مشخصات سرور به شرح زیر است:</b>
-⚙️ CPU : <b>در حال محاسبه...</b>
-🧮 RAM : <b>در حال محاسبه...</b>
-🔄 Swap : <b>در حال محاسبه...</b>
-💾 Storage : <b>در حال محاسبه...</b>
-🌐 Trafic : 🔺 Up: <b>--</b> | 🔻 Down: <b>--</b>
-
-👥 <b>مشخصات سلف به شرح زیر است:</b>
-🔹 تعداد کل کاربران : <b>%d نفر</b>
-🟢 کاربران فعال : <b>%d نفر</b>
-🔴 کاربران غیر فعال : <b>%d نفر</b>
-🚫 کاربران مسدود شده : <b>%d نفر</b>
-👨‍💻 تعداد ادمین : <b>%d نفر</b>
-
-✨ <i>بخش مورد نظر خود را از منوی زیر انتخاب کنید:</i>`, totalUsers, activeUsers, inactiveUsers, blockedUsers, adminCount)
-
-		return c.Send(adminText, adminPanelMenu, tele.ModeHTML)
+		return c.Send(getAdminDashboard(), adminPanelMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnConfigAccount, func(c tele.Context) error {

@@ -648,7 +648,163 @@ func handleForwardToAllGroups(ctx context.Context, client *telegram.Client, inpu
 	}
 }
 
-func startUserbot(userID int64, cfg Config) {
+// تابع دانلود بایت‌به‌بایت و ارسال رسانه تایمردار طبق الگوی پایتون
+func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele.Bot, targetUserID int64, msg *tg.Message, e tg.Entities) {
+	var (
+		isTTL      bool
+		ttlSeconds int
+		mediaType  string
+	)
+
+	switch m := msg.Media.(type) {
+	case *tg.MessageMediaPhoto:
+		if m.TTLSeconds > 0 {
+			isTTL = true
+			ttlSeconds = m.TTLSeconds
+			mediaType = "photo"
+		}
+	case *tg.MessageMediaDocument:
+		if m.TTLSeconds > 0 {
+			isTTL = true
+			ttlSeconds = m.TTLSeconds
+			mediaType = "video"
+		}
+	}
+
+	if !isTTL {
+		return
+	}
+
+	senderID := int64(0)
+	senderName := "ناشناس"
+	usernameStr := "ثبت نشده"
+
+	if peerUser, ok := msg.PeerID.(*tg.PeerUser); ok {
+		senderID = peerUser.UserID
+		if u, exists := e.Users[senderID]; exists {
+			if u.FirstName != "" || u.LastName != "" {
+				senderName = strings.TrimSpace(u.FirstName + " " + u.LastName)
+			}
+			if u.Username != "" {
+				usernameStr = "@" + u.Username
+			}
+		}
+	}
+
+	var loc tg.InputFileLocationClass
+	var fileExt string
+
+	switch m := msg.Media.(type) {
+	case *tg.MessageMediaPhoto:
+		photo, ok := m.Photo.(*tg.Photo)
+		if !ok {
+			return
+		}
+		var thumbSize string
+		for _, s := range photo.Sizes {
+			switch sz := s.(type) {
+			case *tg.PhotoSize:
+				thumbSize = sz.Type
+			case *tg.PhotoSizeProgressive:
+				thumbSize = sz.Type
+			}
+		}
+		loc = &tg.InputPhotoFileLocation{
+			ID:            photo.ID,
+			AccessHash:    photo.AccessHash,
+			FileReference: photo.FileReference,
+			ThumbSize:     thumbSize,
+		}
+		fileExt = ".jpg"
+	case *tg.MessageMediaDocument:
+		doc, ok := m.Document.(*tg.Document)
+		if !ok {
+			return
+		}
+		loc = &tg.InputDocumentFileLocation{
+			ID:            doc.ID,
+			AccessHash:    doc.AccessHash,
+			FileReference: doc.FileReference,
+		}
+		fileExt = ".mp4"
+	}
+
+	if loc == nil {
+		return
+	}
+
+	var fileData []byte
+	offset := int64(0)
+	limit := 1024 * 1024
+
+	for {
+		reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		res, err := client.API().UploadGetFile(reqCtx, &tg.UploadGetFileRequest{
+			Location: loc,
+			Offset:   offset,
+			Limit:    limit,
+		})
+		cancel()
+		if err != nil {
+			break
+		}
+
+		file, ok := res.(*tg.UploadFile)
+		if !ok || len(file.Bytes) == 0 {
+			break
+		}
+
+		fileData = append(fileData, file.Bytes...)
+		if len(file.Bytes) < limit {
+			break
+		}
+		offset += int64(len(file.Bytes))
+		if len(fileData) > 50*1024*1024 {
+			break
+		}
+	}
+
+	if len(fileData) == 0 {
+		return
+	}
+
+	tmpFile := filepath.Join("/tmp", fmt.Sprintf("wolf_ttl_%d%s", time.Now().UnixNano(), fileExt))
+	if err := os.WriteFile(tmpFile, fileData, 0600); err != nil {
+		return
+	}
+	defer os.Remove(tmpFile)
+
+	caption := fmt.Sprintf(
+		"📸 <b>رسانه تایمردار ذخیره شد! 😛</b>\n\n"+
+			"👤 <b>فرستنده:</b> %s (%s)\n"+
+			"🆔 <b>آیدی:</b> <code>%d</code>\n"+
+			"⏱ <b>مدت زمان:</b> %d ثانیه\n"+
+			"🗂 <b>نوع:</b> %s",
+		html.EscapeString(senderName), html.EscapeString(usernameStr), senderID, ttlSeconds,
+		func() string {
+			if mediaType == "photo" {
+				return "عکس"
+			}
+			return "ویدیو"
+		}(),
+	)
+
+	if mediaType == "photo" {
+		p := &tele.Photo{
+			File:    tele.FromDisk(tmpFile),
+			Caption: caption,
+		}
+		_, _ = bot.Send(&tele.User{ID: targetUserID}, p, tele.ModeHTML)
+	} else {
+		v := &tele.Video{
+			File:    tele.FromDisk(tmpFile),
+			Caption: caption,
+		}
+		_, _ = bot.Send(&tele.User{ID: targetUserID}, v, tele.ModeHTML)
+	}
+}
+
+func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 	activeUserbotsMu.Lock()
 	if _, exists := activeUserbots[userID]; exists {
 		activeUserbotsMu.Unlock()
@@ -698,20 +854,16 @@ func startUserbot(userID int64, cfg Config) {
 		}
 		inputPeer = getInputPeer(msg.PeerID, e, selfID)
 
+		// رصد و دانلود مستقیم مدیاهای تایمردار
 		if !msg.Out {
 			if _, isUser := msg.PeerID.(*tg.PeerUser); isUser && msg.Media != nil {
 				var timerEnabled bool
 				_ = db.QueryRow("SELECT is_timer_media_enabled FROM users WHERE id = ?", userID).Scan(&timerEnabled)
 				if timerEnabled {
 					go func() {
-						fwdReq := &tg.MessagesForwardMessagesRequest{
-							DropAuthor: true,
-							FromPeer:   inputPeer,
-							ID:         []int{msg.ID},
-							RandomID:   []int64{rand.Int63()},
-							ToPeer:     &tg.InputPeerSelf{},
-						}
-						_, _ = client.API().MessagesForwardMessages(ctx, fwdReq)
+						dCtx, dCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+						defer dCancel()
+						downloadAndRelayTTL(dCtx, client, bot, userID, msg, e)
 					}()
 				}
 			}
@@ -1443,7 +1595,7 @@ func main() {
 		}
 
 		text := fmt.Sprintf("📸 <b>مدیریت رسانه های تایمردار (View-Once)</b>\n\n"+
-			"با فعالسازی این قابلیت، به محض دریافت عکس یا ویدیوی تایم‌دار در پیوی، یک نسخه پشتیبان از آن به صورت خودکار در <b>پیام‌های ذخیره شده (Saved Messages)</b> شما ذخیره می‌شود تا پیش از باز کردن یا انقضای تایمر آن را از دست ندهید.\n\n"+
+			"با فعالسازی این قابلیت، به محض دریافت عکس یا ویدیوی تایم‌دار در پیوی، فایل به صورت مستقیم دانلود شده و یک نسخه دائمی از آن در ربات برای شما ارسال می‌شود.\n\n"+
 			"📌 <b>وضعیت فعلی شما:</b> %s", statusStr)
 
 		return c.Send(text, timerMediaMenu, tele.ModeHTML)
@@ -1702,7 +1854,7 @@ func main() {
 
 		if selfStatus == "خاموش" && hasSession {
 			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
-			startUserbot(userID, cfg)
+			startUserbot(userID, cfg, bot)
 
 			go func(uid int64) {
 				time.Sleep(2 * time.Second)
@@ -1830,7 +1982,7 @@ func main() {
 			_ = bot.Delete(c.Message())
 		}
 
-		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف شدید و اتصال اکانت شما به طور کامل قطع گردید.</b>", getKeyboard(userID), tele.ModeHTML)
+		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف خارج شدید و اتصال اکانت شما به طور کامل قطع گردید.</b>", getKeyboard(userID), tele.ModeHTML)
 	})
 
 	bot.Handle(&tele.Btn{Unique: "exit_cancel"}, func(c tele.Context) error {
@@ -2029,7 +2181,7 @@ func main() {
 
 		tx, err := db.Begin()
 		if err != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در سرور دیتابیس!", ShowAlert: true})
+			return c.Respond(&tele.CallbackResponse{Text: "❌ خطای سرور دیتابیس!", ShowAlert: true})
 		}
 		defer tx.Rollback()
 
@@ -2219,7 +2371,7 @@ func main() {
 							delete(userStates, userID)
 							stateMu.Unlock()
 
-							startUserbot(userID, cfg)
+							startUserbot(userID, cfg, bot)
 
 							successText := "🎉 <b>تبریک! سلف شما با موفقیت به اکانت متصل و فعال شد!</b> 🐺\n\n" +
 								"✅ <i>وضعیت اکانت شما هم‌اکنون به حالت روشن تغییر یافت.</i>\n" +
@@ -2257,7 +2409,7 @@ func main() {
 							delete(userStates, userID)
 							stateMu.Unlock()
 
-							startUserbot(userID, cfg)
+							startUserbot(userID, cfg, bot)
 
 							successText := "🎉 <b>تبریک! رمز دو مرحله‌ای تایید شد و سلف متصل گردید!</b> 🐺\n\n" +
 								"✅ <i>وضعیت اکانت شما به حالت روشن تغییر یافت.</i>"
@@ -2546,7 +2698,7 @@ func main() {
 		for rows.Next() {
 			var uid int64
 			if err := rows.Scan(&uid); err == nil {
-				startUserbot(uid, cfg)
+				startUserbot(uid, cfg, bot)
 			}
 		}
 		rows.Close()

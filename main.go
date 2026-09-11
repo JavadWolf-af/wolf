@@ -211,6 +211,7 @@ func main() {
 	userMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminPanelMenu := &tele.ReplyMarkup{ResizeKeyboard: true} 
+	accountConfigMenu := &tele.ReplyMarkup{ResizeKeyboard: true} 
 	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
 	btnBuy := userMenu.Text("🛍️ خرید سلف")
@@ -233,16 +234,25 @@ func main() {
 		adminMenu.Row(btnAdminPanel),
 	)
 
-	// دکمه‌های تفکیک شده و شیکِ پنل مدیریت
-	btnConfigCardNum := adminPanelMenu.Text("💳 شماره کارت")
-	btnConfigCardName := adminPanelMenu.Text("👤 نام صاحب حساب")
-	btnConfigCardBank := adminPanelMenu.Text("🏦 نام بانک")
-	btnBack := adminPanelMenu.Text("🔙 بازگشت")
+	// دکمه‌های پنل مدیریت
+	btnConfigAccount := adminPanelMenu.Text("🛠 تنظیم حساب بانکی")
+	btnBack := adminPanelMenu.Text("🔙 بازگشت") // بازگشت به منوی اصلی
 
 	adminPanelMenu.Reply(
-		adminPanelMenu.Row(btnConfigCardNum, btnConfigCardName),
-		adminPanelMenu.Row(btnConfigCardBank),
+		adminPanelMenu.Row(btnConfigAccount),
 		adminPanelMenu.Row(btnBack),
+	)
+
+	// دکمه‌های زیرمنوی تنظیم حساب
+	btnConfigCardNum := accountConfigMenu.Text("💳 شماره کارت")
+	btnConfigCardName := accountConfigMenu.Text("👤 نام صاحب حساب")
+	btnConfigCardBank := accountConfigMenu.Text("🏦 نام بانک")
+	btnBackToAdmin := accountConfigMenu.Text("🔙 بازگشت به مدیریت")
+
+	accountConfigMenu.Reply(
+		accountConfigMenu.Row(btnConfigCardNum, btnConfigCardName),
+		accountConfigMenu.Row(btnConfigCardBank),
+		accountConfigMenu.Row(btnBackToAdmin),
 	)
 
 	// دکمه‌های پروفایل
@@ -295,6 +305,11 @@ func main() {
 	bot.Handle(&btnBack, func(c tele.Context) error {
 		delete(adminStates, c.Sender().ID)
 		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getKeyboard(c.Sender().ID), tele.ModeHTML)
+	})
+
+	bot.Handle(&btnBackToAdmin, func(c tele.Context) error {
+		delete(adminStates, c.Sender().ID)
+		return c.Send("🔙 <b>به پنل مدیریت بازگشتید.</b>", adminPanelMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnProfile, func(c tele.Context) error {
@@ -494,7 +509,18 @@ func main() {
 		return c.Send(adminText, adminPanelMenu, tele.ModeHTML)
 	})
 
-	// عملیات تنظیم کارت در پنل
+	bot.Handle(&btnConfigAccount, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Send("❌ شما دسترسی ندارید.")
+		}
+
+		text := "💳 <b>بخش تنظیمات اطلاعات بانکی</b>\n\n" +
+			"لطفاً برای مشاهده و تغییر اطلاعات، از دکمه‌های زیر استفاده کنید:"
+
+		return c.Send(text, accountConfigMenu, tele.ModeHTML)
+	})
+
+	// عملیات تنظیم کارت در زیرمنو
 	bot.Handle(&btnConfigCardNum, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) { return nil }
 		current := GetSetting("card_number")

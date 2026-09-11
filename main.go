@@ -21,9 +21,9 @@ import (
 	gpc "github.com/yaa110/go-persian-calendar"
 	tele "gopkg.in/telebot.v3"
 
+	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
-	"github.com/gotd/td/telegram/session"
 )
 
 type Config struct {

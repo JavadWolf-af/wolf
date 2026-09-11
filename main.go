@@ -506,7 +506,6 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 	}
 	replyMsgID := header.ReplyToMsgID
 
-	// دریافت متن یا محتوای پیام ریپلای شده برای کپی کردن واقعی
 	getMsgReq := &tg.MessagesGetMessagesRequest{
 		ID: []tg.InputMessageClass{
 			&tg.InputMessageID{ID: replyMsgID},
@@ -619,7 +618,6 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 		var sendRes tg.UpdatesClass
 		var sendErr error
 
-		// اگر پیام شامل مدیا (عکس، ویدیو، ویس، فایل) باشد
 		if sourceMsg.Media != nil {
 			sendMediaReq := &tg.MessagesSendMediaRequest{
 				Peer:     target.Peer,
@@ -629,7 +627,6 @@ func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer t
 			}
 			sendRes, sendErr = client.API().MessagesSendMedia(ctx, sendMediaReq)
 		} else {
-			// پیام متنی معمولی
 			sendMsgReq := &tg.MessagesSendMessageRequest{
 				Peer:     target.Peer,
 				Message:  sourceMsg.Message,
@@ -694,7 +691,6 @@ func handleDeleteBroadcastPV(ctx context.Context, client *telegram.Client, input
 		return
 	}
 
-	// استخراج کاربران برای گرفتن AccessHash
 	dialogsReq := &tg.MessagesGetDialogsRequest{
 		OffsetPeer: &tg.InputPeerEmpty{},
 		Limit:      100,
@@ -718,18 +714,12 @@ func handleDeleteBroadcastPV(ctx context.Context, client *telegram.Client, input
 
 	for _, item := range items {
 		accessHash := userAccessMap[item.PeerID]
-		targetPeer := &tg.InputPeerUser{
-			UserID:     item.PeerID,
-			AccessHash: accessHash,
-		}
 
-		// حذف دوطرفه در چت مخاطب
 		_, _ = client.API().MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
 			Revoke: true,
 			ID:     []int{item.MsgID},
 		})
 
-		// حذف در چت شخصی (خودم) با استفاده از InputPeer مناسب
 		_, _ = client.API().ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
 			Channel: &tg.InputChannel{ChannelID: item.PeerID, AccessHash: accessHash},
 			ID:      []int{item.MsgID},
@@ -1020,7 +1010,7 @@ func processDailyBilling(bot *tele.Bot) {
 			_, _ = db.Exec("UPDATE users SET self_status = 'خاموش' WHERE id = ?", uid)
 			stopUserbot(uid)
 			msg := "⚠️ <b>شارژ کلیدهای شما به پایان رسید!</b>\n\n" +
-				"مودی شما برای کسر هزینه روزانه سلف (۱ کلید) کافی نبود و سلف شما به صورت خودکار خاموش شد.\n\n" +
+				"موجودی شما برای کسر هزینه روزانه سلف (۱ کلید) کافی نبود و سلف شما به صورت خودکار خاموش شد.\n\n" +
 				"🛒 <i>لطفاً جهت فعالسازی مجدد، از بخش کیف پول اقدام به شارژ حساب نمایید.</i>"
 			_, _ = bot.Send(&tele.User{ID: uid}, msg, tele.ModeHTML)
 		} else {

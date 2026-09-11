@@ -236,7 +236,7 @@ func main() {
 
 	// دکمه‌های پنل مدیریت
 	btnConfigAccount := adminPanelMenu.Text("🛠 تنظیم حساب بانکی")
-	btnBack := adminPanelMenu.Text("🔙 بازگشت") // بازگشت به منوی اصلی
+	btnBack := adminPanelMenu.Text("🔙 بازگشت") 
 
 	adminPanelMenu.Reply(
 		adminPanelMenu.Row(btnConfigAccount),
@@ -309,7 +309,34 @@ func main() {
 
 	bot.Handle(&btnBackToAdmin, func(c tele.Context) error {
 		delete(adminStates, c.Sender().ID)
-		return c.Send("🔙 <b>به پنل مدیریت بازگشتید.</b>", adminPanelMenu, tele.ModeHTML)
+		
+		// برای بازگشت شیک‌تر، همان داشبورد را دوباره محاسبه و نشان می‌دهیم
+		var totalUsers, activeUsers, blockedUsers int
+		_ = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
+		_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE is_blocked = TRUE").Scan(&blockedUsers)
+		_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE self_status = 'روشن'").Scan(&activeUsers)
+		inactiveUsers := totalUsers - activeUsers
+		adminCount := len(cfg.AdminIDs)
+
+		adminText := fmt.Sprintf(`👑 <b>مدیریت کل سیستم به دست شماست!</b>
+
+🖥 <b>مشخصات سرور به شرح زیر است:</b>
+⚙️ CPU : <b>در حال محاسبه...</b>
+🧮 RAM : <b>در حال محاسبه...</b>
+🔄 Swap : <b>در حال محاسبه...</b>
+💾 Storage : <b>در حال محاسبه...</b>
+🌐 Trafic : 🔺 Up: <b>--</b> | 🔻 Down: <b>--</b>
+
+👥 <b>مشخصات سلف به شرح زیر است:</b>
+🔹 تعداد کل کاربران : <b>%d نفر</b>
+🟢 کاربران فعال : <b>%d نفر</b>
+🔴 کاربران غیر فعال : <b>%d نفر</b>
+🚫 کاربران مسدود شده : <b>%d نفر</b>
+👨‍💻 تعداد ادمین : <b>%d نفر</b>
+
+✨ <i>بخش مورد نظر خود را از منوی زیر انتخاب کنید:</i>`, totalUsers, activeUsers, inactiveUsers, blockedUsers, adminCount)
+
+		return c.Send(adminText, adminPanelMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnProfile, func(c tele.Context) error {
@@ -406,7 +433,6 @@ func main() {
 		userPendingInvoice[userID] = amount
 		keys := float64(amount) / 3333.0
 
-		// فراخوانی اطلاعات کارت از دیتابیس
 		cNum := GetSetting("card_number")
 		cName := GetSetting("card_name")
 		cBank := GetSetting("card_bank")
@@ -496,15 +522,42 @@ func main() {
 	})
 
 	// =========================
-	// ADMIN PANEL
+	// ADMIN PANEL (DASHBOARD)
 	// =========================
 	bot.Handle(&btnAdminPanel, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Send("❌ شما دسترسی به بخش مدیریت را ندارید.")
 		}
 		
-		adminText := "👑 <b>مدیریت کل سیستم به دست شماست!</b>\n\n" +
-			"✨ <i>بخش مورد نظر خود را از منوی زیر انتخاب کنید:</i>"
+		// محاسبه زنده آمار از دیتابیس
+		var totalUsers, activeUsers, blockedUsers int
+		
+		_ = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
+		_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE is_blocked = TRUE").Scan(&blockedUsers)
+		// در مراحل بعدی وقتی کاربر سلف رو روشن کرد، وضعیتش میشه 'روشن'
+		_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE self_status = 'روشن'").Scan(&activeUsers)
+		
+		inactiveUsers := totalUsers - activeUsers
+		adminCount := len(cfg.AdminIDs)
+
+		// متن داشبورد شیک و حرفه‌ای
+		adminText := fmt.Sprintf(`👑 <b>مدیریت کل سیستم به دست شماست!</b>
+
+🖥 <b>مشخصات سرور به شرح زیر است:</b>
+⚙️ CPU : <b>در حال محاسبه...</b>
+🧮 RAM : <b>در حال محاسبه...</b>
+🔄 Swap : <b>در حال محاسبه...</b>
+💾 Storage : <b>در حال محاسبه...</b>
+🌐 Trafic : 🔺 Up: <b>--</b> | 🔻 Down: <b>--</b>
+
+👥 <b>مشخصات سلف به شرح زیر است:</b>
+🔹 تعداد کل کاربران : <b>%d نفر</b>
+🟢 کاربران فعال : <b>%d نفر</b>
+🔴 کاربران غیر فعال : <b>%d نفر</b>
+🚫 کاربران مسدود شده : <b>%d نفر</b>
+👨‍💻 تعداد ادمین : <b>%d نفر</b>
+
+✨ <i>بخش مورد نظر خود را از منوی زیر انتخاب کنید:</i>`, totalUsers, activeUsers, inactiveUsers, blockedUsers, adminCount)
 
 		return c.Send(adminText, adminPanelMenu, tele.ModeHTML)
 	})
@@ -520,7 +573,6 @@ func main() {
 		return c.Send(text, accountConfigMenu, tele.ModeHTML)
 	})
 
-	// عملیات تنظیم کارت در زیرمنو
 	bot.Handle(&btnConfigCardNum, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) { return nil }
 		current := GetSetting("card_number")

@@ -637,37 +637,9 @@ func handleDeleteBroadcastPV(ctx context.Context, client *telegram.Client, input
 		return
 	}
 
-	dialogsReq := &tg.MessagesGetDialogsRequest{
-		OffsetPeer: &tg.InputPeerEmpty{},
-		Limit:      100,
-	}
-	res, _ := client.API().MessagesGetDialogs(ctx, dialogsReq)
-	userAccessMap := make(map[int64]int64)
-	if res != nil {
-		var users []tg.UserClass
-		switch d := res.(type) {
-		case *tg.MessagesDialogs:
-			users = d.Users
-		case *tg.MessagesDialogsSlice:
-			users = d.Users
-		}
-		for _, uClass := range users {
-			if u, ok := uClass.(*tg.User); ok {
-				userAccessMap[u.ID] = u.AccessHash
-			}
-		}
-	}
-
 	for _, item := range items {
-		accessHash := userAccessMap[item.PeerID]
-		targetPeer := &tg.InputPeerUser{
-			UserID:     item.PeerID,
-			AccessHash: accessHash,
-		}
-
 		_, _ = client.API().MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
 			Revoke: true,
-			Peer:   targetPeer,
 			ID:     []int{item.MsgID},
 		})
 	}

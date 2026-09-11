@@ -46,7 +46,6 @@ type AdminAction struct {
 	TargetID int64
 }
 
-// ساختار حالت لاگین کاربر همراه با کانال موقت برای دریافت کد ۵ رقمی
 type UserState struct {
 	Action     string
 	Phone      string
@@ -225,22 +224,18 @@ func GetUserSelfStatus(userID int64) string {
 func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan string) error {
 	ctx := context.Background()
 
-	// ایجاد پوشه برای ذخیره سشن‌های کاربران به صورت امن
 	sessionDir := "/opt/wolf/sessions"
 	_ = os.MkdirAll(sessionDir, 0700)
 	sessionPath := filepath.Join(sessionDir, fmt.Sprintf("user_%d.json", userID))
 
-	// بارگذاری یا ساخت فایل سشن اختصاصی کاربر
 	loader := &session.FileStorage{Path: sessionPath}
 
 	client := telegram.NewClient(cfg.APIID, cfg.APIHash, telegram.Options{
 		SessionStorage: loader,
 	})
 
-	// جریان احراز هویت تلگرام
 	flow := auth.NewFlow(
 		auth.Constant(phone, "", auth.CodeAuthenticatorFunc(func(ctx context.Context, sentCode *telegram.Code) (string, error) {
-			// منتظر می‌مانیم تا کاربر کد ۵ رقمی را از طریق ربات تلگرام ارسال کند
 			select {
 			case code := <-codeChan:
 				return code, nil
@@ -811,11 +806,9 @@ func main() {
 			CodeChan: codeChan,
 		}
 
-		// اجرای فرآیند MTProto در یک گوروتین مجزا به صورت پس‌زمینه
 		go func() {
 			err := startTelegramLogin(userID, contact.PhoneNumber, cfg, codeChan)
 			if err != nil {
-				// اگر لاگین با خطا مواجه شد یا کنسل شد
 				stateStruct := userStates[userID]
 				stateStruct.SignInErr = err
 				userStates[userID] = stateStruct
@@ -1024,12 +1017,10 @@ func main() {
 		userID := c.Sender().ID
 		text := strings.TrimSpace(c.Text())
 
-		// دریافت و ارسال کد ۵ رقمی به چنل MTProto
 		if uState, exists := userStates[userID]; exists {
 			if uState.Action == "waiting_for_code" {
 				select {
 				case uState.CodeChan <- text:
-					// چک کردن موفقیت لاگین پس از ارسال کد
 					time.Sleep(2 * time.Second)
 					if uState.SignInErr != nil {
 						return c.Send(fmt.Sprintf("❌ <b>خطا در ورود به اکانت:</b> %v\n\nلطفاً دوباره کد صحیح را ارسال کنید:", uState.SignInErr), tele.ModeHTML)

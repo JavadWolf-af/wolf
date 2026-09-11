@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -48,13 +47,13 @@ type AdminAction struct {
 }
 
 type UserState struct {
-	Action      string
-	Phone       string
-	CodeChan    chan string
+	Action       string
+	Phone        string
+	CodeChan     chan string
 	PasswordChan chan string
-	SignInErr   error
-	Needs2FA    bool
-	IsLoggedIn  bool
+	SignInErr    error
+	Needs2FA     bool
+	IsLoggedIn   bool
 }
 
 var adminStates = make(map[int64]AdminAction)
@@ -249,7 +248,6 @@ func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan st
 		auth.SendCodeOptions{},
 	)
 
-	// مدیریت رمز عبور تایید دو مرحله‌ای (2FA) در صورت فعال بودن روی اکانت کاربر
 	flow.PasswordAuthenticator = auth.PasswordAuthenticatorFunc(func(ctx context.Context) (string, error) {
 		*need2FA = true
 		select {
@@ -354,7 +352,7 @@ func main() {
 	btnSupport := userMenu.Text("🎧 پشتیبانی")
 	btnGuide := userMenu.Text("📚 راهنما")
 	btnAdminPanel := adminMenu.Text("⚙️ مدیریت")
-	btnBack := adminPanelMenu.Text("🔙 بازگشت")
+	btnBack := adminMenu.Text("🔙 بازگشت")
 
 	userMenu.Reply(
 		userMenu.Row(btnBuy, btnProfile),
@@ -1040,7 +1038,6 @@ func main() {
 				case uState.CodeChan <- text:
 					time.Sleep(3 * time.Second)
 
-					// بررسی اینکه آیا اکانت رمز دوم (2FA) دارد یا خیر
 					if uState.Needs2FA {
 						uState.Action = "waiting_for_password"
 						userStates[userID] = uState

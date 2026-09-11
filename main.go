@@ -213,22 +213,31 @@ func GetUserSelfStatus(userID int64) string {
 	return status
 }
 
-// سیستم تراکنش ایمن و بدون خطا (با قابلیت ساخت خودکار کیف پول در صورت عدم وجود)
+// سیستم تراکنش ایمن با رفع خطای کلید خارجی و لاگ دقیق خطاها
 func SafeAddUserBalance(userID int64, amount int) error {
 	tx, err := db.Begin()
 	if err != nil {
+		log.Printf("❌ DB Begin Error: %v", err)
 		return err
 	}
 	defer tx.Rollback()
 
-	// اگر کیف پول کاربر وجود نداشته باشد، ساخته می‌شود؛ اگر باشد موجودی اضافه می‌گردد
+	// ابتدا مطمئن شویم کاربر در جدول users وجود دارد تا خطا ندهد
+	_, err = tx.Exec(`INSERT IGNORE INTO users (id, first_name, username) VALUES (?, 'کاربر', 'ثبت_نشده')`, userID)
+	if err != nil {
+		log.Printf("❌ DB Insert User Error: %v", err)
+		return err
+	}
+
 	_, err = tx.Exec(`INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON DUPLICATE KEY UPDATE balance = balance + ?`, userID, amount, amount)
 	if err != nil {
+		log.Printf("❌ DB Wallet Update Error: %v", err)
 		return err
 	}
 
 	_, err = tx.Exec(`UPDATE users SET purchases_count = purchases_count + 1 WHERE id = ?`, userID)
 	if err != nil {
+		log.Printf("❌ DB Purchases Count Error: %v", err)
 		return err
 	}
 

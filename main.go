@@ -78,6 +78,9 @@ func (c *Config) IsAdmin(userID int64) bool {
 	return false
 }
 
+// ============================================================
+// DATABASE
+// ============================================================
 func InitDB(cfg Config) {
 	var err error
 	dsn := fmt.Sprintf("%s:%s@tcp(127.0.0.1:3306)/%s?parseTime=true&charset=utf8mb4", cfg.DBUser, cfg.DBPass, cfg.DBName)
@@ -104,11 +107,7 @@ func InitDB(cfg Config) {
 		self_status VARCHAR(50) DEFAULT 'خرید نداشته',
 		purchases_count INT DEFAULT 0
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
-
-	_, err = db.Exec(queryUsers)
-	if err != nil {
-		log.Fatalf("❌ خطا در ساخت جدول کاربران: %v", err)
-	}
+	_, _ = db.Exec(queryUsers)
 
 	queryWallet := `
 	CREATE TABLE IF NOT EXISTS wallets (
@@ -116,11 +115,34 @@ func InitDB(cfg Config) {
 		balance INT DEFAULT 0,
 		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
+	_, _ = db.Exec(queryWallet)
 
-	_, err = db.Exec(queryWallet)
+	// جدول تنظیمات بات (مثل شماره کارت)
+	querySettings := `
+	CREATE TABLE IF NOT EXISTS settings (
+		setting_key VARCHAR(50) PRIMARY KEY,
+		setting_value TEXT
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
+	_, _ = db.Exec(querySettings)
+
+	// مقادیر پیش‌فرض در صورت خالی بودن دیتابیس
+	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_number', '6037-9971-XXXX-XXXX')`)
+	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_name', 'جواد ولف')`)
+	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_bank', 'بانک ملی')`)
+}
+
+// توابع مدیریت تنظیمات
+func GetSetting(key string) string {
+	var val string
+	err := db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = ?", key).Scan(&val)
 	if err != nil {
-		log.Fatalf("❌ خطا در ساخت جدول کیف پول: %v", err)
+		return ""
 	}
+	return val
+}
+
+func SetSetting(key, val string) {
+	_, _ = db.Exec("UPDATE settings SET setting_value = ? WHERE setting_key = ?", val, key)
 }
 
 func SaveUser(userID int64, firstName, username string) {
@@ -128,10 +150,7 @@ func SaveUser(userID int64, firstName, username string) {
 		return
 	}
 	query := `INSERT INTO users (id, first_name, username) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE first_name=?, username=?`
-	_, err := db.Exec(query, userID, firstName, username, firstName, username)
-	if err != nil {
-		log.Printf("⚠️ خطا در ذخیره کاربر: %v", err)
-	}
+	_, _ = db.Exec(query, userID, firstName, username, firstName, username)
 	_, _ = db.Exec(`INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0)`, userID)
 }
 
@@ -168,6 +187,9 @@ func formatMoney(n int) string {
 	return strings.Join(parts, ",")
 }
 
+// ============================================================
+// MAIN
+// ============================================================
 func main() {
 	cfg := loadConfig()
 
@@ -184,8 +206,13 @@ func main() {
 		log.Fatalf("❌ خطا در راه‌اندازی ربات: %v", err)
 	}
 
+	// =========================
+	// KEYBOARDS
+	// =========================
 	userMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	adminPanelMenu := &tele.ReplyMarkup{ResizeKeyboard: true} // کیبورد اختصاصی پنل مدیریت
+	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
 	btnBuy := userMenu.Text("🛍️ خرید سلف")
 	btnProfile := userMenu.Text("👤 حساب کاربری")
@@ -207,11 +234,19 @@ func main() {
 		adminMenu.Row(btnAdminPanel),
 	)
 
-	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	// دکمه‌های پنل مدیریت (Reply Keyboard)
+	btnConfigCard := adminPanelMenu.Text("💳 تنظیم شماره کارت")
+	btnBack := adminPanelMenu.Text("🔙 بازگشت") // دکمه بازگشت مشترک
+
+	adminPanelMenu.Reply(
+		adminPanelMenu.Row(btnConfigCard),
+		adminPanelMenu.Row(btnBack),
+	)
+
+	// دکمه‌های حساب کاربری
 	btnTurnOnSelf := profileMenu.Text("🟢 روشن کردن سلف")
 	btnTurnOffSelf := profileMenu.Text("🔴 خاموش کردن سلف")
 	btnExitSelf := profileMenu.Text("🛑 خروج سلف")
-	btnBack := profileMenu.Text("🔙 بازگشت")
 
 	profileMenu.Reply(
 		profileMenu.Row(btnTurnOnSelf, btnTurnOffSelf),
@@ -226,6 +261,9 @@ func main() {
 		return userMenu
 	}
 
+	// =========================
+	// HANDLERS
+	// =========================
 	bot.Handle("/start", func(c tele.Context) error {
 		user := c.Sender()
 		if IsUserBlocked(user.ID) {
@@ -252,6 +290,12 @@ func main() {
 		return c.Send(text, getKeyboard(user.ID), tele.ModeHTML)
 	})
 
+	bot.Handle(&btnBack, func(c tele.Context) error {
+		// اگر ادمین در حال تنظیم کارت بود و پشیمان شد، وضعیتش پاک شود
+		delete(adminStates, c.Sender().ID)
+		return c.Send("🔙 به منوی اصلی بازگشتید.", getKeyboard(c.Sender().ID))
+	})
+
 	bot.Handle(&btnProfile, func(c tele.Context) error {
 		user := c.Sender()
 		if IsUserBlocked(user.ID) {
@@ -259,10 +303,7 @@ func main() {
 		}
 
 		var joinedAt time.Time
-		err := db.QueryRow("SELECT joined_at FROM users WHERE id = ?", user.ID).Scan(&joinedAt)
-		if err != nil {
-			joinedAt = time.Now()
-		}
+		_ = db.QueryRow("SELECT joined_at FROM users WHERE id = ?", user.ID).Scan(&joinedAt)
 
 		loc, _ := time.LoadLocation("Asia/Tehran")
 		now := time.Now().In(loc)
@@ -276,10 +317,6 @@ func main() {
 
 		text := fmt.Sprintf("💙 تاریخ امروز: %s\n\n⏰ ساعت: %s\n\n🔒 اطلاعات حساب کاربری\n\n⭐ آیدی عددی: <code>%d</code>\n📅 تاریخ عضویت در ربات: %s\n👀 فعالیت در ربات: %d روز\n💰 موجودی: %d تومان\n🔥 وضعیت سلف: ❌ غیرفعال (سلف نخریدی)", tNow.Format("yyyy/MM/dd"), tNow.Format("HH:mm:ss"), user.ID, tJoined.Format("yyyy/MM/dd"), daysActive, GetUserBalance(user.ID))
 		return c.Send(text, profileMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnBack, func(c tele.Context) error {
-		return c.Send("🔙 به منوی اصلی بازگشتید.", getKeyboard(c.Sender().ID))
 	})
 
 	getWalletKeyboard := func() *tele.ReplyMarkup {
@@ -353,7 +390,15 @@ func main() {
 		userPendingInvoice[userID] = amount
 		keys := float64(amount) / 3333.0
 
-		text := fmt.Sprintf("🧾 <b>فاکتور شارژ کیف پول</b>\n\n💰 <b>مبلغ قابل پرداخت:</b> <code>%s تومان</code>\n🔑 <b>تعداد کلید دریافتی:</b> <code>%.2f کلید</code>\n(نرخ هر کلید: ۳,۳۳۳ تومان)\n\n💳 لطفاً مبلغ فوق را به کارت زیر واریز کرده و سپس <b>تصویر رسید (فیش) واریزی</b> را همینجا برای ربات ارسال کنید:\n\n<code>6037-9971-XXXX-XXXX</code>\nبه نام: <b>جواد ولف</b>", formatMoney(amount), keys)
+		// فراخوانی اطلاعات کارت از دیتابیس
+		cNum := GetSetting("card_number")
+		cName := GetSetting("card_name")
+		cBank := GetSetting("card_bank")
+
+		text := fmt.Sprintf(
+			"🧾 <b>فاکتور شارژ کیف پول</b>\n\n💰 <b>مبلغ قابل پرداخت:</b> <code>%s تومان</code>\n🔑 <b>تعداد کلید دریافتی:</b> <code>%.2f کلید</code>\n(نرخ هر کلید: ۳,۳۳۳ تومان)\n\n💳 لطفاً مبلغ فوق را به کارت زیر واریز کرده و سپس <b>تصویر رسید (فیش) واریزی</b> را همینجا برای ربات ارسال کنید:\n\n🏦 <b>%s</b>\n💳 <code>%s</code>\n👤 به نام: <b>%s</b>",
+			formatMoney(amount), keys, cBank, cNum, cName,
+		)
 
 		menu := &tele.ReplyMarkup{}
 		menu.Inline(menu.Row(menu.Data("🔙 بازگشت به کیف پول", "wallet_back_to_wallet")))
@@ -437,6 +482,33 @@ func main() {
 	// =========================
 	// ADMIN PANEL ACTIONS
 	// =========================
+	bot.Handle(&btnAdminPanel, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Send("❌ شما دسترسی به بخش مدیریت را ندارید.")
+		}
+		return c.Send("⚙️ <b>به پنل مدیریت ربات خوش آمدید.</b>\nلطفاً یکی از بخش‌های زیر را انتخاب کنید:", adminPanelMenu)
+	})
+
+	bot.Handle(&btnConfigCard, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Send("❌ شما دسترسی ندارید.")
+		}
+
+		cNum := GetSetting("card_number")
+		cName := GetSetting("card_name")
+		cBank := GetSetting("card_bank")
+
+		text := fmt.Sprintf(
+			"💳 <b>اطلاعات فعلی کارت:</b>\n\n🏦 بانک: %s\n💳 شماره: <code>%s</code>\n👤 نام: %s\n\n"+
+				"✏️ برای تغییر این اطلاعات، لطفاً <b>شماره کارت</b>، <b>نام دارنده</b> و <b>نام بانک</b> را در <b>۳ خط مجزا</b> ارسال کنید.\n\n"+
+				"مثال:\n<code>6037991122334455\nجواد ولف\nبانک ملی</code>",
+			cBank, cNum, cName,
+		)
+
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_card"}
+		return c.Send(text, tele.ModeHTML)
+	})
+
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
@@ -456,8 +528,6 @@ func main() {
 		if c.Message() != nil {
 			updatedCaption := c.Message().Caption + "\n\n✅ <b>وضعیت: فیش تایید شد و موجودی کاربر شارژ گردید.</b>"
 			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
-			
-			// ریپلای پیام تایید دقیقاً روی همین فیش
 			_ = c.Reply(fmt.Sprintf("✅ <b>شارژ با موفقیت انجام شد!</b>\nمبلغ <code>%s تومان</code> به کیف پول کاربر اضافه گردید.", formatMoney(amount)), tele.ModeHTML)
 		} else {
 			_ = c.Send(fmt.Sprintf("✅ <b>شارژ با موفقیت انجام شد!</b>\nمبلغ <code>%s تومان</code> به کیف پول کاربر اضافه گردید.", formatMoney(amount)), tele.ModeHTML)
@@ -476,8 +546,6 @@ func main() {
 		if c.Message() != nil {
 			updatedCaption := c.Message().Caption + "\n\n❌ <b>وضعیت: فیش واریزی رد شد.</b>"
 			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
-			
-			// ریپلای روی فیش
 			_ = c.Reply("❌ <b>فیش رد شد و به کاربر اطلاع داده شد.</b>", tele.ModeHTML)
 		} else {
 			_ = c.Send("❌ <b>فیش رد شد و به کاربر اطلاع داده شد.</b>", tele.ModeHTML)
@@ -498,7 +566,6 @@ func main() {
 		} else {
 			_ = c.Send("🚫 <b>لطفاً دلیل مسدودی را ارسال کنید تا به همراه پیام مسدودی به صورت بولد برای کاربر ارسال شود:</b>", tele.ModeHTML)
 		}
-		
 		return c.Respond()
 	})
 
@@ -513,13 +580,10 @@ func main() {
 		if c.Message() != nil {
 			updatedCaption := c.Message().Caption + "\n\n🔓 <b>وضعیت: کاربر رفع مسدودی گردید.</b>"
 			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
-			
-			// ریپلای روی عکس
 			_ = c.Reply("🔓 <b>کاربر با موفقیت رفع مسدود شد.</b>", tele.ModeHTML)
 		} else {
 			_ = c.Send("🔓 <b>کاربر با موفقیت رفع مسدود شد.</b>", tele.ModeHTML)
 		}
-		
 		return c.Respond()
 	})
 
@@ -535,7 +599,6 @@ func main() {
 		} else {
 			_ = c.Send("💬 <b>لطفاً متن پیام خود برای کاربر را ارسال کنید:</b>", tele.ModeHTML)
 		}
-		
 		return c.Respond()
 	})
 
@@ -551,7 +614,6 @@ func main() {
 		} else {
 			_ = c.Send("💰 <b>لطفاً مبلغ مورد نظر برای افزایش دستی موجودی را (فقط عدد به تومان) ارسال کنید:</b>", tele.ModeHTML)
 		}
-		
 		return c.Respond()
 	})
 
@@ -581,6 +643,20 @@ func main() {
 		text := c.Text()
 
 		switch state.Action {
+		case "set_card":
+			lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+			if len(lines) < 3 {
+				_ = c.Send("❌ فرمت وارد شده اشتباه است.\nلطفاً حتماً اطلاعات را در ۳ خط مجزا (شماره کارت، نام دارنده، نام بانک) ارسال کنید.")
+				return nil
+			}
+			
+			SetSetting("card_number", strings.TrimSpace(lines[0]))
+			SetSetting("card_name", strings.TrimSpace(lines[1]))
+			SetSetting("card_bank", strings.TrimSpace(lines[2]))
+
+			_ = c.Send("✅ <b>اطلاعات کارت با موفقیت ثبت و به‌روزرسانی شد!</b>\nدر بخش کیف پول کارت جدید به کاربران نمایش داده خواهد شد.", tele.ModeHTML)
+			delete(adminStates, adminID)
+
 		case "msg":
 			_, err := bot.Send(&tele.User{ID: state.TargetID}, fmt.Sprintf("💬 <b>پیام از طرف مدیریت:</b>\n\n%s", html.EscapeString(text)), tele.ModeHTML)
 			if err == nil {
@@ -631,12 +707,6 @@ func main() {
 	})
 	bot.Handle(&btnGuide, func(c tele.Context) error {
 		return c.Send("📚 <b>راهنمای استفاده</b>\n\nآموزش‌ها و راهنمای کامل استفاده از ربات.", tele.ModeHTML)
-	})
-	bot.Handle(&btnAdminPanel, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) {
-			return c.Send("❌ شما دسترسی به بخش مدیریت را ندارید.")
-		}
-		return c.Send("⚙️ <b>پنل مدیریت ربات ولف سلف</b>\n\nوضعیت سیستم: فعال و متصل به MySQL", tele.ModeHTML)
 	})
 
 	log.Println("⚡ ربات ولف سلف با دیتابیس MySQL آماده و روشن شد!")

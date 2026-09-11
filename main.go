@@ -23,6 +23,8 @@ import (
 type Config struct {
 	BotToken string
 	AdminIDs []int64
+	APIID    int
+	APIHash  string
 	DBUser   string
 	DBPass   string
 	DBName   string
@@ -38,14 +40,13 @@ type AdminAction struct {
 	TargetID int64
 }
 
-// ساختار جدید برای مدیریت وضعیت کاربران (لاگین سلف)
 type UserState struct {
 	Action string
 	Phone  string
 }
 
 var adminStates = make(map[int64]AdminAction)
-var userStates = make(map[int64]UserState) // استیت کاربران
+var userStates = make(map[int64]UserState)
 
 func loadConfig() Config {
 	_ = godotenv.Load()
@@ -54,6 +55,11 @@ func loadConfig() Config {
 	if token == "" {
 		log.Fatal("❌ خطای پیکربندی: مقدار BOT_TOKEN در فایل .env یافت نشد.")
 	}
+
+	apiIDStr := os.Getenv("API_ID")
+	apiID, _ := strconv.Atoi(apiIDStr)
+
+	apiHash := os.Getenv("API_HASH")
 
 	dbUser := os.Getenv("DB_USER")
 	dbPass := os.Getenv("DB_PASS")
@@ -74,6 +80,8 @@ func loadConfig() Config {
 	return Config{
 		BotToken: token,
 		AdminIDs: adminIDs,
+		APIID:    apiID,
+		APIHash:  apiHash,
 		DBUser:   dbUser,
 		DBPass:   dbPass,
 		DBName:   dbName,
@@ -272,9 +280,6 @@ func main() {
 		log.Fatalf("❌ خطا در راه‌اندازی ربات: %v", err)
 	}
 
-	// =========================
-	// KEYBOARDS
-	// =========================
 	userMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminPanelMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
@@ -290,7 +295,7 @@ func main() {
 	btnSupport := userMenu.Text("🎧 پشتیبانی")
 	btnGuide := userMenu.Text("📚 راهنما")
 	btnAdminPanel := adminMenu.Text("⚙️ مدیریت")
-	btnBack := adminPanelMenu.Text("🔙 بازگشت") 
+	btnBack := adminPanelMenu.Text("🔙 بازگشت")
 
 	userMenu.Reply(
 		userMenu.Row(btnBuy, btnProfile),
@@ -364,9 +369,6 @@ func main() {
 		return userMenu
 	}
 
-	// =========================
-	// DASHBOARD GENERATOR
-	// =========================
 	getAdminDashboard := func() string {
 		var totalUsers, activeUsers, blockedUsers int
 		_ = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
@@ -446,9 +448,6 @@ func main() {
 		)
 	}
 
-	// =========================
-	// START & PROFILE
-	// =========================
 	bot.Handle("/start", func(c tele.Context) error {
 		user := c.Sender()
 		if IsUserBlocked(user.ID) {
@@ -478,7 +477,7 @@ func main() {
 	bot.Handle(&btnBack, func(c tele.Context) error {
 		userID := c.Sender().ID
 		delete(adminStates, userID)
-		delete(userStates, userID) // پاک کردن استیت لاگین
+		delete(userStates, userID)
 		delete(userPendingInvoice, userID)
 		userWalletTemp[userID] = 0
 		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getKeyboard(userID), tele.ModeHTML)
@@ -532,9 +531,6 @@ func main() {
 		return c.Send(text, profileMenu, tele.ModeHTML)
 	})
 
-	// =========================
-	// WALLET SYSTEM
-	// =========================
 	getWalletInlineKeyboard := func() *tele.ReplyMarkup {
 		menu := &tele.ReplyMarkup{}
 		btnP25k := menu.Data("➕ 25,000", "wallet_change", "25000")
@@ -683,9 +679,6 @@ func main() {
 		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
 	})
 
-	// =========================
-	// BUY, ACTIVATE SELF & LOGIN FLOW
-	// =========================
 	handleSelfActivation := func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
@@ -695,7 +688,6 @@ func main() {
 		balance := GetUserBalance(userID)
 		keys := balance / price
 
-		// اگر کاربر از قبل سلف روشن داشت
 		if selfStatus == "روشن" {
 			text := fmt.Sprintf("🎉 <b>شما قبلاً سلف خود را فعال کرده‌اید!</b> 🐺\n\n🔑 <b>تعداد کلیدهای موجود شما:</b> <code>%d</code> عدد\n\n✅ <i>وضعیت اکانت: متصل و فعال</i>", keys)
 			return c.Send(text, tele.ModeHTML)
@@ -725,7 +717,6 @@ func main() {
 	bot.Handle(&btnBuy, handleSelfActivation)
 	bot.Handle(&btnTurnOnSelf, handleSelfActivation)
 
-	// وقتی کاربر کلید داشت و تایید و فعالسازی رو زد
 	bot.Handle(&btnConfirmSelfAction, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
@@ -738,10 +729,8 @@ func main() {
 			return c.Send("❌ <b>شما کلید کافی برای فعالسازی ندارید!</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
-		// قرار دادن کاربر در وضعیت ارسال شماره
 		userStates[userID] = UserState{Action: "waiting_for_contact"}
 
-		// ساخت کیبورد درخواست شماره
 		shareMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 		btnShare := shareMenu.Contact("📱 ارسال شماره اکانت (Share Contact)")
 		btnBackShare := shareMenu.Text("🔙 بازگشت")
@@ -753,7 +742,6 @@ func main() {
 		return c.Send(text, shareMenu, tele.ModeHTML)
 	})
 
-	// دریافت شماره (Contact)
 	bot.Handle(tele.OnContact, func(c tele.Context) error {
 		userID := c.Sender().ID
 		state, exists := userStates[userID]
@@ -766,10 +754,8 @@ func main() {
 			return c.Send("❌ <b>خطا!</b> لطفاً شماره خودتان را ارسال کنید، نه شخص دیگر!", tele.ModeHTML)
 		}
 
-		// قرار دادن در وضعیت انتظار برای دریافت کد ۵ رقمی
 		userStates[userID] = UserState{Action: "waiting_for_code", Phone: contact.PhoneNumber}
 
-		// حذف دکمه شیر اکانت و فقط نمایش دکمه بازگشت
 		codeMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 		btnB := codeMenu.Text("🔙 بازگشت")
 		codeMenu.Reply(codeMenu.Row(btnB))
@@ -798,9 +784,6 @@ func main() {
 		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف خارج شدید.</b>\nاتصال اکانت شما قطع شد.", tele.ModeHTML)
 	})
 
-	// =========================
-	// ADMIN PANEL MENUS
-	// =========================
 	bot.Handle(&btnAdminPanel, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) { return c.Send("❌ شما دسترسی به بخش مدیریت را ندارید.") }
 		return c.Send(getAdminDashboard(), adminPanelMenu, tele.ModeHTML)
@@ -866,9 +849,6 @@ func main() {
 		return c.Send(text, tele.ModeHTML)
 	})
 
-	// =========================
-	// ADMIN INLINE ACTIONS
-	// =========================
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) { return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."}) }
 		parts := strings.Split(c.Data(), "_")
@@ -971,20 +951,12 @@ func main() {
 		return c.Respond(&tele.CallbackResponse{Text: "✅ پنل بسته شد."})
 	})
 
-	// =========================
-	// TEXT INPUT HANDLER (User & Admin)
-	// =========================
 	bot.Handle(tele.OnText, func(c tele.Context) error {
 		userID := c.Sender().ID
 		text := strings.TrimSpace(c.Text())
 
-		// بررسی وضعیت کاربران عادی (لاگین سلف)
 		if uState, exists := userStates[userID]; exists {
 			if uState.Action == "waiting_for_code" {
-				
-				// در مراحل بعدی کدهای MTProto برای ورود به اکانت اینجا قرار میگیرد
-				// فعلاً لاگین را شبیه‌سازی و وضعیت دیتابیس را روشن می‌کنیم:
-				
 				_, _ = db.Exec("UPDATE users SET self_status = 'روشن', phone = ? WHERE id = ?", uState.Phone, userID)
 				delete(userStates, userID)
 
@@ -996,7 +968,6 @@ func main() {
 			}
 		}
 
-		// بررسی وضعیت ادمین‌ها
 		if !cfg.IsAdmin(userID) { return nil }
 
 		state, exists := adminStates[userID]

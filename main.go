@@ -107,6 +107,7 @@ func InitDB(cfg Config) {
 		self_status VARCHAR(50) DEFAULT 'خرید نداشته',
 		purchases_count INT DEFAULT 0
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
+
 	_, _ = db.Exec(queryUsers)
 
 	queryWallet := `
@@ -115,17 +116,18 @@ func InitDB(cfg Config) {
 		balance INT DEFAULT 0,
 		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
+
 	_, _ = db.Exec(queryWallet)
 
-	// جدول تنظیمات بات (مثل شماره کارت)
+	// جدول تنظیمات بات
 	querySettings := `
 	CREATE TABLE IF NOT EXISTS settings (
 		setting_key VARCHAR(50) PRIMARY KEY,
 		setting_value TEXT
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
+
 	_, _ = db.Exec(querySettings)
 
-	// مقادیر پیش‌فرض در صورت خالی بودن دیتابیس
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_number', '6037-9971-XXXX-XXXX')`)
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_name', 'جواد ولف')`)
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_bank', 'بانک ملی')`)
@@ -142,7 +144,7 @@ func GetSetting(key string) string {
 }
 
 func SetSetting(key, val string) {
-	_, _ = db.Exec("UPDATE settings SET setting_value = ? WHERE setting_key = ?", val, key)
+	_, _ = db.Exec("INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?", key, val, val)
 }
 
 func SaveUser(userID int64, firstName, username string) {
@@ -187,9 +189,6 @@ func formatMoney(n int) string {
 	return strings.Join(parts, ",")
 }
 
-// ============================================================
-// MAIN
-// ============================================================
 func main() {
 	cfg := loadConfig()
 
@@ -211,7 +210,7 @@ func main() {
 	// =========================
 	userMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
-	adminPanelMenu := &tele.ReplyMarkup{ResizeKeyboard: true} // کیبورد اختصاصی پنل مدیریت
+	adminPanelMenu := &tele.ReplyMarkup{ResizeKeyboard: true} 
 	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
 	btnBuy := userMenu.Text("🛍️ خرید سلف")
@@ -234,16 +233,19 @@ func main() {
 		adminMenu.Row(btnAdminPanel),
 	)
 
-	// دکمه‌های پنل مدیریت (Reply Keyboard)
-	btnConfigCard := adminPanelMenu.Text("💳 تنظیم شماره کارت")
-	btnBack := adminPanelMenu.Text("🔙 بازگشت") // دکمه بازگشت مشترک
+	// دکمه‌های تفکیک شده و شیکِ پنل مدیریت
+	btnConfigCardNum := adminPanelMenu.Text("💳 شماره کارت")
+	btnConfigCardName := adminPanelMenu.Text("👤 نام صاحب حساب")
+	btnConfigCardBank := adminPanelMenu.Text("🏦 نام بانک")
+	btnBack := adminPanelMenu.Text("🔙 بازگشت")
 
 	adminPanelMenu.Reply(
-		adminPanelMenu.Row(btnConfigCard),
+		adminPanelMenu.Row(btnConfigCardNum, btnConfigCardName),
+		adminPanelMenu.Row(btnConfigCardBank),
 		adminPanelMenu.Row(btnBack),
 	)
 
-	// دکمه‌های حساب کاربری
+	// دکمه‌های پروفایل
 	btnTurnOnSelf := profileMenu.Text("🟢 روشن کردن سلف")
 	btnTurnOffSelf := profileMenu.Text("🔴 خاموش کردن سلف")
 	btnExitSelf := profileMenu.Text("🛑 خروج سلف")
@@ -291,9 +293,8 @@ func main() {
 	})
 
 	bot.Handle(&btnBack, func(c tele.Context) error {
-		// اگر ادمین در حال تنظیم کارت بود و پشیمان شد، وضعیتش پاک شود
 		delete(adminStates, c.Sender().ID)
-		return c.Send("🔙 به منوی اصلی بازگشتید.", getKeyboard(c.Sender().ID))
+		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getKeyboard(c.Sender().ID), tele.ModeHTML)
 	})
 
 	bot.Handle(&btnProfile, func(c tele.Context) error {
@@ -480,35 +481,47 @@ func main() {
 	})
 
 	// =========================
-	// ADMIN PANEL ACTIONS
+	// ADMIN PANEL
 	// =========================
 	bot.Handle(&btnAdminPanel, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Send("❌ شما دسترسی به بخش مدیریت را ندارید.")
 		}
-		return c.Send("⚙️ <b>به پنل مدیریت ربات خوش آمدید.</b>\nلطفاً یکی از بخش‌های زیر را انتخاب کنید:", adminPanelMenu)
+		
+		adminText := "👑 <b>مدیریت کل سیستم به دست شماست!</b>\n\n" +
+			"✨ <i>بخش مورد نظر خود را از منوی زیر انتخاب کنید:</i>"
+
+		return c.Send(adminText, adminPanelMenu, tele.ModeHTML)
 	})
 
-	bot.Handle(&btnConfigCard, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) {
-			return c.Send("❌ شما دسترسی ندارید.")
-		}
-
-		cNum := GetSetting("card_number")
-		cName := GetSetting("card_name")
-		cBank := GetSetting("card_bank")
-
-		text := fmt.Sprintf(
-			"💳 <b>اطلاعات فعلی کارت:</b>\n\n🏦 بانک: %s\n💳 شماره: <code>%s</code>\n👤 نام: %s\n\n"+
-				"✏️ برای تغییر این اطلاعات، لطفاً <b>شماره کارت</b>، <b>نام دارنده</b> و <b>نام بانک</b> را در <b>۳ خط مجزا</b> ارسال کنید.\n\n"+
-				"مثال:\n<code>6037991122334455\nجواد ولف\nبانک ملی</code>",
-			cBank, cNum, cName,
-		)
-
-		adminStates[c.Sender().ID] = AdminAction{Action: "set_card"}
+	// عملیات تنظیم کارت در پنل
+	bot.Handle(&btnConfigCardNum, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		current := GetSetting("card_number")
+		text := fmt.Sprintf("💳 <b>تنظیم شماره کارت</b>\n\n🔹 مقدار فعلی: <code>%s</code>\n\n✏️ <i>لطفاً شماره کارت جدید را ارسال کنید:</i>", current)
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_num"}
 		return c.Send(text, tele.ModeHTML)
 	})
 
+	bot.Handle(&btnConfigCardName, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		current := GetSetting("card_name")
+		text := fmt.Sprintf("👤 <b>تنظیم نام صاحب حساب</b>\n\n🔹 مقدار فعلی: <b>%s</b>\n\n✏️ <i>لطفاً نام جدید دارنده حساب را ارسال کنید:</i>", current)
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_name"}
+		return c.Send(text, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnConfigCardBank, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		current := GetSetting("card_bank")
+		text := fmt.Sprintf("🏦 <b>تنظیم نام بانک</b>\n\n🔹 مقدار فعلی: <b>%s</b>\n\n✏️ <i>لطفاً نام بانک جدید را ارسال کنید:</i>", current)
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_bank"}
+		return c.Send(text, tele.ModeHTML)
+	})
+
+	// =========================
+	// ADMIN INLINE ACTIONS
+	// =========================
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
@@ -630,6 +643,9 @@ func main() {
 		return c.Respond(&tele.CallbackResponse{Text: "✅ پنل بسته شد."})
 	})
 
+	// =========================
+	// TEXT INPUT HANDLER
+	// =========================
 	bot.Handle(tele.OnText, func(c tele.Context) error {
 		adminID := c.Sender().ID
 		if !cfg.IsAdmin(adminID) {
@@ -640,21 +656,22 @@ func main() {
 		if !exists {
 			return nil
 		}
-		text := c.Text()
+		text := strings.TrimSpace(c.Text())
 
 		switch state.Action {
-		case "set_card":
-			lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
-			if len(lines) < 3 {
-				_ = c.Send("❌ فرمت وارد شده اشتباه است.\nلطفاً حتماً اطلاعات را در ۳ خط مجزا (شماره کارت، نام دارنده، نام بانک) ارسال کنید.")
-				return nil
-			}
-			
-			SetSetting("card_number", strings.TrimSpace(lines[0]))
-			SetSetting("card_name", strings.TrimSpace(lines[1]))
-			SetSetting("card_bank", strings.TrimSpace(lines[2]))
+		case "set_card_num":
+			SetSetting("card_number", text)
+			_ = c.Send("✅ <b>شماره کارت با موفقیت به‌روزرسانی شد.</b>", tele.ModeHTML)
+			delete(adminStates, adminID)
 
-			_ = c.Send("✅ <b>اطلاعات کارت با موفقیت ثبت و به‌روزرسانی شد!</b>\nدر بخش کیف پول کارت جدید به کاربران نمایش داده خواهد شد.", tele.ModeHTML)
+		case "set_card_name":
+			SetSetting("card_name", text)
+			_ = c.Send("✅ <b>نام صاحب حساب با موفقیت به‌روزرسانی شد.</b>", tele.ModeHTML)
+			delete(adminStates, adminID)
+
+		case "set_card_bank":
+			SetSetting("card_bank", text)
+			_ = c.Send("✅ <b>نام بانک با موفقیت به‌روزرسانی شد.</b>", tele.ModeHTML)
 			delete(adminStates, adminID)
 
 		case "msg":
@@ -667,7 +684,7 @@ func main() {
 			delete(adminStates, adminID)
 
 		case "manual_add":
-			amount, err := strconv.Atoi(strings.TrimSpace(text))
+			amount, err := strconv.Atoi(text)
 			if err != nil || amount <= 0 {
 				_ = c.Send("❌ مبلغ نامعتبر است. لطفاً فقط یک عدد صحیح وارد کنید.")
 				return nil

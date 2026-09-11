@@ -154,8 +154,7 @@ func InitDB(cfg Config) {
 		user_id BIGINT,
 		amount INT,
 		status VARCHAR(50) DEFAULT 'pending',
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE KEY unique_user_time (user_id, created_at)
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_number', '6037-9971-XXXX-XXXX')`)
@@ -214,6 +213,7 @@ func GetUserSelfStatus(userID int64) string {
 	return status
 }
 
+// سیستم تراکنش ایمن و بدون خطا (با قابلیت ساخت خودکار کیف پول در صورت عدم وجود)
 func SafeAddUserBalance(userID int64, amount int) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -221,7 +221,8 @@ func SafeAddUserBalance(userID int64, amount int) error {
 	}
 	defer tx.Rollback()
 
-	_, err = tx.Exec(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, amount, userID)
+	// اگر کیف پول کاربر وجود نداشته باشد، ساخته می‌شود؛ اگر باشد موجودی اضافه می‌گردد
+	_, err = tx.Exec(`INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON DUPLICATE KEY UPDATE balance = balance + ?`, userID, amount, amount)
 	if err != nil {
 		return err
 	}

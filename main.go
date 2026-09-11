@@ -205,6 +205,15 @@ func InitDB(cfg Config) {
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
+	_, _ = db.Exec(`
+	CREATE TABLE IF NOT EXISTS pv_broadcasts (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		user_id BIGINT,
+		message_id INT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		INDEX (user_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
+
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_number', '6037-9971-XXXX-XXXX')`)
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_name', 'جواد ولف')`)
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_bank', 'بانک ملی')`)
@@ -479,6 +488,163 @@ func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPe
 	deleteMsg(ctx, client, inputPeer, msgID)
 }
 
+// ارسال پیام ریپلای شده به تمام پیوی‌ها
+func handleBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, userID int64) {
+	if msg.ReplyTo == nil {
+		if inputPeer != nil {
+			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی یک پیام ریپلای کنید!")
+		}
+		return
+	}
+
+	header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
+	if !ok || header.ReplyToMsgID == 0 {
+		if inputPeer != nil {
+			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی یک پیام معتبر ریپلای کنید!")
+		}
+		return
+	}
+	replyMsgID := header.ReplyToMsgID
+
+	dialogsReq := &tg.MessagesGetDialogsRequest{
+		OffsetPeer: &tg.InputPeerEmpty{},
+		Limit:      100,
+	}
+	res, err := client.API().MessagesGetDialogs(ctx, dialogsReq)
+	if err != nil {
+		if inputPeer != nil {
+			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ خطا در دریافت پیوی‌ها")
+		}
+		return
+	}
+
+	var users []tg.UserClass
+	var dialogs []tg.DialogClass
+	switch d := res.(type) {
+	case *tg.MessagesDialogs:
+		users = d.Users
+		dialogs = d.Dialogs
+	case *tg.MessagesDialogsSlice:
+		users = d.Users
+		dialogs = d.Dialogs
+	}
+
+	userMap := make(map[int64]*tg.User)
+	for _, uClass := range users {
+		if u, ok := uClass.(*tg.User); ok {
+			userMap[u.ID] = u
+		}
+	}
+
+	var targetPeers []tg.InputPeerClass
+	for _, dlg := range dialogs {
+		d, ok := dlg.(*tg.Dialog)
+		if !ok {
+			continue
+		}
+		peerUser, ok := d.Peer.(*tg.PeerUser)
+		if !ok {
+			continue
+		}
+		u, exists := userMap[peerUser.UserID]
+		if !exists || u.Bot || u.Self || u.Deleted {
+			continue
+		}
+		targetPeers = append(targetPeers, &tg.InputPeerUser{
+			UserID:     u.ID,
+			AccessHash: u.AccessHash,
+		})
+	}
+
+	if len(targetPeers) == 0 {
+		if inputPeer != nil {
+			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ پیوی فعالی یافت نشد!")
+		}
+		return
+	}
+
+	// پاک کردن رکوردهای برودکست قبلی
+	_, _ = db.Exec("DELETE FROM pv_broadcasts WHERE user_id = ?", userID)
+
+	for _, target := range targetPeers {
+		fwdReq := &tg.MessagesForwardMessagesRequest{
+			DropAuthor: true,
+			FromPeer:   inputPeer,
+			ID:         []int{replyMsgID},
+			RandomID:   []int64{rand.Int63()},
+			ToPeer:     target,
+		}
+		fwdRes, err := client.API().MessagesForwardMessages(ctx, fwdReq)
+		if err == nil {
+			var sID int
+			switch upd := fwdRes.(type) {
+			case *tg.Updates:
+				for _, u := range upd.Updates {
+					if m, ok := u.(*tg.UpdateNewMessage); ok {
+						if pm, ok := m.Message.(*tg.Message); ok {
+							sID = pm.ID
+						}
+					}
+				}
+			case *tg.UpdatesShortSentMessage:
+				sID = upd.ID
+			}
+			if sID != 0 {
+				_, _ = db.Exec("INSERT INTO pv_broadcasts (user_id, message_id) VALUES (?, ?)", userID, sID)
+			}
+		}
+		time.Sleep(80 * time.Millisecond) // تاخیر ایمن برای پیشگیری از لیمیت تلگرام
+	}
+
+	if inputPeer != nil {
+		notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "به پیوی همه ارسال شد")
+	}
+}
+
+// حذف دو طرفه آخرین پیام ارسالی به تمام پیوی‌ها
+func handleDeleteBroadcastPV(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, userID int64) {
+	rows, err := db.Query("SELECT message_id FROM pv_broadcasts WHERE user_id = ?", userID)
+	if err != nil {
+		if inputPeer != nil {
+			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ خطا در بررسی دیتابیس")
+		}
+		return
+	}
+	var ids []int
+	for rows.Next() {
+		var mid int
+		if err := rows.Scan(&mid); err == nil {
+			ids = append(ids, mid)
+		}
+	}
+	rows.Close()
+
+	if len(ids) == 0 {
+		if inputPeer != nil {
+			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ پیامی برای پاک کردن یافت نشد")
+		}
+		return
+	}
+
+	for i := 0; i < len(ids); i += 100 {
+		end := i + 100
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[i:end]
+		_, _ = client.API().MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
+			Revoke: true,
+			ID:     chunk,
+		})
+	}
+
+	_, _ = db.Exec("DELETE FROM pv_broadcasts WHERE user_id = ?", userID)
+
+	if inputPeer != nil {
+		notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "پیام‌ها از پیوی همه پاک شدند")
+	}
+}
+
 func startUserbot(userID int64, cfg Config) {
 	activeUserbotsMu.Lock()
 	if _, exists := activeUserbots[userID]; exists {
@@ -566,6 +732,18 @@ func startUserbot(userID int64, cfg Config) {
 					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "اموجی خاموش شد")
 				}()
 			}
+		} else if text == "بفرست پیوی همه" {
+			go func() {
+				bCtx, bCancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				defer bCancel()
+				handleBroadcastPV(bCtx, client, inputPeer, msg, userID)
+			}()
+		} else if text == "پاک کن پیوی همه" {
+			go func() {
+				dCtx, dCancel := context.WithTimeout(context.Background(), 1*time.Minute)
+				defer dCancel()
+				handleDeleteBroadcastPV(dCtx, client, inputPeer, msg, userID)
+			}()
 		}
 	}
 
@@ -2122,8 +2300,10 @@ func main() {
 		guideMenu := &tele.ReplyMarkup{}
 		btnGuideClock := guideMenu.Data("⏱ ساعت", "guide_clock")
 		btnGuideEmoji := guideMenu.Data("🎭 اموجی", "guide_emoji")
+		btnGuidePV := guideMenu.Data("📩 پیوی همه", "guide_pv")
 		guideMenu.Inline(
 			guideMenu.Row(btnGuideClock, btnGuideEmoji),
+			guideMenu.Row(btnGuidePV),
 		)
 		return guideMenu
 	}
@@ -2190,6 +2370,35 @@ func main() {
 			"🔴 <b>خاموش کردن اموجی:</b>\n" +
 			"برای خاموش کردن و بازگرداندن اسم اصلی‌تان، در هر چتی عبارت زیر را بفرستید:\n" +
 			"<code>اموجی خاموش شو</code>"
+
+		if c.Message() != nil {
+			_ = c.Edit(text, backMenu, tele.ModeHTML)
+		} else {
+			_ = c.Send(text, backMenu, tele.ModeHTML)
+		}
+		return c.Respond()
+	})
+
+	bot.Handle(&tele.Btn{Unique: "guide_pv"}, func(c tele.Context) error {
+		userID := c.Sender().ID
+		selfStatus := GetUserSelfStatus(userID)
+		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید.", ShowAlert: true})
+		}
+
+		backMenu := &tele.ReplyMarkup{}
+		btnBackGuide := backMenu.Data("🔙 بازگشت", "guide_back")
+		backMenu.Inline(backMenu.Row(btnBackGuide))
+
+		text := "📩 <b>راهنمای ارسال و حذف پیام در پیوی همه</b>\n\n" +
+			"با این ابزار می‌توانید یک پیام را به طور همزمان به تمام پیوی‌های اکانت خود بفرستید و در صورت نیاز آن را به صورت دوطرفه پاک کنید.\n\n" +
+			"🚀 <b>ارسال به همه پیوی‌ها:</b>\n" +
+			"روی پیام مورد نظرتان (متن، عکس، ویس، ویدیو، استیکر و...) ریپلای کنید و بفرستید:\n" +
+			"<code>بفرست پیوی همه</code>\n\n" +
+			"🗑 <b>پاک کردن دوطرفه از همه پیوی‌ها:</b>\n" +
+			"برای حذف دوطرفه پیام از تمام پیوی‌ها، در هر چتی بفرستید:\n" +
+			"<code>پاک کن پیوی همه</code>\n\n" +
+			"<i>پیام‌ها کاملاً دوطرفه حذف می‌شوند و هیچ اثری از آن‌ها باقی نمی‌ماند.</i>"
 
 		if c.Message() != nil {
 			_ = c.Edit(text, backMenu, tele.ModeHTML)

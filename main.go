@@ -328,6 +328,103 @@ func handleClockOff(ctx context.Context, userID int64, client *telegram.Client) 
 	_, _ = db.Exec("UPDATE users SET is_clock_enabled = FALSE WHERE id = ?", userID)
 }
 
+func getInputPeer(peer tg.PeerClass, e tg.Entities, selfID int64) tg.InputPeerClass {
+	if peer == nil {
+		return nil
+	}
+	switch p := peer.(type) {
+	case *tg.PeerUser:
+		if p.UserID == selfID {
+			return &tg.InputPeerSelf{}
+		}
+		if u, ok := e.Users[p.UserID]; ok {
+			return &tg.InputPeerUser{
+				UserID:     u.ID,
+				AccessHash: u.AccessHash,
+			}
+		}
+		return &tg.InputPeerUser{UserID: p.UserID}
+	case *tg.PeerChat:
+		return &tg.InputPeerChat{ChatID: p.ChatID}
+	case *tg.PeerChannel:
+		if ch, ok := e.Channels[p.ChannelID]; ok {
+			return &tg.InputPeerChannel{
+				ChannelID:  ch.ID,
+				AccessHash: ch.AccessHash,
+			}
+		}
+		return &tg.InputPeerChannel{ChannelID: p.ChannelID}
+	}
+	return nil
+}
+
+func deleteMsg(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int) {
+	if ch, ok := inputPeer.(*tg.InputPeerChannel); ok {
+		_, _ = client.API().ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
+			Channel: &tg.InputChannel{
+				ChannelID:  ch.ChannelID,
+				AccessHash: ch.AccessHash,
+			},
+			ID: []int{msgID},
+		})
+		return
+	}
+	_, _ = client.API().MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
+		Revoke: true,
+		ID:     []int{msgID},
+	})
+}
+
+func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int, text string) {
+	editReq := &tg.MessagesEditMessageRequest{
+		Peer:    inputPeer,
+		ID:      msgID,
+		Message: text,
+		Entities: []tg.MessageEntityClass{
+			&tg.MessageEntityBold{
+				Offset: 0,
+				Length: len([]rune(text)),
+			},
+		},
+	}
+	_, err := client.API().MessagesEditMessage(ctx, editReq)
+	if err != nil {
+		sendReq := &tg.MessagesSendMessageRequest{
+			Peer:     inputPeer,
+			Message:  text,
+			RandomID: time.Now().UnixNano(),
+			Entities: []tg.MessageEntityClass{
+				&tg.MessageEntityBold{
+					Offset: 0,
+					Length: len([]rune(text)),
+				},
+			},
+		}
+		res, sendErr := client.API().MessagesSendMessage(ctx, sendReq)
+		if sendErr == nil {
+			time.Sleep(500 * time.Millisecond)
+			if updates, ok := res.(*tg.Updates); ok {
+				for _, u := range updates.Updates {
+					if nu, ok := u.(*tg.UpdateNewMessage); ok {
+						if m, ok := nu.Message.(*tg.Message); ok {
+							deleteMsg(ctx, client, inputPeer, m.ID)
+						}
+					} else if ncu, ok := u.(*tg.UpdateNewChannelMessage); ok {
+						if m, ok := ncu.Message.(*tg.Message); ok {
+							deleteMsg(ctx, client, inputPeer, m.ID)
+						}
+					}
+				}
+			}
+			deleteMsg(ctx, client, inputPeer, msgID)
+			return
+		}
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	deleteMsg(ctx, client, inputPeer, msgID)
+}
+
 func startUserbot(userID int64, cfg Config) {
 	activeUserbotsMu.Lock()
 	if _, exists := activeUserbots[userID]; exists {
@@ -349,10 +446,10 @@ func startUserbot(userID int64, cfg Config) {
 		SessionStorage: loader,
 		UpdateHandler:  dispatcher,
 		Device: telegram.DeviceConfig{
-			DeviceModel:   "PC 64bit",
-			SystemVersion: "Windows 11",
-			AppVersion:    "5.4.1 x64",
-			LangCode:      "en",
+			DeviceModel:    "PC 64bit",
+			SystemVersion:  "Windows 11",
+			AppVersion:     "5.4.1 x64",
+			LangCode:       "en",
 			SystemLangCode: "en",
 		},
 	})
@@ -364,25 +461,48 @@ func startUserbot(userID int64, cfg Config) {
 	}
 	activeUserbotsMu.Unlock()
 
-	handleMsg := func(ctx context.Context, message tg.MessageClass) {
+	handleMsg := func(ctx context.Context, e tg.Entities, message tg.MessageClass) {
 		msg, ok := message.(*tg.Message)
 		if !ok || !msg.Out {
 			return
 		}
 		text := strings.TrimSpace(msg.Message)
-		if text == "ساعت روشن" {
+
+		var inputPeer tg.InputPeerClass
+		self, err := client.Self(ctx)
+		selfID := int64(0)
+		if err == nil {
+			selfID = self.ID
+		}
+		inputPeer = getInputPeer(msg.PeerID, e, selfID)
+
+		if text == "ساعت روشن شو" || text == "ساعت روشن" {
 			handleClockOn(ctx, userID, client)
-		} else if text == "ساعت خاموش" {
+			if inputPeer != nil {
+				go func() {
+					dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer dCancel()
+					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "ساعت روشن شد")
+				}()
+			}
+		} else if text == "ساعت خاموش شو" || text == "ساعت خاموش" {
 			handleClockOff(ctx, userID, client)
+			if inputPeer != nil {
+				go func() {
+					dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer dCancel()
+					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "ساعت خاموش شد")
+				}()
+			}
 		}
 	}
 
 	dispatcher.OnNewMessage(func(ctx context.Context, e tg.Entities, u *tg.UpdateNewMessage) error {
-		handleMsg(ctx, u.Message)
+		handleMsg(ctx, e, u.Message)
 		return nil
 	})
 	dispatcher.OnNewChannelMessage(func(ctx context.Context, e tg.Entities, u *tg.UpdateNewChannelMessage) error {
-		handleMsg(ctx, u.Message)
+		handleMsg(ctx, e, u.Message)
 		return nil
 	})
 
@@ -571,10 +691,10 @@ func startTelegramLogin(ctx context.Context, userID int64, cfg Config, authHandl
 	client := telegram.NewClient(cfg.APIID, cfg.APIHash, telegram.Options{
 		SessionStorage: loader,
 		Device: telegram.DeviceConfig{
-			DeviceModel:   "PC 64bit",
-			SystemVersion: "Windows 11",
-			AppVersion:    "5.4.1 x64",
-			LangCode:      "en",
+			DeviceModel:    "PC 64bit",
+			SystemVersion:  "Windows 11",
+			AppVersion:     "5.4.1 x64",
+			LangCode:       "en",
 			SystemLangCode: "en",
 		},
 	})
@@ -600,7 +720,6 @@ func toPersianDigits(s string) string {
 	return s
 }
 
-// استخراج ایمن اعداد انگلیسی از متن با پشتیبانی از ارقام فارسی و جداکننده‌ها
 func extractDigits(s string) string {
 	persianDigits := map[rune]rune{
 		'۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
@@ -1336,8 +1455,8 @@ func main() {
 
 		text := fmt.Sprintf("✅ <b>شماره %s تایید شد و درخواست کد به تلگرام ارسال گردید.</b>\n\n"+
 			"📲 <b>مرحله دوم: ورود کد تایید</b>\n\n"+
-			"⚠️ <b>نکته امنیتی بسیار مهم:</b> برای جلوگیری از حساسیت تلگرام و نسوختن کد، لطفاً ارقام کد را <b>با فاصله یا خط تیره</b> ارسال کنید!\n\n"+
-			"مثال: <code>1-2-3-4-5</code> یا <code>1 2 3 4 5</code>", contact.PhoneNumber)
+			"لطفاً کد ۵ رقمی ارسال شده توسط تلگرام را <b>با فاصله</b> ارسال کنید:\n\n"+
+			"مثال: <code>1 2 3 4 5</code>", contact.PhoneNumber)
 
 		return c.Send(text, codeMenu, tele.ModeHTML)
 	})
@@ -1621,7 +1740,7 @@ func main() {
 			if uState.Action == "waiting_for_code" {
 				cleanCode := extractDigits(text)
 				if len(cleanCode) < 5 {
-					return c.Send("❌ <b>کد وارد شده نامعتبر است!</b>\nلطفاً کد ۵ رقمی را به همراه خط‌تیره یا فاصله ارسال کنید (مثال: <code>1-2-3-4-5</code>):", tele.ModeHTML)
+					return c.Send("❌ <b>کد وارد شده نامعتبر است!</b>\nلطفاً کد ۵ رقمی را با فاصله ارسال کنید (مثال: <code>1 2 3 4 5</code>):", tele.ModeHTML)
 				}
 
 				select {
@@ -1815,9 +1934,6 @@ func main() {
 		return c.Send(text, tele.ModeHTML)
 	})
 
-	// ============================================================
-	// HELP / GUIDE (فقط برای خریداران سلف)
-	// ============================================================
 	bot.Handle(&btnGuide, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -1851,11 +1967,11 @@ func main() {
 		text := "⏱ <b>راهنمای فعال‌سازی ساعت زنده روی پروفایل</b>\n\n" +
 			"با استفاده از این قابلیت، ساعت رسمی تهران به صورت زنده و با فونت بولد روی نام خانوادگی (Last Name) اکانت شما قرار می‌گیرد و هر دقیقه تغییر می‌کند.\n\n" +
 			"🟢 <b>روشن کردن ساعت:</b>\n" +
-			"کافیست در هر چتی (پیوی، گروه، کانال یا پیام‌های ذخیره شده) عبارت زیر را بفرستید:\n" +
-			"<code>ساعت روشن</code>\n\n" +
+			"کافیست در هر چتی عبارت زیر را بفرستید:\n" +
+			"<code>ساعت روشن شو</code>\n\n" +
 			"🔴 <b>خاموش کردن ساعت:</b>\n" +
 			"برای خاموش کردن ساعت و بازگرداندن نام خانوادگی قبلی‌تان، در هر چتی عبارت زیر را بفرستید:\n" +
-			"<code>ساعت خاموش</code>"
+			"<code>ساعت خاموش شو</code>"
 
 		if c.Message() != nil {
 			_ = c.Edit(text, backMenu, tele.ModeHTML)
@@ -1879,11 +1995,9 @@ func main() {
 		return c.Respond()
 	})
 
-	// راه‌اندازی تسک‌های پس‌زمینه
 	startBillingWorker(bot)
 	startClockWorker()
 
-	// اتصال خودکار تمام سلف‌بات‌های روشن
 	rows, err := db.Query("SELECT id FROM users WHERE self_status = 'روشن'")
 	if err == nil {
 		for rows.Next() {

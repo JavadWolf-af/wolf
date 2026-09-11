@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -39,12 +41,29 @@ type Config struct {
 
 var db *sql.DB
 
-var userWalletTemp = make(map[int64]int)
-var userPendingInvoice = make(map[int64]int)
+var (
+	stateMu        sync.RWMutex
+	adminStates    = make(map[int64]AdminAction)
+	userStates     = make(map[int64]*UserState)
+	userWalletTemp = make(map[int64]int)
+)
 
 type AdminAction struct {
 	Action   string
 	TargetID int64
+}
+
+type AuthResultType int
+
+const (
+	AuthResultSuccess AuthResultType = iota
+	AuthResultNeeds2FA
+	AuthResultFailed
+)
+
+type AuthResult struct {
+	Type  AuthResultType
+	Error error
 }
 
 type UserState struct {
@@ -52,13 +71,9 @@ type UserState struct {
 	Phone        string
 	CodeChan     chan string
 	PasswordChan chan string
-	SignInErr    error
-	Needs2FA     bool
-	IsLoggedIn   bool
+	ResultChan   chan AuthResult
+	Cancel       context.CancelFunc
 }
-
-var adminStates = make(map[int64]AdminAction)
-var userStates = make(map[int64]UserState)
 
 func loadConfig() Config {
 	_ = godotenv.Load()
@@ -120,7 +135,7 @@ func InitDB(cfg Config) {
 		log.Fatalf("❌ خطا در برقراری ارتباط با دیتابیس: %v", err)
 	}
 
-	db.SetMaxOpenConns(20)
+	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(10)
 
 	_, _ = db.Exec(`
@@ -246,7 +261,7 @@ type botAuthenticator struct {
 	phone        string
 	codeChan     chan string
 	passwordChan chan string
-	need2FA      *bool
+	resultChan   chan AuthResult
 }
 
 func (b *botAuthenticator) Phone(ctx context.Context) (string, error) {
@@ -255,7 +270,10 @@ func (b *botAuthenticator) Phone(ctx context.Context) (string, error) {
 
 func (b *botAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
 	select {
-	case code := <-b.codeChan:
+	case code, ok := <-b.codeChan:
+		if !ok {
+			return "", errors.New("auth canceled")
+		}
 		return code, nil
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -263,9 +281,12 @@ func (b *botAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode) 
 }
 
 func (b *botAuthenticator) Password(ctx context.Context) (string, error) {
-	*b.need2FA = true
+	b.resultChan <- AuthResult{Type: AuthResultNeeds2FA}
 	select {
-	case pwd := <-b.passwordChan:
+	case pwd, ok := <-b.passwordChan:
+		if !ok {
+			return "", errors.New("auth canceled")
+		}
 		return pwd, nil
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -277,12 +298,10 @@ func (b *botAuthenticator) AcceptTermsOfService(ctx context.Context, tos tg.Help
 }
 
 func (b *botAuthenticator) SignUp(ctx context.Context) (auth.UserInfo, error) {
-	return auth.UserInfo{}, fmt.Errorf("ثبت‌نام حساب جدید پشتیبانی نمی‌شود")
+	return auth.UserInfo{}, errors.New("ثبت‌نام حساب جدید پشتیبانی نمی‌شود")
 }
 
-func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan string, passwordChan chan string, need2FA *bool) error {
-	ctx := context.Background()
-
+func startTelegramLogin(ctx context.Context, userID int64, cfg Config, authHandler *botAuthenticator) {
 	sessionDir := "/opt/wolf/sessions"
 	_ = os.MkdirAll(sessionDir, 0700)
 	sessionPath := filepath.Join(sessionDir, fmt.Sprintf("user_%d.json", userID))
@@ -293,18 +312,17 @@ func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan st
 		SessionStorage: loader,
 	})
 
-	authenticator := &botAuthenticator{
-		phone:        phone,
-		codeChan:     codeChan,
-		passwordChan: passwordChan,
-		need2FA:      need2FA,
-	}
+	flow := auth.NewFlow(authHandler, auth.SendCodeOptions{})
 
-	flow := auth.NewFlow(authenticator, auth.SendCodeOptions{})
-
-	return client.Run(ctx, func(ctx context.Context) error {
+	err := client.Run(ctx, func(ctx context.Context) error {
 		return client.Auth().IfNecessary(ctx, flow)
 	})
+
+	if err != nil {
+		authHandler.resultChan <- AuthResult{Type: AuthResultFailed, Error: err}
+	} else {
+		authHandler.resultChan <- AuthResult{Type: AuthResultSuccess}
+	}
 }
 
 func toPersianDigits(s string) string {
@@ -568,15 +586,25 @@ func main() {
 
 	bot.Handle(&btnBack, func(c tele.Context) error {
 		userID := c.Sender().ID
+
+		stateMu.Lock()
 		delete(adminStates, userID)
-		delete(userStates, userID)
-		delete(userPendingInvoice, userID)
-		userWalletTemp[userID] = 0
+		if uState, exists := userStates[userID]; exists {
+			if uState.Cancel != nil {
+				uState.Cancel()
+			}
+			delete(userStates, userID)
+		}
+		delete(userWalletTemp, userID)
+		stateMu.Unlock()
+
 		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getKeyboard(userID), tele.ModeHTML)
 	})
 
 	backToAdminHandler := func(c tele.Context) error {
+		stateMu.Lock()
 		delete(adminStates, c.Sender().ID)
+		stateMu.Unlock()
 		return c.Send(getAdminDashboard(), adminPanelMenu, tele.ModeHTML)
 	}
 	bot.Handle(&btnBackToAdminAcc, backToAdminHandler)
@@ -659,7 +687,10 @@ func main() {
 			return c.Send("❌ حساب کاربری شما مسدود شده است.")
 		}
 		userID := c.Sender().ID
+
+		stateMu.Lock()
 		userWalletTemp[userID] = 0
+		stateMu.Unlock()
 
 		price := getKeyPrice()
 		currentBalance := GetUserBalance(userID)
@@ -677,11 +708,13 @@ func main() {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در پردازش مبلغ."})
 		}
 
+		stateMu.Lock()
 		current := userWalletTemp[userID] + val
 		if current < 0 {
 			current = 0
 		}
 		userWalletTemp[userID] = current
+		stateMu.Unlock()
 
 		price := getKeyPrice()
 		currentBalance := GetUserBalance(userID)
@@ -693,13 +726,15 @@ func main() {
 
 	bot.Handle(&btnWalletConfirm, func(c tele.Context) error {
 		userID := c.Sender().ID
+
+		stateMu.RLock()
 		amount := userWalletTemp[userID]
+		stateMu.RUnlock()
 
 		if amount <= 0 {
 			return c.Send("❌ <b>لطفاً ابتدا مبلغی را با استفاده از دکمه‌های شیشه‌ای انتخاب کنید.</b>", tele.ModeHTML)
 		}
 
-		userPendingInvoice[userID] = amount
 		price := getKeyPrice()
 		keys := float64(amount) / float64(price)
 
@@ -721,10 +756,21 @@ func main() {
 			return c.Send("❌ حساب کاربری شما مسدود شده است.")
 		}
 
-		amount, exists := userPendingInvoice[user.ID]
-		if !exists || amount <= 0 {
+		stateMu.RLock()
+		amount := userWalletTemp[user.ID]
+		stateMu.RUnlock()
+
+		if amount <= 0 {
 			return c.Send("📸 تصویر شما دریافت شد.")
 		}
+
+		// ثبت تراکنش در وضعیت انتظار جهت جلوگیری از دوبار شارژ شدن (Idempotency)
+		res, err := db.Exec(`INSERT INTO transactions (user_id, amount, status) VALUES (?, ?, 'pending')`, user.ID, amount)
+		if err != nil {
+			log.Printf("❌ خطا در ثبت تراکنش: %v", err)
+			return c.Send("❌ خطایی در پردازش اطلاعات رخ داد. لطفاً مجدداً تلاش کنید.")
+		}
+		txID, _ := res.LastInsertId()
 
 		var dbJoinedAt time.Time
 		var phone, selfStatus string
@@ -746,13 +792,13 @@ func main() {
 
 		price := getKeyPrice()
 		captionText := fmt.Sprintf(
-			"🔔 <b>درخواست شارژ (کارت به کارت)</b>\n\n👤 %s (%s)\n🆔 <code>%d</code>\n💰 <b>مبلغ:</b> <code>%s تومان</code>\n🔑 <b>تعداد کلید:</b> <code>%.2f کلید</code>\n📅 <b>عضویت:</b> %s\n🔥 <b>وضعیت سلف:</b> %s",
-			html.EscapeString(user.FirstName), usernameStr, user.ID, formatMoney(amount), float64(amount)/float64(price), tJoinedStr, html.EscapeString(selfStatus),
+			"🔔 <b>درخواست شارژ (کارت به کارت)</b>\n\n🆔 <b>شناسه فاکتور:</b> <code>#%d</code>\n👤 %s (%s)\n🆔 <code>%d</code>\n💰 <b>مبلغ:</b> <code>%s تومان</code>\n🔑 <b>تعداد کلید:</b> <code>%.2f کلید</code>\n📅 <b>عضویت:</b> %s\n🔥 <b>وضعیت سلف:</b> %s",
+			txID, html.EscapeString(user.FirstName), usernameStr, user.ID, formatMoney(amount), float64(amount)/float64(price), tJoinedStr, html.EscapeString(selfStatus),
 		)
 
 		menu := &tele.ReplyMarkup{}
-		btnApprove := menu.Data("✅ تایید", "admin_approve", fmt.Sprintf("%d_%d", user.ID, amount))
-		btnReject := menu.Data("❌ رد", "admin_reject", strconv.FormatInt(user.ID, 10))
+		btnApprove := menu.Data("✅ تایید", "admin_approve", strconv.FormatInt(txID, 10))
+		btnReject := menu.Data("❌ رد", "admin_reject", strconv.FormatInt(txID, 10))
 		btnBlock := menu.Data("🚫 مسدود", "admin_block", strconv.FormatInt(user.ID, 10))
 		btnUnblock := menu.Data("🔓 رفع مسدود", "admin_unblock", strconv.FormatInt(user.ID, 10))
 		btnMessage := menu.Data("💬 پیام", "admin_msg", strconv.FormatInt(user.ID, 10))
@@ -773,13 +819,14 @@ func main() {
 			_, _ = bot.Send(&tele.User{ID: adminID}, photo, menu, tele.ModeHTML)
 		}
 
-		delete(userPendingInvoice, user.ID)
+		stateMu.Lock()
 		userWalletTemp[user.ID] = 0
+		stateMu.Unlock()
 
 		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
 	})
 
-	// هندلر دکمه "خرید سلف": در صورت فعال یا خاموش بودن سلف، مشخصات و تاریخ و زمان را نشان می‌دهد
+	// هندلر دکمه "خرید سلف": در صورت داشتن سلف (روشن یا خاموش) مشخصات و تاریخ/ساعت را نشان می‌دهد
 	bot.Handle(&btnBuy, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -895,7 +942,7 @@ func main() {
 		return c.Send("🔴 <b>سلف شما خاموش شد.</b>\nامکانات سلف غیرفعال گردید، اما اتصال اکانت شما برقرار است.", getKeyboard(userID), tele.ModeHTML)
 	})
 
-	// دکمه خروج سلف با دریافت تاییدیه قطعی
+	// دکمه خروج سلف همراه با تأییدیه دو مرحله‌ای
 	bot.Handle(&btnExitSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -918,6 +965,15 @@ func main() {
 
 	bot.Handle(&tele.Btn{Unique: "exit_confirm"}, func(c tele.Context) error {
 		userID := c.Sender().ID
+
+		stateMu.Lock()
+		if uState, exists := userStates[userID]; exists {
+			if uState.Cancel != nil {
+				uState.Cancel()
+			}
+			delete(userStates, userID)
+		}
+		stateMu.Unlock()
 
 		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
 		_ = os.Remove(sessionPath)
@@ -952,7 +1008,9 @@ func main() {
 			return c.Send("❌ <b>شما کلید کافی برای فعالسازی ندارید!</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
-		userStates[userID] = UserState{Action: "waiting_for_contact"}
+		stateMu.Lock()
+		userStates[userID] = &UserState{Action: "waiting_for_contact"}
+		stateMu.Unlock()
 
 		shareMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 		btnShare := shareMenu.Contact("📱 ارسال شماره اکانت (Share Contact)")
@@ -967,7 +1025,11 @@ func main() {
 
 	bot.Handle(tele.OnContact, func(c tele.Context) error {
 		userID := c.Sender().ID
+
+		stateMu.RLock()
 		state, exists := userStates[userID]
+		stateMu.RUnlock()
+
 		if !exists || state.Action != "waiting_for_contact" {
 			return nil
 		}
@@ -979,26 +1041,28 @@ func main() {
 
 		codeChan := make(chan string, 1)
 		passwordChan := make(chan string, 1)
-		var need2FA bool
+		resultChan := make(chan AuthResult, 1)
+		ctx, cancel := context.WithCancel(context.Background())
 
-		userStates[userID] = UserState{
+		authHandler := &botAuthenticator{
+			phone:        contact.PhoneNumber,
+			codeChan:     codeChan,
+			passwordChan: passwordChan,
+			resultChan:   resultChan,
+		}
+
+		stateMu.Lock()
+		userStates[userID] = &UserState{
 			Action:       "waiting_for_code",
 			Phone:        contact.PhoneNumber,
 			CodeChan:     codeChan,
 			PasswordChan: passwordChan,
+			ResultChan:   resultChan,
+			Cancel:       cancel,
 		}
+		stateMu.Unlock()
 
-		go func() {
-			err := startTelegramLogin(userID, contact.PhoneNumber, cfg, codeChan, passwordChan, &need2FA)
-			stateStruct := userStates[userID]
-			if err != nil {
-				stateStruct.SignInErr = err
-			} else {
-				stateStruct.IsLoggedIn = true
-			}
-			stateStruct.Needs2FA = need2FA
-			userStates[userID] = stateStruct
-		}()
+		go startTelegramLogin(ctx, userID, cfg, authHandler)
 
 		codeMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 		btnB := codeMenu.Text("🔙 بازگشت")
@@ -1032,7 +1096,9 @@ func main() {
 		}
 		current := GetSetting("card_number")
 		text := fmt.Sprintf("💳 <b>تنظیم شماره کارت</b>\n\n🔹 مقدار فعلی: <code>%s</code>\n\n✏️ <i>لطفاً شماره کارت جدید را ارسال کنید:</i>", current)
+		stateMu.Lock()
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_num"}
+		stateMu.Unlock()
 		return c.Send(text, tele.ModeHTML)
 	})
 
@@ -1042,7 +1108,9 @@ func main() {
 		}
 		current := GetSetting("card_name")
 		text := fmt.Sprintf("👤 <b>تنظیم نام صاحب حساب</b>\n\n🔹 مقدار فعلی: <b>%s</b>\n\n✏️ <i>لطفاً نام جدید دارنده حساب را ارسال کنید:</i>", current)
+		stateMu.Lock()
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_name"}
+		stateMu.Unlock()
 		return c.Send(text, tele.ModeHTML)
 	})
 
@@ -1052,7 +1120,9 @@ func main() {
 		}
 		current := GetSetting("card_bank")
 		text := fmt.Sprintf("🏦 <b>تنظیم نام بانک</b>\n\n🔹 مقدار فعلی: <b>%s</b>\n\n✏️ <i>لطفاً نام بانک جدید را ارسال کنید:</i>", current)
+		stateMu.Lock()
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_bank"}
+		stateMu.Unlock()
 		return c.Send(text, tele.ModeHTML)
 	})
 
@@ -1070,7 +1140,9 @@ func main() {
 		}
 		current := GetSetting("support_text")
 		text := fmt.Sprintf("📝 <b>تنظیم متن پشتیبانی</b>\n\n🔹 مقدار فعلی:\n<i>%s</i>\n\n✏️ <i>لطفاً متن جدید پشتیبانی را ارسال کنید:</i>", current)
+		stateMu.Lock()
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_support_text"}
+		stateMu.Unlock()
 		return c.Send(text, tele.ModeHTML)
 	})
 
@@ -1080,7 +1152,9 @@ func main() {
 		}
 		current := GetSetting("support_id")
 		text := fmt.Sprintf("🆔 <b>تنظیم آیدی پشتیبانی</b>\n\n🔹 مقدار فعلی: <b>%s</b>\n\n✏️ <i>لطفاً آیدی جدید پشتیبانی (مثال: @YourID) را ارسال کنید:</i>", current)
+		stateMu.Lock()
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_support_id"}
+		stateMu.Unlock()
 		return c.Send(text, tele.ModeHTML)
 	})
 
@@ -1090,24 +1164,64 @@ func main() {
 		}
 		currentPrice := getKeyPrice()
 		text := fmt.Sprintf("🔑 <b>تنظیم نرخ کلید</b>\n\n🔹 قیمت فعلی: <code>%s تومان</code>\n\n✏️ <i>لطفاً مبلغ جدید را (فقط عدد به تومان) ارسال کنید:</i>", formatMoney(currentPrice))
+		stateMu.Lock()
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_key_price"}
+		stateMu.Unlock()
 		return c.Send(text, tele.ModeHTML)
 	})
 
+	// تایید فاکتور همراه با تراکنش امن و ممانعت قطعی از دوبار شارژ شدن
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
-		parts := strings.Split(c.Data(), "_")
-		if len(parts) != 2 {
-			return c.Respond()
-		}
-		targetUserID, _ := strconv.ParseInt(parts[0], 10, 64)
-		amount, _ := strconv.Atoi(parts[1])
 
-		err := SafeAddUserBalance(targetUserID, amount)
+		txID, err := strconv.ParseInt(c.Data(), 10, 64)
 		if err != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در ثبت تراکنش دیتابیس!", ShowAlert: true})
+			return c.Respond(&tele.CallbackResponse{Text: "❌ داده نامعتبر است."})
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ خطای سرور دیتابیس!", ShowAlert: true})
+		}
+		defer tx.Rollback()
+
+		var currentStatus string
+		var targetUserID int64
+		var amount int
+
+		err = tx.QueryRow("SELECT status, user_id, amount FROM transactions WHERE id = ? FOR UPDATE", txID).Scan(&currentStatus, &targetUserID, &amount)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ فاکتور یافت نشد!", ShowAlert: true})
+		}
+
+		if currentStatus != "pending" {
+			return c.Respond(&tele.CallbackResponse{Text: "⚠️ این فیش قبلاً تعیین تکلیف شده است!", ShowAlert: true})
+		}
+
+		_, err = tx.Exec("UPDATE transactions SET status = 'approved' WHERE id = ?", txID)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در ثبت وضعیت فاکتور!", ShowAlert: true})
+		}
+
+		_, err = tx.Exec(`INSERT IGNORE INTO users (id, first_name, username) VALUES (?, 'کاربر', 'ثبت_نشده')`, targetUserID)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در بروزرسانی کاربر!", ShowAlert: true})
+		}
+
+		_, err = tx.Exec(`INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON DUPLICATE KEY UPDATE balance = balance + ?`, targetUserID, amount, amount)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در بروزرسانی کیف پول!", ShowAlert: true})
+		}
+
+		_, err = tx.Exec(`UPDATE users SET purchases_count = purchases_count + 1 WHERE id = ?`, targetUserID)
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در بروزرسانی خریدها!", ShowAlert: true})
+		}
+
+		if err = tx.Commit(); err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در نهایی‌سازی تراکنش!", ShowAlert: true})
 		}
 
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, fmt.Sprintf("🎉 <b>فیش واریزی شما تایید شد!</b>\n\nمبلغ <code>%s تومان</code> به کیف پول شما اضافه گردید. 💳", formatMoney(amount)), tele.ModeHTML)
@@ -1116,27 +1230,44 @@ func main() {
 			updatedCaption := c.Message().Caption + "\n\n✅ <b>وضعیت: فیش تایید شد و موجودی کاربر شارژ گردید.</b>"
 			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
 			_ = c.Reply(fmt.Sprintf("✅ <b>شارژ با موفقیت انجام شد!</b>\nمبلغ <code>%s تومان</code> به کیف پول کاربر اضافه گردید.", formatMoney(amount)), tele.ModeHTML)
-		} else {
-			_ = c.Send(fmt.Sprintf("✅ <b>شارژ با موفقیت انجام شد!</b>\nمبلغ <code>%s تومان</code> به کیف پول کاربر اضافه گردید.", formatMoney(amount)), tele.ModeHTML)
 		}
-		return c.Respond()
+		return c.Respond(&tele.CallbackResponse{Text: "✅ فیش تایید شد."})
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_reject"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
-		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
+
+		txID, err := strconv.ParseInt(c.Data(), 10, 64)
+		if err != nil {
+			return c.Respond()
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در سرور دیتابیس!", ShowAlert: true})
+		}
+		defer tx.Rollback()
+
+		var currentStatus string
+		var targetUserID int64
+		err = tx.QueryRow("SELECT status, user_id FROM transactions WHERE id = ? FOR UPDATE", txID).Scan(&currentStatus, &targetUserID)
+		if err != nil || currentStatus != "pending" {
+			return c.Respond(&tele.CallbackResponse{Text: "⚠️ این فیش قبلاً تعیین تکلیف شده است!", ShowAlert: true})
+		}
+
+		_, _ = tx.Exec("UPDATE transactions SET status = 'rejected' WHERE id = ?", txID)
+		_ = tx.Commit()
+
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, "❌ <b>فیش واریزی شما توسط ادمین رد شد.</b>\n\nلطفاً در صورت وجود مشکل با پشتیبانی ارتباط برقرار کنید.", tele.ModeHTML)
 
 		if c.Message() != nil {
 			updatedCaption := c.Message().Caption + "\n\n❌ <b>وضعیت: فیش واریزی رد شد.</b>"
 			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
 			_ = c.Reply("❌ <b>فیش رد شد و به کاربر اطلاع داده شد.</b>", tele.ModeHTML)
-		} else {
-			_ = c.Send("❌ <b>فیش رد شد و به کاربر اطلاع داده شد.</b>", tele.ModeHTML)
 		}
-		return c.Respond()
+		return c.Respond(&tele.CallbackResponse{Text: "❌ فیش رد شد."})
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_block"}, func(c tele.Context) error {
@@ -1144,12 +1275,12 @@ func main() {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
+		stateMu.Lock()
 		adminStates[c.Sender().ID] = AdminAction{Action: "block_reason", TargetID: targetUserID}
+		stateMu.Unlock()
 
 		if c.Message() != nil {
 			_ = c.Reply("🚫 <b>لطفاً دلیل مسدودی را ارسال کنید تا به همراه پیام مسدودی به صورت بولد برای کاربر ارسال شود:</b>", tele.ModeHTML)
-		} else {
-			_ = c.Send("🚫 <b>لطفاً دلیل مسدودی را ارسال کنید تا به همراه پیام مسدودی به صورت بولد برای کاربر ارسال شود:</b>", tele.ModeHTML)
 		}
 		return c.Respond()
 	})
@@ -1166,8 +1297,6 @@ func main() {
 			updatedCaption := c.Message().Caption + "\n\n🔓 <b>وضعیت: کاربر رفع مسدودی گردید.</b>"
 			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
 			_ = c.Reply("🔓 <b>کاربر با موفقیت رفع مسدود شد.</b>", tele.ModeHTML)
-		} else {
-			_ = c.Send("🔓 <b>کاربر با موفقیت رفع مسدود شد.</b>", tele.ModeHTML)
 		}
 		return c.Respond()
 	})
@@ -1177,12 +1306,12 @@ func main() {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
+		stateMu.Lock()
 		adminStates[c.Sender().ID] = AdminAction{Action: "msg", TargetID: targetUserID}
+		stateMu.Unlock()
 
 		if c.Message() != nil {
 			_ = c.Reply("💬 <b>لطفاً متن پیام خود برای کاربر را ارسال کنید:</b>", tele.ModeHTML)
-		} else {
-			_ = c.Send("💬 <b>لطفاً متن پیام خود برای کاربر را ارسال کنید:</b>", tele.ModeHTML)
 		}
 		return c.Respond()
 	})
@@ -1192,12 +1321,12 @@ func main() {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
 		}
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
+		stateMu.Lock()
 		adminStates[c.Sender().ID] = AdminAction{Action: "manual_add", TargetID: targetUserID}
+		stateMu.Unlock()
 
 		if c.Message() != nil {
 			_ = c.Reply("💰 <b>لطفاً مبلغ مورد نظر برای افزایش دستی موجودی را (فقط عدد به تومان) ارسال کنید:</b>", tele.ModeHTML)
-		} else {
-			_ = c.Send("💰 <b>لطفاً مبلغ مورد نظر برای افزایش دستی موجودی را (فقط عدد به تومان) ارسال کنید:</b>", tele.ModeHTML)
 		}
 		return c.Respond()
 	})
@@ -1218,49 +1347,85 @@ func main() {
 		userID := c.Sender().ID
 		text := strings.TrimSpace(c.Text())
 
-		if uState, exists := userStates[userID]; exists {
+		stateMu.RLock()
+		uState, userHasState := userStates[userID]
+		stateMu.RUnlock()
+
+		if userHasState && uState != nil {
 			if uState.Action == "waiting_for_code" {
 				select {
 				case uState.CodeChan <- text:
-					time.Sleep(3 * time.Second)
+					// منتظر پاسخ دقیق تلگرام می‌مانیم بدون حدس زدن با Sleep
+					select {
+					case res := <-uState.ResultChan:
+						if res.Type == AuthResultNeeds2FA {
+							stateMu.Lock()
+							uState.Action = "waiting_for_password"
+							stateMu.Unlock()
+							return c.Send("🔒 <b>حساب شما دارای رمز عبور تایید دو مرحله‌ای (2FA) است.</b>\n\nلطفاً رمز عبور خود را ارسال کنید:", tele.ModeHTML)
+						} else if res.Type == AuthResultSuccess {
+							_, _ = db.Exec("UPDATE users SET self_status = 'روشن', phone = ? WHERE id = ?", uState.Phone, userID)
+							stateMu.Lock()
+							delete(userStates, userID)
+							stateMu.Unlock()
 
-					if uState.Needs2FA {
-						uState.Action = "waiting_for_password"
-						userStates[userID] = uState
-						return c.Send("🔒 <b>حساب شما دارای رمز عبور تایید دو مرحله‌ای (2FA) است.</b>\n\nلطفاً رمز عبور خود را ارسال کنید:", tele.ModeHTML)
+							successText := "🎉 <b>تبریک! سلف شما با موفقیت به اکانت متصل و فعال شد!</b> 🐺\n\n" +
+								"✅ <i>وضعیت اکانت شما هم‌اکنون به حالت روشن تغییر یافت.</i>\n" +
+								"از این پس روزانه ۱ کلید از حساب شما کسر خواهد شد و امکانات سلف فعال است. 🚀"
+							return c.Send(successText, getKeyboard(userID), tele.ModeHTML)
+						} else {
+							stateMu.Lock()
+							if uState.Cancel != nil {
+								uState.Cancel()
+							}
+							delete(userStates, userID)
+							stateMu.Unlock()
+							return c.Send(fmt.Sprintf("❌ <b>خطا در ورود به اکانت:</b> %v\n\nلطفاً دوباره از بخش فعالسازی سلف اقدام فرمایید.", res.Error), getKeyboard(userID), tele.ModeHTML)
+						}
+					case <-time.After(35 * time.Second):
+						stateMu.Lock()
+						if uState.Cancel != nil {
+							uState.Cancel()
+						}
+						delete(userStates, userID)
+						stateMu.Unlock()
+						return c.Send("⏱️ <b>زمان پاسخ تلگرام به پایان رسید.</b>\nلطفاً مجدداً تلاش فرمایید.", getKeyboard(userID), tele.ModeHTML)
 					}
-
-					if uState.SignInErr != nil {
-						return c.Send(fmt.Sprintf("❌ <b>خطا در ورود به اکانت:</b> %v\n\nلطفاً دوباره کد صحیح را ارسال کنید:", uState.SignInErr), tele.ModeHTML)
-					}
-
-					_, _ = db.Exec("UPDATE users SET self_status = 'روشن', phone = ? WHERE id = ?", uState.Phone, userID)
-					delete(userStates, userID)
-
-					successText := "🎉 <b>تبریک! سلف شما با موفقیت به اکانت متصل و فعال شد!</b> 🐺\n\n" +
-						"✅ <i>وضعیت اکانت شما هم‌اکنون به حالت روشن تغییر یافت.</i>\n" +
-						"از این پس روزانه ۱ کلید از حساب شما کسر خواهد شد و امکانات ویژه سلف روی اکانت شما اعمال می‌گردد. 🚀"
-
-					return c.Send(successText, getKeyboard(userID), tele.ModeHTML)
 				default:
 					return c.Send("⏳ در حال پردازش کد...")
 				}
 			} else if uState.Action == "waiting_for_password" {
 				select {
 				case uState.PasswordChan <- text:
-					time.Sleep(3 * time.Second)
-					if uState.SignInErr != nil {
-						return c.Send(fmt.Sprintf("❌ <b>رمز عبور اشتباه است:</b> %v\n\nلطفاً دوباره رمز 2FA را ارسال کنید:", uState.SignInErr), tele.ModeHTML)
+					select {
+					case res := <-uState.ResultChan:
+						if res.Type == AuthResultSuccess {
+							_, _ = db.Exec("UPDATE users SET self_status = 'روشن', phone = ? WHERE id = ?", uState.Phone, userID)
+							stateMu.Lock()
+							delete(userStates, userID)
+							stateMu.Unlock()
+
+							successText := "🎉 <b>تبریک! رمز دو مرحله‌ای تایید شد و سلف متصل گردید!</b> 🐺\n\n" +
+								"✅ <i>وضعیت اکانت شما به حالت روشن تغییر یافت.</i>"
+							return c.Send(successText, getKeyboard(userID), tele.ModeHTML)
+						} else {
+							stateMu.Lock()
+							if uState.Cancel != nil {
+								uState.Cancel()
+							}
+							delete(userStates, userID)
+							stateMu.Unlock()
+							return c.Send(fmt.Sprintf("❌ <b>رمز عبور اشتباه است:</b> %v\n\nلطفاً دوباره مراحل فعالسازی را از سر بگیرید.", res.Error), getKeyboard(userID), tele.ModeHTML)
+						}
+					case <-time.After(35 * time.Second):
+						stateMu.Lock()
+						if uState.Cancel != nil {
+							uState.Cancel()
+						}
+						delete(userStates, userID)
+						stateMu.Unlock()
+						return c.Send("⏱️ <b>زمان پاسخ تلگرام به پایان رسید.</b>\nلطفاً دوباره تلاش کنید.", getKeyboard(userID), tele.ModeHTML)
 					}
-
-					_, _ = db.Exec("UPDATE users SET self_status = 'روشن', phone = ? WHERE id = ?", uState.Phone, userID)
-					delete(userStates, userID)
-
-					successText := "🎉 <b>تبریک! سلف شما با موفقیت به اکانت متصل و فعال شد!</b> 🐺\n\n" +
-						"✅ <i>وضعیت اکانت شما هم‌اکنون به حالت روشن تغییر یافت.</i>\n" +
-						"از این پس روزانه ۱ کلید از حساب شما کسر خواهد شد و امکانات ویژه سلف روی اکانت شما اعمال می‌گردد. 🚀"
-
-					return c.Send(successText, getKeyboard(userID), tele.ModeHTML)
 				default:
 					return c.Send("⏳ در حال بررسی رمز عبور...")
 				}
@@ -1271,8 +1436,11 @@ func main() {
 			return nil
 		}
 
-		state, exists := adminStates[userID]
-		if !exists {
+		stateMu.RLock()
+		state, adminHasState := adminStates[userID]
+		stateMu.RUnlock()
+
+		if !adminHasState {
 			return nil
 		}
 
@@ -1280,27 +1448,37 @@ func main() {
 		case "set_card_num":
 			SetSetting("card_number", text)
 			_ = c.Send("✅ <b>شماره کارت با موفقیت به‌روزرسانی شد.</b>", tele.ModeHTML)
+			stateMu.Lock()
 			delete(adminStates, userID)
+			stateMu.Unlock()
 
 		case "set_card_name":
 			SetSetting("card_name", text)
 			_ = c.Send("✅ <b>نام صاحب حساب با موفقیت به‌روزرسانی شد.</b>", tele.ModeHTML)
+			stateMu.Lock()
 			delete(adminStates, userID)
+			stateMu.Unlock()
 
 		case "set_card_bank":
 			SetSetting("card_bank", text)
 			_ = c.Send("✅ <b>نام بانک با موفقیت به‌روزرسانی شد.</b>", tele.ModeHTML)
+			stateMu.Lock()
 			delete(adminStates, userID)
+			stateMu.Unlock()
 
 		case "set_support_text":
 			SetSetting("support_text", text)
 			_ = c.Send("✅ <b>متن پشتیبانی با موفقیت به‌روزرسانی شد.</b>", tele.ModeHTML)
+			stateMu.Lock()
 			delete(adminStates, userID)
+			stateMu.Unlock()
 
 		case "set_support_id":
 			SetSetting("support_id", text)
 			_ = c.Send("✅ <b>آیدی پشتیبانی با موفقیت به‌روزرسانی شد.</b>", tele.ModeHTML)
+			stateMu.Lock()
 			delete(adminStates, userID)
+			stateMu.Unlock()
 
 		case "set_key_price":
 			price, err := strconv.Atoi(text)
@@ -1309,8 +1487,10 @@ func main() {
 				return nil
 			}
 			SetSetting("key_price", strconv.Itoa(price))
-			_ = c.Send(fmt.Sprintf("✅ <b>نرخ کلید با موفقیت به %s تومان تغییر یافت.</b>\n\nاز این پس تمامی محاسبات ربات بر اساس نرخ جدید انجام خواهد شد.", formatMoney(price)), tele.ModeHTML)
+			_ = c.Send(fmt.Sprintf("✅ <b>نرخ کلید با موفقیت به %s تومان تغییر یافت.</b>\n\nاز این پس تمامی محاسبات بر اساس نرخ جدید انجام خواهد شد.", formatMoney(price)), tele.ModeHTML)
+			stateMu.Lock()
 			delete(adminStates, userID)
+			stateMu.Unlock()
 
 		case "msg":
 			_, err := bot.Send(&tele.User{ID: state.TargetID}, fmt.Sprintf("💬 <b>پیام از طرف مدیریت:</b>\n\n%s", html.EscapeString(text)), tele.ModeHTML)
@@ -1319,7 +1499,9 @@ func main() {
 			} else {
 				_ = c.Send("❌ خطا در ارسال پیام به کاربر.")
 			}
+			stateMu.Lock()
 			delete(adminStates, userID)
+			stateMu.Unlock()
 
 		case "manual_add":
 			amount, err := strconv.Atoi(text)
@@ -1330,7 +1512,9 @@ func main() {
 			SafeAddUserBalance(state.TargetID, amount)
 			_, _ = bot.Send(&tele.User{ID: state.TargetID}, fmt.Sprintf("💰 <b>موجودی کیف پول شما به صورت دستی شارژ شد:</b>\n\nمبلغ: <code>%s تومان</code>", formatMoney(amount)), tele.ModeHTML)
 			_ = c.Send(fmt.Sprintf("✅ مبلغ %s تومان با موفقیت به کیف پول کاربر اضافه شد.", formatMoney(amount)))
+			stateMu.Lock()
 			delete(adminStates, userID)
+			stateMu.Unlock()
 
 		case "block_reason":
 			_, _ = db.Exec("UPDATE users SET is_blocked = TRUE WHERE id = ?", state.TargetID)
@@ -1340,7 +1524,9 @@ func main() {
 			} else {
 				_ = c.Send("❌ خطا در ارسال پیام به کاربر.")
 			}
+			stateMu.Lock()
 			delete(adminStates, userID)
+			stateMu.Unlock()
 		}
 		return nil
 	})

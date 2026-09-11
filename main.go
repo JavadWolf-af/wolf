@@ -24,6 +24,7 @@ import (
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/tg"
 )
 
 type Config struct {
@@ -122,7 +123,7 @@ func InitDB(cfg Config) {
 	db.SetMaxOpenConns(20)
 	db.SetMaxIdleConns(10)
 
-	_, err = db.Exec(`
+	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS users (
 		id BIGINT PRIMARY KEY,
 		first_name VARCHAR(255),
@@ -133,31 +134,21 @@ func InitDB(cfg Config) {
 		self_status VARCHAR(50) DEFAULT 'خرید نداشته',
 		purchases_count INT DEFAULT 0
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
-	if err != nil {
-		log.Fatalf("❌ خطا در ساخت جدول کاربران: %v", err)
-	}
 
-	_, err = db.Exec(`
+	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wallets (
 		user_id BIGINT PRIMARY KEY,
 		balance INT DEFAULT 0,
 		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
-	if err != nil {
-		log.Fatalf("❌ خطا در ساخت جدول کیف پول: %v", err)
-	}
 
-	_, err = db.Exec(`
+	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS settings (
 		setting_key VARCHAR(50) PRIMARY KEY,
 		setting_value TEXT
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
-	if err != nil {
-		log.Fatalf("❌ خطا در ساخت جدول تنظیمات: %v", err)
-	}
 
-	// جدول تراکنش‌ها جهت جلوگیری از تکرار شارژ (Idempotency)
-	_, err = db.Exec(`
+	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS transactions (
 		id INT AUTO_INCREMENT PRIMARY KEY,
 		user_id BIGINT,
@@ -166,9 +157,6 @@ func InitDB(cfg Config) {
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE KEY unique_user_time (user_id, created_at)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
-	if err != nil {
-		log.Fatalf("❌ خطا در ساخت جدول تراکنش‌ها: %v", err)
-	}
 
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_number', '6037-9971-XXXX-XXXX')`)
 	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_name', 'جواد ولف')`)
@@ -226,7 +214,6 @@ func GetUserSelfStatus(userID int64) string {
 	return status
 }
 
-// تراکنش امن پایگاه داده برای افزایش موجودی (جلوگیری از Double Spending و Idempotency)
 func SafeAddUserBalance(userID int64, amount int) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -247,6 +234,33 @@ func SafeAddUserBalance(userID int64, amount int) error {
 	return tx.Commit()
 }
 
+// ساختار احراز هویت سفارشی برای سازگاری کامل با نسخه جدید gotd/td
+type botAuthenticator struct {
+	phone        string
+	codeChan     chan string
+	passwordChan chan string
+	need2FA      *bool
+}
+
+func (b *botAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
+	select {
+	case code := <-b.codeChan:
+		return code, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (b *botAuthenticator) Password(ctx context.Context) (string, error) {
+	*b.need2FA = true
+	select {
+	case pwd := <-b.passwordChan:
+		return pwd, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
 func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan string, passwordChan chan string, need2FA *bool) error {
 	ctx := context.Background()
 
@@ -260,27 +274,14 @@ func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan st
 		SessionStorage: loader,
 	})
 
-	flow := auth.NewFlow(
-		auth.Constant(phone, "", auth.CodeAuthenticatorFunc(func(ctx context.Context, sentCode *telegram.Code) (string, error) {
-			select {
-			case code := <-codeChan:
-				return code, nil
-			case <-ctx.Done():
-				return "", ctx.Err()
-			}
-		})),
-		auth.SendCodeOptions{},
-	)
+	authenticator := &botAuthenticator{
+		phone:        phone,
+		codeChan:     codeChan,
+		passwordChan: passwordChan,
+		need2FA:      need2FA,
+	}
 
-	flow.PasswordAuthenticator = auth.PasswordAuthenticatorFunc(func(ctx context.Context) (string, error) {
-		*need2FA = true
-		select {
-		case pwd := <-passwordChan:
-			return pwd, nil
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-	})
+	flow := auth.NewFlow(authenticator, auth.SendCodeOptions{})
 
 	return client.Run(ctx, func(ctx context.Context) error {
 		return client.Auth().IfNecessary(ctx, flow)
@@ -570,7 +571,7 @@ func main() {
 
 		var joinedAt time.Time
 		var selfStatus string
-		
+
 		err := db.QueryRow("SELECT joined_at, self_status FROM users WHERE id = ?", user.ID).Scan(&joinedAt, &selfStatus)
 		if err != nil || joinedAt.IsZero() {
 			joinedAt = time.Now()
@@ -585,7 +586,7 @@ func main() {
 		if daysActive < 1 {
 			daysActive = 1
 		}
-		
+
 		statusIcon := "❌"
 		if selfStatus == "روشن" {
 			statusIcon = "✅"
@@ -597,9 +598,9 @@ func main() {
 		tTimeStr := toPersianDigits(tNow.Format("HH:mm:ss"))
 		tJoinedStr := toPersianDigits(tJoined.Format("yyyy/MM/dd"))
 
-		text := fmt.Sprintf("💙 تاریخ امروز: %s\n\n⏰ ساعت: %s\n\n🔒 اطلاعات حساب کاربری\n\n⭐ آیدی عددی: <code>%d</code>\n📅 تاریخ عضویت در ربات: %s\n👀 فعالیت در ربات: %d روز\n💰 موجودی: %s تومان\n🔥 وضعیت سلف: %s %s", 
+		text := fmt.Sprintf("💙 تاریخ امروز: %s\n\n⏰ ساعت: %s\n\n🔒 اطلاعات حساب کاربری\n\n⭐ آیدی عددی: <code>%d</code>\n📅 تاریخ عضویت در ربات: %s\n👀 فعالیت در ربات: %d روز\n💰 موجودی: %s تومان\n🔥 وضعیت سلف: %s %s",
 			tNowStr, tTimeStr, user.ID, tJoinedStr, daysActive, formatMoney(GetUserBalance(user.ID)), statusIcon, selfStatus)
-		
+
 		return c.Send(text, profileMenu, tele.ModeHTML)
 	})
 
@@ -626,7 +627,7 @@ func main() {
 
 	formatWalletText := func(amountToAdd int, currentKeys int) string {
 		price := getKeyPrice()
-		return fmt.Sprintf("👛 <b>شارژ کیف پول (کارت به کارت چهارتایی)</b>\n\n"+
+		return fmt.Sprintf("👛 <b>شارژ کیف پول (کارت به کارت)</b>\n\n"+
 			"🌿 <b>جهت افزایش موجودی با استفاده از دکمه‌های زیر مبلغ مورد نظر را انتخاب کنید:</b>\n\n"+
 			"💰 <b>مبلغ مورد نظر جهت افزایش موجودی:</b> <code>%s تومان</code>\n"+
 			"🔑 <b>کلیدهای موجود :</b> <code>%d</code>\n\n"+
@@ -635,26 +636,32 @@ func main() {
 	}
 
 	bot.Handle(&btnWallet, func(c tele.Context) error {
-		if IsUserBlocked(c.Sender().ID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
+		if IsUserBlocked(c.Sender().ID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
 		userID := c.Sender().ID
 		userWalletTemp[userID] = 0
-		
+
 		price := getKeyPrice()
 		currentBalance := GetUserBalance(userID)
 		currentKeys := currentBalance / price
-		
+
 		_ = c.Send("🔰 <b>به بخش شارژ کیف پول خوش آمدید!</b>\nلطفاً مبلغ را از پیام زیر تنظیم کرده و سپس دکمه تایید پایین صفحه را بزنید.", walletReplyMenu, tele.ModeHTML)
-		
+
 		return c.Send(formatWalletText(0, currentKeys), getWalletInlineKeyboard(), tele.ModeHTML)
 	})
 
 	bot.Handle(&tele.Btn{Unique: "wallet_change"}, func(c tele.Context) error {
 		userID := c.Sender().ID
 		val, err := strconv.Atoi(c.Data())
-		if err != nil { return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در پردازش مبلغ."}) }
+		if err != nil {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در پردازش مبلغ."})
+		}
 
 		current := userWalletTemp[userID] + val
-		if current < 0 { current = 0 }
+		if current < 0 {
+			current = 0
+		}
 		userWalletTemp[userID] = current
 
 		price := getKeyPrice()
@@ -691,7 +698,9 @@ func main() {
 
 	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
 		user := c.Sender()
-		if IsUserBlocked(user.ID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
+		if IsUserBlocked(user.ID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
 
 		amount, exists := userPendingInvoice[user.ID]
 		if !exists || amount <= 0 {
@@ -701,7 +710,7 @@ func main() {
 		var dbJoinedAt time.Time
 		var phone, selfStatus string
 		var purchasesCount int
-		
+
 		err = db.QueryRow("SELECT joined_at, phone, self_status, purchases_count FROM users WHERE id = ?", user.ID).Scan(&dbJoinedAt, &phone, &selfStatus, &purchasesCount)
 		if err != nil || dbJoinedAt.IsZero() {
 			dbJoinedAt = time.Now()
@@ -753,7 +762,9 @@ func main() {
 
 	handleSelfActivation := func(c tele.Context) error {
 		userID := c.Sender().ID
-		if IsUserBlocked(userID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
 
 		selfStatus := GetUserSelfStatus(userID)
 		price := getKeyPrice()
@@ -767,20 +778,20 @@ func main() {
 
 		if keys < 30 {
 			text := fmt.Sprintf(
-				"❌ <b>سلام شما کلید لازم برای شروع ندارید !</b>\n\n" +
-				"⏳ <i>سلف روزانه بیلینگ میشه : هر روز یک کلید از حسابت کم میشه !</i>\n\n" +
-				"🔑 تعداد کلید های موجود شما <b>%d</b> عدد هست!\n\n" +
-				"⚠️ <b>برای فعالسازی حداقل باید 30 کلید داشته باشید ..</b>\n\n" +
-				"🛒 <i>لطفا از بخش کیف پول کلید خریداری نمایید.</i>", keys,
+				"❌ <b>سلام شما کلید لازم برای شروع ندارید !</b>\n\n"+
+					"⏳ <i>سلف روزانه بیلینگ میشه : هر روز یک کلید از حسابت کم میشه !</i>\n\n"+
+					"🔑 تعداد کلید های موجود شما <b>%d</b> عدد هست!\n\n"+
+					"⚠️ <b>برای فعالسازی حداقل باید 30 کلید داشته باشید ..</b>\n\n"+
+					"🛒 <i>لطفا از بخش کیف پول کلید خریداری نمایید.</i>", keys,
 			)
 			return c.Send(text, tele.ModeHTML)
 		}
 
 		text := fmt.Sprintf(
-			"🎉 <b>سلام شما کلید لازم برای شروع را دارید !</b>\n\n" +
-			"⏳ <i>سلف روزانه بیلینگ میشه : هر روز یک کلید از حسابت کم میشه !</i>\n\n" +
-			"🔑 تعداد کلید های موجود شما <b>%d</b> عدد هست!\n\n" +
-			"✅ <b>برای فعالسازی سلف و شروع کسر کلید روی دکمه زیر کلیک کنید.</b>", keys,
+			"🎉 <b>سلام شما کلید لازم برای شروع را دارید !</b>\n\n"+
+				"⏳ <i>سلف روزانه بیلینگ میشه : هر روز یک کلید از حسابت کم میشه !</i>\n\n"+
+				"🔑 تعداد کلید های موجود شما <b>%d</b> عدد هست!\n\n"+
+				"✅ <b>برای فعالسازی سلف و شروع کسر کلید روی دکمه زیر کلیک کنید.</b>", keys,
 		)
 
 		return c.Send(text, confirmSelfMenu, tele.ModeHTML)
@@ -791,7 +802,9 @@ func main() {
 
 	bot.Handle(&btnConfirmSelfAction, func(c tele.Context) error {
 		userID := c.Sender().ID
-		if IsUserBlocked(userID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
 
 		price := getKeyPrice()
 		balance := GetUserBalance(userID)
@@ -862,7 +875,9 @@ func main() {
 
 	bot.Handle(&btnTurnOffSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
-		if IsUserBlocked(userID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
 
 		_, _ = db.Exec("UPDATE users SET self_status = 'خاموش' WHERE id = ?", userID)
 		return c.Send("🔴 <b>سلف شما با موفقیت خاموش شد.</b>\nکسر کلید روزانه موقتاً متوقف گردید.", tele.ModeHTML)
@@ -870,25 +885,33 @@ func main() {
 
 	bot.Handle(&btnExitSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
-		if IsUserBlocked(userID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
 
 		_, _ = db.Exec("UPDATE users SET self_status = 'خروج' WHERE id = ?", userID)
 		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف خارج شدید.</b>\nاتصال اکانت شما قطع شد.", tele.ModeHTML)
 	})
 
 	bot.Handle(&btnAdminPanel, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return c.Send("❌ شما دسترسی به بخش مدیریت را ندارید.") }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Send("❌ شما دسترسی به بخش مدیریت را ندارید.")
+		}
 		return c.Send(getAdminDashboard(), adminPanelMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnConfigAccount, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return c.Send("❌ شما دسترسی ندارید.") }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Send("❌ شما دسترسی ندارید.")
+		}
 		text := "💳 <b>بخش تنظیمات اطلاعات بانکی</b>\n\nلطفاً برای مشاهده و تغییر اطلاعات، از دکمه‌های زیر استفاده کنید:"
 		return c.Send(text, accountConfigMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnConfigCardNum, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return nil
+		}
 		current := GetSetting("card_number")
 		text := fmt.Sprintf("💳 <b>تنظیم شماره کارت</b>\n\n🔹 مقدار فعلی: <code>%s</code>\n\n✏️ <i>لطفاً شماره کارت جدید را ارسال کنید:</i>", current)
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_num"}
@@ -896,7 +919,9 @@ func main() {
 	})
 
 	bot.Handle(&btnConfigCardName, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return nil
+		}
 		current := GetSetting("card_name")
 		text := fmt.Sprintf("👤 <b>تنظیم نام صاحب حساب</b>\n\n🔹 مقدار فعلی: <b>%s</b>\n\n✏️ <i>لطفاً نام جدید دارنده حساب را ارسال کنید:</i>", current)
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_name"}
@@ -904,7 +929,9 @@ func main() {
 	})
 
 	bot.Handle(&btnConfigCardBank, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return nil
+		}
 		current := GetSetting("card_bank")
 		text := fmt.Sprintf("🏦 <b>تنظیم نام بانک</b>\n\n🔹 مقدار فعلی: <b>%s</b>\n\n✏️ <i>لطفاً نام بانک جدید را ارسال کنید:</i>", current)
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_bank"}
@@ -912,13 +939,17 @@ func main() {
 	})
 
 	bot.Handle(&btnConfigSupport, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return c.Send("❌ شما دسترسی ندارید.") }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Send("❌ شما دسترسی ندارید.")
+		}
 		text := "📞 <b>بخش تنظیمات پشتیبانی</b>\n\nاز طریق منوی زیر می‌توانید متن و آیدی پشتیبانی که به کاربران نمایش داده می‌شود را تغییر دهید:"
 		return c.Send(text, supportConfigMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnConfigSupportText, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return nil
+		}
 		current := GetSetting("support_text")
 		text := fmt.Sprintf("📝 <b>تنظیم متن پشتیبانی</b>\n\n🔹 مقدار فعلی:\n<i>%s</i>\n\n✏️ <i>لطفاً متن جدید پشتیبانی را ارسال کنید:</i>", current)
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_support_text"}
@@ -926,7 +957,9 @@ func main() {
 	})
 
 	bot.Handle(&btnConfigSupportID, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return nil
+		}
 		current := GetSetting("support_id")
 		text := fmt.Sprintf("🆔 <b>تنظیم آیدی پشتیبانی</b>\n\n🔹 مقدار فعلی: <b>%s</b>\n\n✏️ <i>لطفاً آیدی جدید پشتیبانی (مثال: @YourID) را ارسال کنید:</i>", current)
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_support_id"}
@@ -934,18 +967,23 @@ func main() {
 	})
 
 	bot.Handle(&btnConfigKeyPrice, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return nil
+		}
 		currentPrice := getKeyPrice()
 		text := fmt.Sprintf("🔑 <b>تنظیم نرخ کلید</b>\n\n🔹 قیمت فعلی: <code>%s تومان</code>\n\n✏️ <i>لطفاً مبلغ جدید را (فقط عدد به تومان) ارسال کنید:</i>", formatMoney(currentPrice))
 		adminStates[c.Sender().ID] = AdminAction{Action: "set_key_price"}
 		return c.Send(text, tele.ModeHTML)
 	})
 
-	// تایید ایمن فیش شارژ با مکانیزم تراکنش (جلوگیری از دوبار شارژ شدن با کلیک چندباره روی دکمه تایید)
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."}) }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
 		parts := strings.Split(c.Data(), "_")
-		if len(parts) != 2 { return c.Respond() }
+		if len(parts) != 2 {
+			return c.Respond()
+		}
 		targetUserID, _ := strconv.ParseInt(parts[0], 10, 64)
 		amount, _ := strconv.Atoi(parts[1])
 
@@ -967,7 +1005,9 @@ func main() {
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_reject"}, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."}) }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, "❌ <b>فیش واریزی شما توسط ادمین رد شد.</b>\n\nلطفاً در صورت وجود مشکل با پشتیبانی ارتباط برقرار کنید.", tele.ModeHTML)
 
@@ -982,10 +1022,12 @@ func main() {
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_block"}, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."}) }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		adminStates[c.Sender().ID] = AdminAction{Action: "block_reason", TargetID: targetUserID}
-		
+
 		if c.Message() != nil {
 			_ = c.Reply("🚫 <b>لطفاً دلیل مسدودی را ارسال کنید تا به همراه پیام مسدودی به صورت بولد برای کاربر ارسال شود:</b>", tele.ModeHTML)
 		} else {
@@ -995,7 +1037,9 @@ func main() {
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_unblock"}, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."}) }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		_, _ = db.Exec("UPDATE users SET is_blocked = FALSE WHERE id = ?", targetUserID)
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, "🔓 <b>حساب کاربری شما رفع مسدودی شد.</b>", tele.ModeHTML)
@@ -1011,10 +1055,12 @@ func main() {
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_msg"}, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."}) }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		adminStates[c.Sender().ID] = AdminAction{Action: "msg", TargetID: targetUserID}
-		
+
 		if c.Message() != nil {
 			_ = c.Reply("💬 <b>لطفاً متن پیام خود برای کاربر را ارسال کنید:</b>", tele.ModeHTML)
 		} else {
@@ -1024,10 +1070,12 @@ func main() {
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_manual"}, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."}) }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
 		targetUserID, _ := strconv.ParseInt(c.Data(), 10, 64)
 		adminStates[c.Sender().ID] = AdminAction{Action: "manual_add", TargetID: targetUserID}
-		
+
 		if c.Message() != nil {
 			_ = c.Reply("💰 <b>لطفاً مبلغ مورد نظر برای افزایش دستی موجودی را (فقط عدد به تومان) ارسال کنید:</b>", tele.ModeHTML)
 		} else {
@@ -1037,8 +1085,10 @@ func main() {
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_close"}, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."}) }
-		
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
+		}
+
 		if c.Message() != nil {
 			updatedCaption := c.Message().Caption + "\n\n❌ <b>وضعیت: پنل دستی بسته شد.</b>"
 			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
@@ -1072,7 +1122,7 @@ func main() {
 					successText := "🎉 <b>تبریک! سلف شما با موفقیت به اکانت متصل و فعال شد!</b> 🐺\n\n" +
 						"✅ <i>وضعیت اکانت شما هم‌اکنون به حالت روشن تغییر یافت.</i>\n" +
 						"از این پس روزانه ۱ کلید از حساب شما کسر خواهد شد و امکانات ویژه سلف روی اکانت شما اعمال می‌گردد. 🚀"
-					
+
 					return c.Send(successText, getKeyboard(userID), tele.ModeHTML)
 				default:
 					return c.Send("⏳ در حال پردازش کد...")
@@ -1091,7 +1141,7 @@ func main() {
 					successText := "🎉 <b>تبریک! سلف شما با موفقیت به اکانت متصل و فعال شد!</b> 🐺\n\n" +
 						"✅ <i>وضعیت اکانت شما هم‌اکنون به حالت روشن تغییر یافت.</i>\n" +
 						"از این پس روزانه ۱ کلید از حساب شما کسر خواهد شد و امکانات ویژه سلف روی اکانت شما اعمال می‌گردد. 🚀"
-					
+
 					return c.Send(successText, getKeyboard(userID), tele.ModeHTML)
 				default:
 					return c.Send("⏳ در حال بررسی رمز عبور...")
@@ -1099,10 +1149,14 @@ func main() {
 			}
 		}
 
-		if !cfg.IsAdmin(userID) { return nil }
+		if !cfg.IsAdmin(userID) {
+			return nil
+		}
 
 		state, exists := adminStates[userID]
-		if !exists { return nil }
+		if !exists {
+			return nil
+		}
 
 		switch state.Action {
 		case "set_card_num":
@@ -1174,7 +1228,9 @@ func main() {
 	})
 
 	bot.Handle(&btnSupport, func(c tele.Context) error {
-		if IsUserBlocked(c.Sender().ID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
+		if IsUserBlocked(c.Sender().ID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
 		sText := GetSetting("support_text")
 		sID := GetSetting("support_id")
 		text := fmt.Sprintf("%s\n\n🆔 <b>آیدی ارتباط:</b> %s", sText, sID)

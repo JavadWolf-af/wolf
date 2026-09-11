@@ -213,7 +213,6 @@ func GetUserSelfStatus(userID int64) string {
 	return status
 }
 
-// سیستم تراکنش ایمن با رفع خطای کلید خارجی و لاگ دقیق خطاها
 func SafeAddUserBalance(userID int64, amount int) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -222,7 +221,6 @@ func SafeAddUserBalance(userID int64, amount int) error {
 	}
 	defer tx.Rollback()
 
-	// ابتدا مطمئن شویم کاربر در جدول users وجود دارد تا خطا ندهد
 	_, err = tx.Exec(`INSERT IGNORE INTO users (id, first_name, username) VALUES (?, 'کاربر', 'ثبت_نشده')`, userID)
 	if err != nil {
 		log.Printf("❌ DB Insert User Error: %v", err)
@@ -781,21 +779,34 @@ func main() {
 		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
 	})
 
-	handleSelfActivation := func(c tele.Context) error {
+	// مدیریت هوشمند دکمه‌های خرید، روشن کردن سلف و جلوگیری از عمل تکراری
+	handleTurnOnOrBuy := func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
 			return c.Send("❌ حساب کاربری شما مسدود شده است.")
 		}
 
 		selfStatus := GetUserSelfStatus(userID)
+
+		if selfStatus == "روشن" {
+			return c.Send("⚠️ <b>سلف روشن است.</b>", tele.ModeHTML)
+		}
+
+		// بررسی وجود فایل سشن قبلی در سرور
+		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
+		_, statErr := os.Stat(sessionPath)
+		hasSession := (statErr == nil)
+
+		// اگر سلف خاموش بوده اما کاربر قبلاً لاگین کرده و سشن دارد، بدون نیاز به کد دوباره روشن می‌شود
+		if selfStatus == "خاموش" && hasSession {
+			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
+			return c.Send("🟢 <b>سلف شما با موفقیت روشن شد و امکانات مجدداً فعال گردید.</b>", getKeyboard(userID), tele.ModeHTML)
+		}
+
+		// در غیر این صورت (اولین بار یا بعد از خروج کامل)، بررسی موجودی کلید
 		price := getKeyPrice()
 		balance := GetUserBalance(userID)
 		keys := balance / price
-
-		if selfStatus == "روشن" {
-			text := fmt.Sprintf("🎉 <b>شما قبلاً سلف خود را فعال کرده‌اید!</b> 🐺\n\n🔑 <b>تعداد کلیدهای موجود شما:</b> <code>%d</code> عدد\n\n✅ <i>وضعیت اکانت: متصل و فعال</i>", keys)
-			return c.Send(text, tele.ModeHTML)
-		}
 
 		if keys < 30 {
 			text := fmt.Sprintf(
@@ -818,8 +829,47 @@ func main() {
 		return c.Send(text, confirmSelfMenu, tele.ModeHTML)
 	}
 
-	bot.Handle(&btnBuy, handleSelfActivation)
-	bot.Handle(&btnTurnOnSelf, handleSelfActivation)
+	bot.Handle(&btnBuy, handleTurnOnOrBuy)
+	bot.Handle(&btnTurnOnSelf, handleTurnOnOrBuy)
+
+	// خاموش کردن هوشمند سلف (غیرفعال کردن امکانات بدون خروج از اکانت)
+	bot.Handle(&btnTurnOffSelf, func(c tele.Context) error {
+		userID := c.Sender().ID
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
+
+		selfStatus := GetUserSelfStatus(userID)
+		if selfStatus == "خاموش" {
+			return c.Send("⚠️ <b>سلف خاموش هست.</b>", tele.ModeHTML)
+		}
+		if selfStatus != "روشن" {
+			return c.Send("❌ <b>شما سلف فعالی ندارید.</b>", tele.ModeHTML)
+		}
+
+		_, _ = db.Exec("UPDATE users SET self_status = 'خاموش' WHERE id = ?", userID)
+		return c.Send("🔴 <b>سلف شما خاموش شد.</b>\nامکانات سلف غیرفعال گردید، اما اتصال اکانت شما برقرار است.", tele.ModeHTML)
+	})
+
+	// خروج کامل از اکانت و حذف سشن
+	bot.Handle(&btnExitSelf, func(c tele.Context) error {
+		userID := c.Sender().ID
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
+
+		selfStatus := GetUserSelfStatus(userID)
+		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
+			return c.Send("❌ <b>شما سلف فعالی ندارید که از آن خارج شوید.</b>", tele.ModeHTML)
+		}
+
+		// حذف فایل سشن برای قطع کامل دسترسی
+		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
+		_ = os.Remove(sessionPath)
+
+		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده' WHERE id = ?", userID)
+		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف خارج شدید و اتصال اکانت شما به طور کامل قطع گردید.</b>", getKeyboard(userID), tele.ModeHTML)
+	})
 
 	bot.Handle(&btnConfirmSelfAction, func(c tele.Context) error {
 		userID := c.Sender().ID
@@ -892,26 +942,6 @@ func main() {
 			"کد ۵ رقمی ارسال شده توسط تلگرام را همینجا ارسال کنید:", contact.PhoneNumber)
 
 		return c.Send(text, codeMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnTurnOffSelf, func(c tele.Context) error {
-		userID := c.Sender().ID
-		if IsUserBlocked(userID) {
-			return c.Send("❌ حساب کاربری شما مسدود شده است.")
-		}
-
-		_, _ = db.Exec("UPDATE users SET self_status = 'خاموش' WHERE id = ?", userID)
-		return c.Send("🔴 <b>سلف شما با موفقیت خاموش شد.</b>\nکسر کلید روزانه موقتاً متوقف گردید.", tele.ModeHTML)
-	})
-
-	bot.Handle(&btnExitSelf, func(c tele.Context) error {
-		userID := c.Sender().ID
-		if IsUserBlocked(userID) {
-			return c.Send("❌ حساب کاربری شما مسدود شده است.")
-		}
-
-		_, _ = db.Exec("UPDATE users SET self_status = 'خروج' WHERE id = ?", userID)
-		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف خارج شدید.</b>\nاتصال اکانت شما قطع شد.", tele.ModeHTML)
 	})
 
 	bot.Handle(&btnAdminPanel, func(c tele.Context) error {

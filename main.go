@@ -46,7 +46,16 @@ var (
 	adminStates    = make(map[int64]AdminAction)
 	userStates     = make(map[int64]*UserState)
 	userWalletTemp = make(map[int64]int)
+
+	activeUserbotsMu sync.RWMutex
+	activeUserbots   = make(map[int64]*UserbotSession)
 )
+
+type UserbotSession struct {
+	UserID int64
+	Client *telegram.Client
+	Cancel context.CancelFunc
+}
 
 type AdminAction struct {
 	Action   string
@@ -148,10 +157,14 @@ func InitDB(cfg Config) {
 		is_blocked BOOLEAN DEFAULT FALSE,
 		self_status VARCHAR(50) DEFAULT 'خرید نداشته',
 		purchases_count INT DEFAULT 0,
-		last_billed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		last_billed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		is_clock_enabled BOOLEAN DEFAULT FALSE,
+		original_last_name VARCHAR(255) DEFAULT ''
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN last_billed_at DATETIME DEFAULT CURRENT_TIMESTAMP")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_clock_enabled BOOLEAN DEFAULT FALSE")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN original_last_name VARCHAR(255) DEFAULT ''")
 
 	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wallets (
@@ -260,6 +273,188 @@ func SafeAddUserBalance(userID int64, amount int) error {
 	return tx.Commit()
 }
 
+// ============================================================
+// CLOCK & TIME HELPERS
+// ============================================================
+func toBoldDigits(t string) string {
+	boldDigits := map[rune]string{
+		'0': "𝟎", '1': "𝟏", '2': "𝟐", '3': "𝟑", '4': "𝟒",
+		'5': "𝟓", '6': "𝟔", '7': "𝟕", '8': "𝟖", '9': "𝟗",
+		':': ":",
+	}
+	var sb strings.Builder
+	for _, r := range t {
+		if b, ok := boldDigits[r]; ok {
+			sb.WriteString(b)
+		} else {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+func getTehranBoldTime() string {
+	loc := getTehranLocation()
+	now := time.Now().In(loc)
+	return toBoldDigits(now.Format("15:04"))
+}
+
+func handleClockOn(ctx context.Context, userID int64, client *telegram.Client) {
+	var isEnabled bool
+	_ = db.QueryRow("SELECT is_clock_enabled FROM users WHERE id = ?", userID).Scan(&isEnabled)
+
+	if !isEnabled {
+		self, err := client.Self(ctx)
+		if err == nil {
+			_, _ = db.Exec("UPDATE users SET original_last_name = ? WHERE id = ?", self.LastName, userID)
+		}
+	}
+
+	boldTime := getTehranBoldTime()
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetLastName(boldTime)
+	_, err := client.API().AccountUpdateProfile(ctx, req)
+	if err == nil {
+		_, _ = db.Exec("UPDATE users SET is_clock_enabled = TRUE WHERE id = ?", userID)
+	}
+}
+
+func handleClockOff(ctx context.Context, userID int64, client *telegram.Client) {
+	var origLastName string
+	_ = db.QueryRow("SELECT original_last_name FROM users WHERE id = ?", userID).Scan(&origLastName)
+
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetLastName(origLastName)
+	_, _ = client.API().AccountUpdateProfile(ctx, req)
+
+	_, _ = db.Exec("UPDATE users SET is_clock_enabled = FALSE WHERE id = ?", userID)
+}
+
+// ============================================================
+// USERBOT ENGINE (MTPROTO RUNNER)
+// ============================================================
+func startUserbot(userID int64, cfg Config) {
+	activeUserbotsMu.Lock()
+	if _, exists := activeUserbots[userID]; exists {
+		activeUserbotsMu.Unlock()
+		return
+	}
+
+	sessionPath := filepath.Join("/opt/wolf/sessions", fmt.Sprintf("user_%d.json", userID))
+	if _, err := os.Stat(sessionPath); os.IsNotExist(err) {
+		activeUserbotsMu.Unlock()
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	loader := &session.FileStorage{Path: sessionPath}
+	dispatcher := tg.NewUpdateDispatcher()
+
+	client := telegram.NewClient(cfg.APIID, cfg.APIHash, telegram.Options{
+		SessionStorage: loader,
+		UpdateHandler:  dispatcher,
+	})
+
+	activeUserbots[userID] = &UserbotSession{
+		UserID: userID,
+		Client: client,
+		Cancel: cancel,
+	}
+	activeUserbotsMu.Unlock()
+
+	handleMsg := func(ctx context.Context, message tg.MessageClass) {
+		msg, ok := message.(*tg.Message)
+		if !ok || !msg.Out {
+			return
+		}
+		text := strings.TrimSpace(msg.Message)
+		if text == "ساعت روشن" {
+			handleClockOn(ctx, userID, client)
+		} else if text == "ساعت خاموش" {
+			handleClockOff(ctx, userID, client)
+		}
+	}
+
+	dispatcher.OnNewMessage(func(ctx context.Context, e tg.Entities, u *tg.UpdateNewMessage) error {
+		handleMsg(ctx, u.Message)
+		return nil
+	})
+	dispatcher.OnNewChannelMessage(func(ctx context.Context, e tg.Entities, u *tg.UpdateNewChannelMessage) error {
+		handleMsg(ctx, u.Message)
+		return nil
+	})
+
+	go func() {
+		err := client.Run(ctx, func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("⚠️ Userbot %d error: %v", userID, err)
+		}
+		activeUserbotsMu.Lock()
+		delete(activeUserbots, userID)
+		activeUserbotsMu.Unlock()
+	}()
+}
+
+func stopUserbot(userID int64) {
+	activeUserbotsMu.Lock()
+	defer activeUserbotsMu.Unlock()
+	if ub, exists := activeUserbots[userID]; exists {
+		if ub.Cancel != nil {
+			ub.Cancel()
+		}
+		delete(activeUserbots, userID)
+	}
+}
+
+// کارگر اختصاصی تغییر دقیقه به دقیقه ساعت روی پروفایل
+func startClockWorker() {
+	ticker := time.NewTicker(1 * time.Minute)
+	go func() {
+		for range ticker.C {
+			if db == nil {
+				continue
+			}
+			rows, err := db.Query("SELECT id FROM users WHERE self_status = 'روشن' AND is_clock_enabled = TRUE")
+			if err != nil {
+				continue
+			}
+
+			var uids []int64
+			for rows.Next() {
+				var uid int64
+				if err := rows.Scan(&uid); err == nil {
+					uids = append(uids, uid)
+				}
+			}
+			rows.Close()
+
+			if len(uids) == 0 {
+				continue
+			}
+
+			boldTime := getTehranBoldTime()
+
+			activeUserbotsMu.RLock()
+			for _, uid := range uids {
+				if ub, ok := activeUserbots[uid]; ok && ub.Client != nil {
+					go func(cl *telegram.Client) {
+						cTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+						defer cancel()
+						req := &tg.AccountUpdateProfileRequest{}
+						req.SetLastName(boldTime)
+						_, _ = cl.API().AccountUpdateProfile(cTimeout, req)
+					}(ub.Client)
+				}
+			}
+			activeUserbotsMu.RUnlock()
+		}
+	}()
+}
+
+// کارگر تمدید روزانه و کسر خودکار کلید (Billing Worker)
 func startBillingWorker(bot *tele.Bot) {
 	ticker := time.NewTicker(2 * time.Minute)
 	go func() {
@@ -299,6 +494,7 @@ func processDailyBilling(bot *tele.Bot) {
 		balance := GetUserBalance(uid)
 		if balance < keyPrice {
 			_, _ = db.Exec("UPDATE users SET self_status = 'خاموش' WHERE id = ?", uid)
+			stopUserbot(uid)
 			msg := "⚠️ <b>شارژ کلیدهای شما به پایان رسید!</b>\n\n" +
 				"موجودی شما برای کسر هزینه روزانه سلف (۱ کلید) کافی نبود و سلف شما به صورت خودکار خاموش شد.\n\n" +
 				"🛒 <i>لطفاً جهت فعالسازی مجدد، از بخش کیف پول اقدام به شارژ حساب نمایید.</i>"
@@ -939,7 +1135,7 @@ func main() {
 		return c.Send(text, confirmSelfMenu, tele.ModeHTML)
 	})
 
-	// دکمه روشن کردن سلف: اگر سلف فعال نباشد، ارجاع به خرید سلف می‌دهد
+	// دکمه روشن کردن سلف
 	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -958,6 +1154,7 @@ func main() {
 
 		if selfStatus == "خاموش" && hasSession {
 			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
+			startUserbot(userID, cfg)
 			return c.Send("🟢 <b>سلف شما با موفقیت روشن شد و امکانات مجدداً فعال گردید.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
@@ -966,7 +1163,7 @@ func main() {
 		return c.Send(text, getKeyboard(userID), tele.ModeHTML)
 	})
 
-	// خاموش کردن سلف و بازگشت کیبورد به صفحه اصلی
+	// خاموش کردن سلف
 	bot.Handle(&btnTurnOffSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -982,6 +1179,8 @@ func main() {
 		}
 
 		_, _ = db.Exec("UPDATE users SET self_status = 'خاموش' WHERE id = ?", userID)
+		stopUserbot(userID)
+
 		return c.Send("🔴 <b>سلف شما خاموش شد.</b>\nامکانات سلف غیرفعال گردید، اما اتصال اکانت شما برقرار است.", getKeyboard(userID), tele.ModeHTML)
 	})
 
@@ -1009,6 +1208,8 @@ func main() {
 	bot.Handle(&tele.Btn{Unique: "exit_confirm"}, func(c tele.Context) error {
 		userID := c.Sender().ID
 
+		stopUserbot(userID)
+
 		stateMu.Lock()
 		if uState, exists := userStates[userID]; exists {
 			if uState.Cancel != nil {
@@ -1021,7 +1222,7 @@ func main() {
 		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
 		_ = os.Remove(sessionPath)
 
-		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده' WHERE id = ?", userID)
+		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE WHERE id = ?", userID)
 
 		if c.Message() != nil {
 			_ = bot.Delete(c.Message())
@@ -1410,6 +1611,8 @@ func main() {
 							delete(userStates, userID)
 							stateMu.Unlock()
 
+							startUserbot(userID, cfg)
+
 							successText := "🎉 <b>تبریک! سلف شما با موفقیت به اکانت متصل و فعال شد!</b> 🐺\n\n" +
 								"✅ <i>وضعیت اکانت شما هم‌اکنون به حالت روشن تغییر یافت.</i>\n" +
 								"از این پس روزانه ۱ کلید از حساب شما کسر خواهد شد و امکانات سلف فعال است. 🚀"
@@ -1445,6 +1648,8 @@ func main() {
 							stateMu.Lock()
 							delete(userStates, userID)
 							stateMu.Unlock()
+
+							startUserbot(userID, cfg)
 
 							successText := "🎉 <b>تبریک! رمز دو مرحله‌ای تایید شد و سلف متصل گردید!</b> 🐺\n\n" +
 								"✅ <i>وضعیت اکانت شما به حالت روشن تغییر یافت.</i>"
@@ -1582,11 +1787,85 @@ func main() {
 		return c.Send(text, tele.ModeHTML)
 	})
 
+	// ============================================================
+	// HELP / GUIDE (فقط برای خریداران سلف)
+	// ============================================================
 	bot.Handle(&btnGuide, func(c tele.Context) error {
-		return c.Send("📚 <b>راهنمای استفاده</b>\n\nآموزش‌ها و راهنمای کامل استفاده از ربات.", tele.ModeHTML)
+		userID := c.Sender().ID
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
+
+		selfStatus := GetUserSelfStatus(userID)
+		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
+			return c.Send("❌ <b>دسترسی محدود!</b>\n\nبخش راهنما فقط برای کاربرانی که اشتراک سلف را خریداری کرده‌اند فعال می‌باشد.", getKeyboard(userID), tele.ModeHTML)
+		}
+
+		guideMenu := &tele.ReplyMarkup{}
+		btnGuideClock := guideMenu.Data("⏱ ساعت", "guide_clock")
+		guideMenu.Inline(guideMenu.Row(btnGuideClock))
+
+		text := "📚 <b>بخش راهنما و آموزش امکانات سلف</b>\n\nجهت مشاهده راهنمای هر قابلیت، روی دکمه مربوط به آن کلیک کنید:"
+		return c.Send(text, guideMenu, tele.ModeHTML)
 	})
 
+	bot.Handle(&tele.Btn{Unique: "guide_clock"}, func(c tele.Context) error {
+		userID := c.Sender().ID
+		selfStatus := GetUserSelfStatus(userID)
+		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید.", ShowAlert: true})
+		}
+
+		backMenu := &tele.ReplyMarkup{}
+		btnBackGuide := backMenu.Data("🔙 بازگشت", "guide_back")
+		backMenu.Inline(backMenu.Row(btnBackGuide))
+
+		text := "⏱ <b>راهنمای فعال‌سازی ساعت زنده روی پروفایل</b>\n\n" +
+			"با استفاده از این قابلیت، ساعت رسمی تهران به صورت زنده و با فونت بولد روی نام خانوادگی (Last Name) اکانت شما قرار می‌گیرد و هر دقیقه تغییر می‌کند.\n\n" +
+			"🟢 <b>روشن کردن ساعت:</b>\n" +
+			"کافیست در هر چتی (پیوی، گروه، کانال یا پیام‌های ذخیره شده) عبارت زیر را بفرستید:\n" +
+			"<code>ساعت روشن</code>\n\n" +
+			"🔴 <b>خاموش کردن ساعت:</b>\n" +
+			"برای خاموش کردن ساعت و بازگرداندن نام خانوادگی قبلی‌تان، در هر چتی عبارت زیر را بفرستید:\n" +
+			"<code>ساعت خاموش</code>"
+
+		if c.Message() != nil {
+			_ = c.Edit(text, backMenu, tele.ModeHTML)
+		} else {
+			_ = c.Send(text, backMenu, tele.ModeHTML)
+		}
+		return c.Respond()
+	})
+
+	bot.Handle(&tele.Btn{Unique: "guide_back"}, func(c tele.Context) error {
+		guideMenu := &tele.ReplyMarkup{}
+		btnGuideClock := guideMenu.Data("⏱ ساعت", "guide_clock")
+		guideMenu.Inline(guideMenu.Row(btnGuideClock))
+
+		text := "📚 <b>بخش راهنما و آموزش امکانات سلف</b>\n\nجهت مشاهده راهنمای هر قابلیت، روی دکمه مربوط به آن کلیک کنید:"
+		if c.Message() != nil {
+			_ = c.Edit(text, guideMenu, tele.ModeHTML)
+		} else {
+			_ = c.Send(text, guideMenu, tele.ModeHTML)
+		}
+		return c.Respond()
+	})
+
+	// راه‌اندازی کارگرهای پس‌زمینه
 	startBillingWorker(bot)
+	startClockWorker()
+
+	// اتصال خودکار سلف‌بات برای تمام کاربرانی که وضعیت سلف آن‌ها روشن است
+	rows, err := db.Query("SELECT id FROM users WHERE self_status = 'روشن'")
+	if err == nil {
+		for rows.Next() {
+			var uid int64
+			if err := rows.Scan(&uid); err == nil {
+				startUserbot(uid, cfg)
+			}
+		}
+		rows.Close()
+	}
 
 	log.Println("⚡ ربات ولف سلف با بالاترین امنیت و موتور استاندارد آماده و روشن شد!")
 	bot.Start()

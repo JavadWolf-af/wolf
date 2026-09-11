@@ -432,6 +432,9 @@ func main() {
 		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
 	})
 
+	// =========================
+	// ADMIN PANEL ACTIONS
+	// =========================
 	bot.Handle(&tele.Btn{Unique: "admin_approve"}, func(c tele.Context) error {
 		if !cfg.IsAdmin(c.Sender().ID) {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید."})
@@ -450,9 +453,14 @@ func main() {
 
 		if c.Message() != nil {
 			updatedCaption := c.Message().Caption + "\n\n✅ <b>وضعیت: فیش تایید شد و موجودی کاربر شارژ گردید.</b>"
-			_ = c.Edit(updatedCaption, &tele.ReplyMarkup{}, tele.ModeHTML)
+			// ویرایش حرفه‌ای برای عکس‌ها جهت حذف دکمه
+			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
 		}
-		return c.Respond(&tele.CallbackResponse{Text: "✅ فیش تایید شد."})
+		
+		// پیام در چت
+		_ = c.Send(fmt.Sprintf("✅ <b>شارژ با موفقیت انجام شد!</b>\nمبلغ <code>%s تومان</code> به کیف پول کاربر اضافه گردید.", formatMoney(amount)), tele.ModeHTML)
+
+		return c.Respond() // پنل بسته می‌شود و پاپ‌آپ موقت نمایش داده نمی‌شود
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_reject"}, func(c tele.Context) error {
@@ -464,9 +472,14 @@ func main() {
 
 		if c.Message() != nil {
 			updatedCaption := c.Message().Caption + "\n\n❌ <b>وضعیت: فیش واریزی رد شد.</b>"
-			_ = c.Edit(updatedCaption, &tele.ReplyMarkup{}, tele.ModeHTML)
+			// ویرایش حرفه‌ای برای عکس‌ها جهت حذف دکمه
+			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
 		}
-		return c.Respond(&tele.CallbackResponse{Text: "❌ فیش رد شد."})
+		
+		// پیام در چت
+		_ = c.Send("❌ <b>فیش رد شد و به کاربر اطلاع داده شد.</b>", tele.ModeHTML)
+
+		return c.Respond() // پنل بسته می‌شود و پاپ‌آپ موقت نمایش داده نمی‌شود
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_block"}, func(c tele.Context) error {
@@ -488,9 +501,12 @@ func main() {
 
 		if c.Message() != nil {
 			updatedCaption := c.Message().Caption + "\n\n🔓 <b>وضعیت: کاربر رفع مسدودی گردید.</b>"
-			_ = c.Edit(updatedCaption, &tele.ReplyMarkup{}, tele.ModeHTML)
+			_, _ = bot.EditCaption(c.Message(), updatedCaption, tele.ModeHTML, &tele.ReplyMarkup{})
 		}
-		return c.Respond(&tele.CallbackResponse{Text: "🔓 کاربر رفع مسدود شد."})
+
+		_ = c.Send("🔓 <b>کاربر با موفقیت رفع مسدود شد.</b>", tele.ModeHTML)
+		
+		return c.Respond()
 	})
 
 	bot.Handle(&tele.Btn{Unique: "admin_msg"}, func(c tele.Context) error {

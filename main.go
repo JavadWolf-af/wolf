@@ -648,7 +648,6 @@ func handleForwardToAllGroups(ctx context.Context, client *telegram.Client, inpu
 	}
 }
 
-// تابع دانلود مستقیم بایت‌های رسانه تایمردار و ارسال دائمی آن به کاربر
 func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele.Bot, targetUserID int64, msg *tg.Message, e tg.Entities) {
 	var (
 		isTTL      bool
@@ -869,7 +868,6 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		}
 		inputPeer = getInputPeer(msg.PeerID, e, selfID)
 
-		// رصد و دانلود مستقیم مدیاهای تایمردار در پیوی
 		if !msg.Out {
 			if _, isUser := msg.PeerID.(*tg.PeerUser); isUser && msg.Media != nil {
 				var timerEnabled bool
@@ -961,6 +959,22 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 	go func() {
 		err := client.Run(ctx, func(ctx context.Context) error {
+			// بروزرسانی آنی ساعت و اموجی بلافاصله پس از اتصال و بالا آمدن سرور
+			var isClock, isEmoji bool
+			var origFirst string
+			_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, original_first_name FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &origFirst)
+
+			if isClock {
+				req := &tg.AccountUpdateProfileRequest{}
+				req.SetLastName(getTehranBoldTime())
+				_, _ = client.API().AccountUpdateProfile(ctx, req)
+			}
+			if isEmoji && origFirst != "" {
+				req := &tg.AccountUpdateProfileRequest{}
+				req.SetFirstName(fmt.Sprintf("%s %s", origFirst, getRandomEmoji()))
+				_, _ = client.API().AccountUpdateProfile(ctx, req)
+			}
+
 			<-ctx.Done()
 			return ctx.Err()
 		})
@@ -1871,37 +1885,6 @@ func main() {
 			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
 			startUserbot(userID, cfg, bot)
 
-			go func(uid int64) {
-				time.Sleep(2 * time.Second)
-				activeUserbotsMu.RLock()
-				ub, ok := activeUserbots[uid]
-				activeUserbotsMu.RUnlock()
-				if !ok || ub.Client == nil {
-					return
-				}
-
-				var isClock, isEmoji bool
-				var origFirst string
-				_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, original_first_name FROM users WHERE id = ?", uid).Scan(&isClock, &isEmoji, &origFirst)
-
-				cTimeout, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-
-				req := &tg.AccountUpdateProfileRequest{}
-				needUpdate := false
-				if isClock {
-					req.SetLastName(getTehranBoldTime())
-					needUpdate = true
-				}
-				if isEmoji && origFirst != "" {
-					req.SetFirstName(fmt.Sprintf("%s %s", origFirst, getRandomEmoji()))
-					needUpdate = true
-				}
-				if needUpdate {
-					_, _ = ub.Client.API().AccountUpdateProfile(cTimeout, req)
-				}
-			}(userID)
-
 			return c.Send("🟢 <b>سلف شما با موفقیت روشن شد و امکانات مجدداً فعال گردید.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
@@ -1997,7 +1980,7 @@ func main() {
 			_ = bot.Delete(c.Message())
 		}
 
-		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف خارج شدید و اتصال اکانت شما به طور کامل قطع گردید.</b>", getKeyboard(userID), tele.ModeHTML)
+		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف شدید و اتصال اکانت شما به طور کامل قطع گردید.</b>", getKeyboard(userID), tele.ModeHTML)
 	})
 
 	bot.Handle(&tele.Btn{Unique: "exit_cancel"}, func(c tele.Context) error {
@@ -2597,18 +2580,26 @@ func main() {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید.", ShowAlert: true})
 		}
 
+		var isClockEnabled bool
+		_ = db.QueryRow("SELECT is_clock_enabled FROM users WHERE id = ?", userID).Scan(&isClockEnabled)
+		statusStr := "🔴 خاموش"
+		if isClockEnabled {
+			statusStr = "🟢 روشن"
+		}
+
 		backMenu := &tele.ReplyMarkup{}
 		btnBackGuide := backMenu.Data("🔙 بازگشت", "guide_back")
 		backMenu.Inline(backMenu.Row(btnBackGuide))
 
-		text := "⏱ <b>راهنمای فعال‌سازی ساعت زنده روی پروفایل</b>\n\n" +
-			"با استفاده از این قابلیت، ساعت رسمی تهران به صورت زنده و با فونت بولد روی نام خانوادگی (Last Name) اکانت شما قرار می‌گیرد و هر دقیقه تغییر می‌کند.\n\n" +
-			"🟢 <b>روشن کردن ساعت:</b>\n" +
-			"کافیست در هر چتی عبارت زیر را بفرستید:\n" +
-			"<code>ساعت روشن شو</code>\n\n" +
-			"🔴 <b>خاموش کردن ساعت:</b>\n" +
-			"برای خاموش کردن ساعت و بازگرداندن نام خانوادگی قبلی‌تان، در هر چتی عبارت زیر را بفرستید:\n" +
-			"<code>ساعت خاموش شو</code>"
+		text := fmt.Sprintf("⏱ <b>راهنمای فعال‌سازی ساعت زنده روی پروفایل</b>\n\n"+
+			"با استفاده از این قابلیت، ساعت رسمی تهران به صورت زنده و با فونت بولد روی نام خانوادگی (Last Name) اکانت شما قرار می‌گیرد و هر دقیقه تغییر می‌کند.\n\n"+
+			"📌 <b>وضعیت فعلی برای شما:</b> %s\n\n"+
+			"🟢 <b>روشن کردن ساعت:</b>\n"+
+			"کافیست در هر چتی عبارت زیر را بفرستید:\n"+
+			"<code>ساعت روشن شو</code>\n\n"+
+			"🔴 <b>خاموش کردن ساعت:</b>\n"+
+			"برای خاموش کردن ساعت و بازگرداندن نام خانوادگی قبلی‌تان، در هر چتی عبارت زیر را بفرستید:\n"+
+			"<code>ساعت خاموش شو</code>", statusStr)
 
 		if c.Message() != nil {
 			_ = c.Edit(text, backMenu, tele.ModeHTML)
@@ -2625,18 +2616,26 @@ func main() {
 			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید.", ShowAlert: true})
 		}
 
+		var isEmojiEnabled bool
+		_ = db.QueryRow("SELECT is_emoji_enabled FROM users WHERE id = ?", userID).Scan(&isEmojiEnabled)
+		statusStr := "🔴 خاموش"
+		if isEmojiEnabled {
+			statusStr = "🟢 روشن"
+		}
+
 		backMenu := &tele.ReplyMarkup{}
 		btnBackGuide := backMenu.Data("🔙 بازگشت", "guide_back")
 		backMenu.Inline(backMenu.Row(btnBackGuide))
 
-		text := "🎭 <b>راهنمای فعال‌سازی اموجی رندوم کنار اسم</b>\n\n" +
-			"با استفاده از این قابلیت، یک اموجی رندوم و جذاب کنار نام شما (First Name) قرار می‌گیرد و هر ۱۰ دقیقه به صورت خودکار تغییر می‌کند.\n\n" +
-			"🟢 <b>روشن کردن اموجی:</b>\n" +
-			"کافیست در هر چتی عبارت زیر را بفرستید:\n" +
-			"<code>اموجی روشن شو</code>\n\n" +
-			"🔴 <b>خاموش کردن اموجی:</b>\n" +
-			"برای خاموش کردن و بازگرداندن اسم اصلی‌تان، در هر چتی عبارت زیر را بفرستید:\n" +
-			"<code>اموجی خاموش شو</code>"
+		text := fmt.Sprintf("🎭 <b>راهنمای فعال‌سازی اموجی رندوم کنار اسم</b>\n\n"+
+			"با استفاده از این قابلیت، یک اموجی رندوم و جذاب کنار نام شما (First Name) قرار می‌گیرد و هر ۱۰ دقیقه به صورت خودکار تغییر می‌کند.\n\n"+
+			"📌 <b>وضعیت فعلی برای شما:</b> %s\n\n"+
+			"🟢 <b>روشن کردن اموجی:</b>\n"+
+			"کافیست در هر چتی عبارت زیر را بفرستید:\n"+
+			"<code>اموجی روشن شو</code>\n\n"+
+			"🔴 <b>خاموش کردن اموجی:</b>\n"+
+			"برای خاموش کردن و بازگرداندن اسم اصلی‌تان، در هر چتی عبارت زیر را بفرستید:\n"+
+			"<code>اموجی خاموش شو</code>", statusStr)
 
 		if c.Message() != nil {
 			_ = c.Edit(text, backMenu, tele.ModeHTML)

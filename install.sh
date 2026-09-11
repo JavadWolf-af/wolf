@@ -32,12 +32,17 @@ echo "🛠️ در حال ساخت دستور آپدیت خودکار (wolf-upda
 cat << 'EOF' > /usr/local/bin/wolf-update
 #!/bin/bash
 cd /opt/wolf || exit
-echo "🔄 در حال دریافت تغییرات..."
-git pull origin main
+echo "🔄 در حال دریافت تغییرات از گیت‌هاب..."
+git fetch --all
+git reset --hard origin/main
+
+echo "📦 در حال ساخت مجدد پکیج‌ها و دانلود پیش‌نیازها..."
 export CGO_ENABLED=0
-echo "📦 در حال بررسی و دانلود پکیج‌های پیش‌نیاز (مثل تقویم شمسی)..."
-go get github.com/yaa110/go-persian-calendar/ptime
+rm -f go.mod go.sum
+go mod init wolf
 go mod tidy
+
+echo "🔨 در حال کامپایل ربات..."
 go build -o wolfbot .
 systemctl restart wolfbot
 echo "✅ ربات با موفقیت آپدیت و راه‌اندازی شد!"

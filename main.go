@@ -114,10 +114,10 @@ func InitDB(cfg Config) {
 	_, _ = db.Exec(queryUsers)
 
 	// آپدیت خودکار تیبل برای کاربرانی که از نسخه‌های قبلی بودن (جلوگیری از ارور و خرابی تاریخ)
-	_ = db.Exec("ALTER TABLE users ADD COLUMN phone VARCHAR(50) DEFAULT 'ثبت نشده'")
-	_ = db.Exec("ALTER TABLE users ADD COLUMN is_blocked BOOLEAN DEFAULT FALSE")
-	_ = db.Exec("ALTER TABLE users ADD COLUMN self_status VARCHAR(50) DEFAULT 'خرید نداشته'")
-	_ = db.Exec("ALTER TABLE users ADD COLUMN purchases_count INT DEFAULT 0")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN phone VARCHAR(50) DEFAULT 'ثبت نشده'")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_blocked BOOLEAN DEFAULT FALSE")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN self_status VARCHAR(50) DEFAULT 'خرید نداشته'")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN purchases_count INT DEFAULT 0")
 
 	queryWallet := `
 	CREATE TABLE IF NOT EXISTS wallets (
@@ -134,12 +134,12 @@ func InitDB(cfg Config) {
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
 	_, _ = db.Exec(querySettings)
 
-	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_number', '6037-9971-XXXX-XXXX')`)
-	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_name', 'جواد ولف')`)
-	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_bank', 'بانک ملی')`)
-	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('support_text', '🎧 <b>بخش پشتیبانی</b>\n\nجهت حل مشکلات و پاسخ به سوالات خود، با ما در ارتباط باشید:')`)
-	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('support_id', '@JavadWolf')`)
-	db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('key_price', '3333')`)
+	_, _ = db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_number', '6037-9971-XXXX-XXXX')`)
+	_, _ = db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_name', 'جواد ولف')`)
+	_, _ = db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('card_bank', 'بانک ملی')`)
+	_, _ = db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('support_text', '🎧 <b>بخش پشتیبانی</b>\n\nجهت حل مشکلات و پاسخ به سوالات خود، با ما در ارتباط باشید:')`)
+	_, _ = db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('support_id', '@JavadWolf')`)
+	_, _ = db.Exec(`INSERT IGNORE INTO settings (setting_key, setting_value) VALUES ('key_price', '3333')`)
 }
 
 func GetSetting(key string) string {
@@ -230,11 +230,10 @@ func getKeyPrice() int {
 	return price
 }
 
-// تابع قدرتمند و امن برای زمان ایران
 func getTehranLocation() *time.Location {
 	loc, err := time.LoadLocation("Asia/Tehran")
 	if err != nil {
-		return time.FixedZone("Asia/Tehran", 12600) // 12600 ثانیه = 3.5 ساعت (جایگزین قطعی در صورت نبود پکیج در لینوکس)
+		return time.FixedZone("Asia/Tehran", 12600)
 	}
 	return loc
 }
@@ -485,7 +484,6 @@ func main() {
 		var joinedAt time.Time
 		var selfStatus string
 		
-		// جلوگیری از ارور دیتابیس با مدیریت خطا
 		err := db.QueryRow("SELECT joined_at, self_status FROM users WHERE id = ?", user.ID).Scan(&joinedAt, &selfStatus)
 		if err != nil || joinedAt.IsZero() {
 			joinedAt = time.Now()
@@ -508,7 +506,6 @@ func main() {
 			statusIcon = "⏸️"
 		}
 
-		// زیباسازی اعداد تاریخ به فارسی
 		tNowStr := toPersianDigits(tNow.Format("yyyy/MM/dd"))
 		tTimeStr := toPersianDigits(tNow.Format("HH:mm:ss"))
 		tJoinedStr := toPersianDigits(tJoined.Format("yyyy/MM/dd"))

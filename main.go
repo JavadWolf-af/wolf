@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -47,11 +48,13 @@ type AdminAction struct {
 }
 
 type UserState struct {
-	Action     string
-	Phone      string
-	CodeChan   chan string
-	SignInErr  error
-	IsLoggedIn bool
+	Action      string
+	Phone       string
+	CodeChan    chan string
+	PasswordChan chan string
+	SignInErr   error
+	Needs2FA    bool
+	IsLoggedIn  bool
 }
 
 var adminStates = make(map[int64]AdminAction)
@@ -219,9 +222,9 @@ func GetUserSelfStatus(userID int64) string {
 }
 
 // ============================================================
-// MTPROTO USERBOT LOGIN HANDLER
+// MTPROTO USERBOT LOGIN HANDLER (WITH 2FA SUPPORT)
 // ============================================================
-func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan string) error {
+func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan string, passwordChan chan string, need2FA *bool) error {
 	ctx := context.Background()
 
 	sessionDir := "/opt/wolf/sessions"
@@ -245,6 +248,17 @@ func startTelegramLogin(userID int64, phone string, cfg Config, codeChan chan st
 		})),
 		auth.SendCodeOptions{},
 	)
+
+	// مدیریت رمز عبور تایید دو مرحله‌ای (2FA) در صورت فعال بودن روی اکانت کاربر
+	flow.PasswordAuthenticator = auth.PasswordAuthenticatorFunc(func(ctx context.Context) (string, error) {
+		*need2FA = true
+		select {
+		case pwd := <-passwordChan:
+			return pwd, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	})
 
 	return client.Run(ctx, func(ctx context.Context) error {
 		if err := client.Auth().IfNecessary(ctx, flow); err != nil {
@@ -800,23 +814,26 @@ func main() {
 		}
 
 		codeChan := make(chan string, 1)
+		passwordChan := make(chan string, 1)
+		var need2FA bool
+
 		userStates[userID] = UserState{
-			Action:   "waiting_for_code",
-			Phone:    contact.PhoneNumber,
-			CodeChan: codeChan,
+			Action:       "waiting_for_code",
+			Phone:        contact.PhoneNumber,
+			CodeChan:     codeChan,
+			PasswordChan: passwordChan,
 		}
 
 		go func() {
-			err := startTelegramLogin(userID, contact.PhoneNumber, cfg, codeChan)
+			err := startTelegramLogin(userID, contact.PhoneNumber, cfg, codeChan, passwordChan, &need2FA)
+			stateStruct := userStates[userID]
 			if err != nil {
-				stateStruct := userStates[userID]
 				stateStruct.SignInErr = err
-				userStates[userID] = stateStruct
 			} else {
-				stateStruct := userStates[userID]
 				stateStruct.IsLoggedIn = true
-				userStates[userID] = stateStruct
 			}
+			stateStruct.Needs2FA = need2FA
+			userStates[userID] = stateStruct
 		}()
 
 		codeMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
@@ -1021,7 +1038,15 @@ func main() {
 			if uState.Action == "waiting_for_code" {
 				select {
 				case uState.CodeChan <- text:
-					time.Sleep(2 * time.Second)
+					time.Sleep(3 * time.Second)
+
+					// بررسی اینکه آیا اکانت رمز دوم (2FA) دارد یا خیر
+					if uState.Needs2FA {
+						uState.Action = "waiting_for_password"
+						userStates[userID] = uState
+						return c.Send("🔒 <b>حساب شما دارای رمز عبور تایید دو مرحله‌ای (2FA) است.</b>\n\nلطفاً رمز عبور خود را ارسال کنید:", tele.ModeHTML)
+					}
+
 					if uState.SignInErr != nil {
 						return c.Send(fmt.Sprintf("❌ <b>خطا در ورود به اکانت:</b> %v\n\nلطفاً دوباره کد صحیح را ارسال کنید:", uState.SignInErr), tele.ModeHTML)
 					}
@@ -1036,6 +1061,25 @@ func main() {
 					return c.Send(successText, getKeyboard(userID), tele.ModeHTML)
 				default:
 					return c.Send("⏳ در حال پردازش کد...")
+				}
+			} else if uState.Action == "waiting_for_password" {
+				select {
+				case uState.PasswordChan <- text:
+					time.Sleep(3 * time.Second)
+					if uState.SignInErr != nil {
+						return c.Send(fmt.Sprintf("❌ <b>رمز عبور اشتباه است:</b> %v\n\nلطفاً دوباره رمز 2FA را ارسال کنید:", uState.SignInErr), tele.ModeHTML)
+					}
+
+					_, _ = db.Exec("UPDATE users SET self_status = 'روشن', phone = ? WHERE id = ?", uState.Phone, userID)
+					delete(userStates, userID)
+
+					successText := "🎉 <b>تبریک! سلف شما با موفقیت به اکانت متصل و فعال شد!</b> 🐺\n\n" +
+						"✅ <i>وضعیت اکانت شما هم‌اکنون به حالت روشن تغییر یافت.</i>\n" +
+						"از این پس روزانه ۱ کلید از حساب شما کسر خواهد شد و امکانات ویژه سلف روی اکانت شما اعمال می‌گردد. 🚀"
+					
+					return c.Send(successText, getKeyboard(userID), tele.ModeHTML)
+				default:
+					return c.Send("⏳ در حال بررسی رمز عبور...")
 				}
 			}
 		}
@@ -1126,6 +1170,6 @@ func main() {
 		return c.Send("📚 <b>راهنمای استفاده</b>\n\nآموزش‌ها و راهنمای کامل استفاده از ربات.", tele.ModeHTML)
 	})
 
-	log.Println("⚡ ربات ولف سلف با موتور قدرتمند MTProto آماده و روشن شد!")
+	log.Println("⚡ ربات ولف سلف با سیستم هوشمند لاگین MTProto آماده و روشن شد!")
 	bot.Start()
 }

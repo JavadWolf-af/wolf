@@ -60,8 +60,40 @@ var randomEmojiPool = []string{
 	"🍒", "☕", "🛸", "⚓", "⏳", "🗝", "⚔️", "🏎", "🐉", "🐾",
 }
 
+var randomBioPool = []string{
+	"🐺 در سکوت شب، زوزه‌ی گرگ شنیدنی‌تر است.",
+	"⚡️ قوی بمان، قصه‌ی تو پایان درخشانی دارد.",
+	"🖤 گاهی سکوت، رساترین فریاد درونی است.",
+	"👑 پادشاه قلمرو خویشتن باش، نه برده دیگران.",
+	"🌙 شب‌های تاریک، نویدبخش سپیده‌دمی روشن‌اند.",
+	"🗡️ با زخم‌هایت رشد کن، نه فقط با آرزوهایت.",
+	"✨ در عمق تاریکی‌ها نیز می‌توان درخشید.",
+	"🕊️ آزادی حقیقی، رهایی از قضاوت بی‌ارزش‌هاست.",
+	"🦁 شیر در بند هم که باشد، همچنان سلطانی مغرور است.",
+	"🌊 آرام مثل سطح آب، عمیق و سهمگین چون اقیانوس.",
+	"🔥 از خاکسترِ شکست‌ها، ققنوسی مقتدر بساز!",
+	"💎 اصالت را هیچ بهایی نمی‌تواند بسنجد.",
+	"⏳ زمان می‌گذرد و حقیقت‌ها عریان‌تر می‌شوند.",
+	"🎯 متمرکز بر هدف؛ صداهای مزاحم را نشنیده بگیر.",
+	"🥀 از ریشه‌های خویش جوانه می‌زنم؛ استوارتر از دیروز.",
+	"🪐 در مدار سرنوشت خود، ستاره‌ای بی‌همتایم.",
+	"☕️ تلخ اما سرشار از آرامش، چون خلوت شبانه.",
+	"🌪️ طوفان‌ها برپا می‌شوند تا مسیر را هموار سازند.",
+	"🧿 از چشم بد دور و در پناه روشنایی امید.",
+	"🗝️ کلید پیروزی در صبری سرسختانه نهفته است.",
+	"🏎️ شتابان به پیش؛ ایستادن مرگ جریان‌هاست.",
+	"❄️ خونسرد چون بلور یخ، استوار چون صخره البرز.",
+	"🎭 زندگی صحنه ماست و ما معمار تقدیر خویشیم.",
+	"🐉 شعله‌های باور را در سینه زنده نگاه دار.",
+	"🌟 رویاهایت را خلق کن، پیش از آنکه دیر شود!",
+}
+
 func getRandomEmoji() string {
 	return randomEmojiPool[rand.Intn(len(randomEmojiPool))]
+}
+
+func getRandomBio() string {
+	return randomBioPool[rand.Intn(len(randomBioPool))]
 }
 
 func cleanName(name string) string {
@@ -190,7 +222,11 @@ func InitDB(cfg Config) {
 		original_last_name VARCHAR(255) DEFAULT '',
 		is_emoji_enabled BOOLEAN DEFAULT FALSE,
 		original_first_name VARCHAR(255) DEFAULT '',
-		is_timer_media_enabled BOOLEAN DEFAULT FALSE
+		is_timer_media_enabled BOOLEAN DEFAULT FALSE,
+		is_bio_enabled BOOLEAN DEFAULT FALSE,
+		bio_mode VARCHAR(20) DEFAULT 'random',
+		custom_bio VARCHAR(255) DEFAULT '',
+		original_bio VARCHAR(255) DEFAULT ''
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN last_billed_at DATETIME DEFAULT CURRENT_TIMESTAMP")
@@ -199,6 +235,10 @@ func InitDB(cfg Config) {
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_emoji_enabled BOOLEAN DEFAULT FALSE")
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN original_first_name VARCHAR(255) DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_timer_media_enabled BOOLEAN DEFAULT FALSE")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_bio_enabled BOOLEAN DEFAULT FALSE")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN bio_mode VARCHAR(20) DEFAULT 'random'")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN custom_bio VARCHAR(255) DEFAULT ''")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN original_bio VARCHAR(255) DEFAULT ''")
 
 	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wallets (
@@ -397,6 +437,73 @@ func handleEmojiOff(ctx context.Context, userID int64, client *telegram.Client) 
 	}
 
 	_, _ = db.Exec("UPDATE users SET is_emoji_enabled = FALSE WHERE id = ?", userID)
+}
+
+func handleBioOn(ctx context.Context, userID int64, client *telegram.Client) {
+	var isBioEnabled bool
+	var origBio string
+	_ = db.QueryRow("SELECT is_bio_enabled, original_bio FROM users WHERE id = ?", userID).Scan(&isBioEnabled, &origBio)
+
+	if !isBioEnabled || origBio == "" {
+		full, err := client.API().UsersGetFullUser(ctx, &tg.InputUserSelf{})
+		if err == nil {
+			origBio = full.FullUser.About
+			_, _ = db.Exec("UPDATE users SET original_bio = ? WHERE id = ?", origBio, userID)
+		}
+	}
+
+	bio := getRandomBio()
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetAbout(bio)
+	_, err := client.API().AccountUpdateProfile(ctx, req)
+	if err == nil {
+		_, _ = db.Exec("UPDATE users SET is_bio_enabled = TRUE, bio_mode = 'random' WHERE id = ?", userID)
+	}
+}
+
+func handleBioOff(ctx context.Context, userID int64, client *telegram.Client) {
+	var origBio string
+	_ = db.QueryRow("SELECT original_bio FROM users WHERE id = ?", userID).Scan(&origBio)
+
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetAbout(origBio)
+	_, _ = client.API().AccountUpdateProfile(ctx, req)
+
+	_, _ = db.Exec("UPDATE users SET is_bio_enabled = FALSE WHERE id = ?", userID)
+}
+
+func handleBioRandom(ctx context.Context, userID int64, client *telegram.Client) {
+	bio := getRandomBio()
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetAbout(bio)
+	_, err := client.API().AccountUpdateProfile(ctx, req)
+	if err == nil {
+		_, _ = db.Exec("UPDATE users SET is_bio_enabled = TRUE, bio_mode = 'random' WHERE id = ?", userID)
+	}
+}
+
+func handleBioCustom(ctx context.Context, userID int64, client *telegram.Client, customBio string) {
+	var origBio string
+	_ = db.QueryRow("SELECT original_bio FROM users WHERE id = ?", userID).Scan(&origBio)
+	if origBio == "" {
+		full, err := client.API().UsersGetFullUser(ctx, &tg.InputUserSelf{})
+		if err == nil {
+			origBio = full.FullUser.About
+			_, _ = db.Exec("UPDATE users SET original_bio = ? WHERE id = ?", origBio, userID)
+		}
+	}
+
+	runes := []rune(customBio)
+	if len(runes) > 70 {
+		customBio = string(runes[:70])
+	}
+
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetAbout(customBio)
+	_, err := client.API().AccountUpdateProfile(ctx, req)
+	if err == nil {
+		_, _ = db.Exec("UPDATE users SET is_bio_enabled = TRUE, bio_mode = 'custom', custom_bio = ? WHERE id = ?", customBio, userID)
+	}
 }
 
 func getInputPeer(peer tg.PeerClass, e tg.Entities, selfID int64) tg.InputPeerClass {
@@ -936,6 +1043,104 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "اموجی خاموش شد")
 				}()
 			}
+		} else if text == "بیو روشن شو" || text == "بیو روشن" {
+			handleBioOn(ctx, userID, client)
+			if inputPeer != nil {
+				go func() {
+					dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer dCancel()
+					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "بیو روشن شد")
+				}()
+			}
+		} else if text == "بیو خاموش شو" || text == "بیو خاموش" {
+			handleBioOff(ctx, userID, client)
+			if inputPeer != nil {
+				go func() {
+					dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer dCancel()
+					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "بیو خاموش شد")
+				}()
+			}
+		} else if text == "رندوم شو" {
+			handleBioRandom(ctx, userID, client)
+			if inputPeer != nil {
+				go func() {
+					dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer dCancel()
+					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "بیو به حالت رندوم تغییر یافت")
+				}()
+			}
+		} else if text == "بیو شو" {
+			if msg.ReplyTo == nil {
+				if inputPeer != nil {
+					go func() {
+						dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer dCancel()
+						notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "⚠️ لطفاً روی یک پیام ریپلای کنید!")
+					}()
+				}
+				return
+			}
+			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
+			if !ok || header.ReplyToMsgID == 0 {
+				if inputPeer != nil {
+					go func() {
+						dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer dCancel()
+						notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "⚠️ پیام معتبر نیست!")
+					}()
+				}
+				return
+			}
+
+			go func(replyID int) {
+				dCtx, dCancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer dCancel()
+
+				res, err := client.API().MessagesGetMessages(dCtx, []tg.InputMessageClass{&tg.InputMessageID{ID: replyID}})
+				if err != nil {
+					if inputPeer != nil {
+						notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "❌ خطا در خواندن پیام!")
+					}
+					return
+				}
+
+				var targetText string
+				switch mSlice := res.(type) {
+				case *tg.MessagesMessages:
+					if len(mSlice.Messages) > 0 {
+						if m, ok := mSlice.Messages[0].(*tg.Message); ok {
+							targetText = m.Message
+						}
+					}
+				case *tg.MessagesMessagesSlice:
+					if len(mSlice.Messages) > 0 {
+						if m, ok := mSlice.Messages[0].(*tg.Message); ok {
+							targetText = m.Message
+						}
+					}
+				case *tg.MessagesChannelMessages:
+					if len(mSlice.Messages) > 0 {
+						if m, ok := mSlice.Messages[0].(*tg.Message); ok {
+							targetText = m.Message
+						}
+					}
+				}
+
+				targetText = strings.TrimSpace(targetText)
+				if targetText == "" {
+					if inputPeer != nil {
+						notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "⚠️ پیام متنی یافت نشد!")
+					}
+					return
+				}
+
+				handleBioCustom(dCtx, userID, client, targetText)
+				if inputPeer != nil {
+					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "بیو با موفقیت تنظیم شد")
+				}
+			}(header.ReplyToMsgID)
+
 		} else if text == "بفرست پیوی همه" {
 			go func() {
 				bCtx, bCancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -979,9 +1184,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				cTimeout, cancel := context.WithTimeout(ctx, 15*time.Second)
 				defer cancel()
 
-				var isClock, isEmoji bool
-				var origFirst string
-				_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, original_first_name FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &origFirst)
+				var isClock, isEmoji, isBio bool
+				var origFirst, bioMode, customBio string
+				_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, original_first_name, is_bio_enabled, bio_mode, custom_bio FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &origFirst, &isBio, &bioMode, &customBio)
 
 				if isClock {
 					req := &tg.AccountUpdateProfileRequest{}
@@ -1003,6 +1208,15 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						req.SetFirstName(fmt.Sprintf("%s %s", origFirst, getRandomEmoji()))
 						_, _ = client.API().AccountUpdateProfile(cTimeout, req)
 					}
+				}
+				if isBio {
+					req := &tg.AccountUpdateProfileRequest{}
+					if bioMode == "custom" && customBio != "" {
+						req.SetAbout(customBio)
+					} else {
+						req.SetAbout(getRandomBio())
+					}
+					_, _ = client.API().AccountUpdateProfile(cTimeout, req)
 				}
 			}()
 
@@ -1120,6 +1334,43 @@ func updateEmojis() {
 	activeUserbotsMu.RUnlock()
 }
 
+func updateBios() {
+	if db == nil {
+		return
+	}
+	rows, err := db.Query("SELECT id FROM users WHERE self_status = 'روشن' AND is_bio_enabled = TRUE AND bio_mode = 'random'")
+	if err != nil {
+		return
+	}
+
+	var uids []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err == nil {
+			uids = append(uids, uid)
+		}
+	}
+	rows.Close()
+
+	if len(uids) == 0 {
+		return
+	}
+
+	activeUserbotsMu.RLock()
+	for _, uid := range uids {
+		if ub, ok := activeUserbots[uid]; ok && ub.Client != nil {
+			go func(cl *telegram.Client) {
+				cTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				req := &tg.AccountUpdateProfileRequest{}
+				req.SetAbout(getRandomBio())
+				_, _ = cl.API().AccountUpdateProfile(cTimeout, req)
+			}(ub.Client)
+		}
+	}
+	activeUserbotsMu.RUnlock()
+}
+
 func startClockWorker() {
 	go func() {
 		now := time.Now()
@@ -1142,6 +1393,15 @@ func startEmojiWorker() {
 		ticker := time.NewTicker(10 * time.Minute)
 		for range ticker.C {
 			updateEmojis()
+		}
+	}()
+}
+
+func startBioWorker() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		for range ticker.C {
+			updateBios()
 		}
 	}()
 }
@@ -1933,45 +2193,6 @@ func main() {
 			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
 			startUserbot(userID, cfg, bot)
 
-			go func(uid int64) {
-				time.Sleep(2 * time.Second)
-				activeUserbotsMu.RLock()
-				ub, ok := activeUserbots[uid]
-				activeUserbotsMu.RUnlock()
-				if !ok || ub.Client == nil {
-					return
-				}
-
-				cTimeout, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-
-				var isClock, isEmoji bool
-				var origFirst string
-				_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, original_first_name FROM users WHERE id = ?", uid).Scan(&isClock, &isEmoji, &origFirst)
-
-				if isClock {
-					req := &tg.AccountUpdateProfileRequest{}
-					req.SetLastName(getTehranBoldTime())
-					_, _ = ub.Client.API().AccountUpdateProfile(cTimeout, req)
-				}
-				if isEmoji {
-					if origFirst == "" {
-						self, err := ub.Client.Self(cTimeout)
-						if err == nil {
-							origFirst = cleanName(self.FirstName)
-							if origFirst != "" {
-								_, _ = db.Exec("UPDATE users SET original_first_name = ? WHERE id = ?", origFirst, uid)
-							}
-						}
-					}
-					if origFirst != "" {
-						req := &tg.AccountUpdateProfileRequest{}
-						req.SetFirstName(fmt.Sprintf("%s %s", origFirst, getRandomEmoji()))
-						_, _ = ub.Client.API().AccountUpdateProfile(cTimeout, req)
-					}
-				}
-			}(userID)
-
 			return c.Send("🟢 <b>سلف شما با موفقیت روشن شد و امکانات مجدداً فعال گردید.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
@@ -1994,9 +2215,9 @@ func main() {
 			return c.Send("❌ <b>شما سلف فعالی ندارید.</b>", getKeyboard(userID), tele.ModeHTML)
 		}
 
-		var isClock, isEmoji bool
-		var origLast, origFirst string
-		_ = db.QueryRow("SELECT is_clock_enabled, original_last_name, is_emoji_enabled, original_first_name FROM users WHERE id = ?", userID).Scan(&isClock, &origLast, &isEmoji, &origFirst)
+		var isClock, isEmoji, isBio bool
+		var origLast, origFirst, origBio string
+		_ = db.QueryRow("SELECT is_clock_enabled, original_last_name, is_emoji_enabled, original_first_name, is_bio_enabled, original_bio FROM users WHERE id = ?", userID).Scan(&isClock, &origLast, &isEmoji, &origFirst, &isBio, &origBio)
 
 		activeUserbotsMu.RLock()
 		if ub, ok := activeUserbots[userID]; ok && ub.Client != nil {
@@ -2008,6 +2229,10 @@ func main() {
 			}
 			if isEmoji && origFirst != "" {
 				req.SetFirstName(origFirst)
+				needRevert = true
+			}
+			if isBio && origBio != "" {
+				req.SetAbout(origBio)
 				needRevert = true
 			}
 			if needRevert {
@@ -2061,7 +2286,7 @@ func main() {
 		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
 		_ = os.Remove(sessionPath)
 
-		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE WHERE id = ?", userID)
+		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE, is_bio_enabled = FALSE WHERE id = ?", userID)
 
 		if c.Message() != nil {
 			_ = bot.Delete(c.Message())
@@ -2636,11 +2861,12 @@ func main() {
 		guideMenu := &tele.ReplyMarkup{}
 		btnGuideClock := guideMenu.Data("⏱ ساعت", "guide_clock")
 		btnGuideEmoji := guideMenu.Data("🎭 اموجی", "guide_emoji")
+		btnGuideBio := guideMenu.Data("📝 بیو", "guide_bio")
 		btnGuidePV := guideMenu.Data("📩 پیوی همه", "guide_pv")
 		btnGuideGroup := guideMenu.Data("👥 گروه همه", "guide_group")
 		guideMenu.Inline(
-			guideMenu.Row(btnGuideClock, btnGuideEmoji, btnGuidePV),
-			guideMenu.Row(btnGuideGroup),
+			guideMenu.Row(btnGuideClock, btnGuideEmoji, btnGuideBio),
+			guideMenu.Row(btnGuidePV, btnGuideGroup),
 		)
 		return guideMenu
 	}
@@ -2732,6 +2958,50 @@ func main() {
 		return c.Respond()
 	})
 
+	bot.Handle(&tele.Btn{Unique: "guide_bio"}, func(c tele.Context) error {
+		userID := c.Sender().ID
+		selfStatus := GetUserSelfStatus(userID)
+		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید.", ShowAlert: true})
+		}
+
+		var isBioEnabled bool
+		var bioMode string
+		_ = db.QueryRow("SELECT is_bio_enabled, bio_mode FROM users WHERE id = ?", userID).Scan(&isBioEnabled, &bioMode)
+		statusStr := "🔴 خاموش"
+		if isBioEnabled {
+			if bioMode == "custom" {
+				statusStr = "🟢 روشن (متن انتخابی)"
+			} else {
+				statusStr = "🟢 روشن (رندوم چرخشی)"
+			}
+		}
+
+		backMenu := &tele.ReplyMarkup{}
+		btnBackGuide := backMenu.Data("🔙 بازگشت", "guide_back")
+		backMenu.Inline(backMenu.Row(btnBackGuide))
+
+		text := fmt.Sprintf("📝 <b>راهنمای بیوگرافی هوشمند و چرخشی</b>\n\n"+
+			"با این ابزار می‌توانید از میان ۲۵ جمله و شعر جذاب با اموجی‌های خاص، بیوگرافی چرخشی داشته باشید یا هر متنی را مستقیماً به بیو تبدیل کنید.\n\n"+
+			"📌 <b>وضعیت فعلی برای شما:</b> %s\n\n"+
+			"🟢 <b>روشن کردن بیو چرخشی:</b>\n"+
+			"<code>بیو روشن</code> یا <code>بیو روشن شو</code>\n\n"+
+			"🔴 <b>خاموش کردن و بازگردانی بیو قبلی:</b>\n"+
+			"<code>بیو خاموش</code> یا <code>بیو خاموش شو</code>\n\n"+
+			"🎲 <b>بازگشت به بیو رندوم:</b>\n"+
+			"<code>رندوم شو</code>\n\n"+
+			"✍️ <b>تبدیل متن پیام به بیو:</b>\n"+
+			"روی هر پیامی در چت‌ها ریپلای کنید و بفرستید:\n"+
+			"<code>بیو شو</code>", statusStr)
+
+		if c.Message() != nil {
+			_ = c.Edit(text, backMenu, tele.ModeHTML)
+		} else {
+			_ = c.Send(text, backMenu, tele.ModeHTML)
+		}
+		return c.Respond()
+	})
+
 	bot.Handle(&tele.Btn{Unique: "guide_pv"}, func(c tele.Context) error {
 		userID := c.Sender().ID
 		selfStatus := GetUserSelfStatus(userID)
@@ -2793,6 +3063,7 @@ func main() {
 	startBillingWorker(bot)
 	startClockWorker()
 	startEmojiWorker()
+	startBioWorker()
 
 	rows, err := db.Query("SELECT id FROM users WHERE self_status = 'روشن'")
 	if err == nil {

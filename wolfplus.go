@@ -159,7 +159,6 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 
 	// بخش راهنماها
 	bot.Handle(&tele.Btn{Unique: "wp_guide"}, func(c tele.Context) error {
-		userID := c.Sender().ID
 		target := c.Data()
 
 		backMenu := &tele.ReplyMarkup{}

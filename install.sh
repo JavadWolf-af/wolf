@@ -1,9 +1,55 @@
 #!/bin/bash
+set -e
+
 echo "🚀 Preparing server and installing dependencies..."
 apt update
-apt install mariadb-server golang-go git -y
+apt install mariadb-server git curl wget build-essential -y
+
+echo "🔍 Checking Go version..."
+NEED_GO_INSTALL=1
+
+if command -v go >/dev/null 2>&1; then
+    CURRENT_GO_RAW=$(go version | awk '{print $3}' | sed 's/go//')
+    GO_MAJOR=$(echo "$CURRENT_GO_RAW" | cut -d. -f1)
+    GO_MINOR=$(echo "$CURRENT_GO_RAW" | cut -d. -f2)
+
+    if [ "$GO_MAJOR" -ge 1 ] && [ "$GO_MINOR" -ge 21 ]; then
+        echo "✅ Go version $CURRENT_GO_RAW is already installed and supported (>= 1.21)."
+        NEED_GO_INSTALL=0
+    else
+        echo "⚠️ Outdated Go version detected ($CURRENT_GO_RAW). Upgrading..."
+    fi
+fi
+
+if [ "$NEED_GO_INSTALL" -eq 1 ]; then
+    echo "🧹 Removing obsolete Go versions..."
+    apt remove -y golang-go gccgo-go 2>/dev/null || true
+    apt autoremove -y 2>/dev/null || true
+    rm -rf /usr/local/go /usr/bin/go /usr/bin/gofmt
+
+    echo "📦 Downloading and installing latest official Go..."
+    LATEST_GO=$(curl -sSL "https://go.dev/VERSION?m=text" | head -n1)
+    if [ -z "$LATEST_GO" ]; then
+        LATEST_GO="go1.22.5"
+    fi
+
+    wget -4 -q --show-progress "https://go.dev/dl/${LATEST_GO}.linux-amd64.tar.gz" -O /tmp/go.tar.gz
+    tar -C /usr/local -xzf /tmp/go.tar.gz
+    rm -f /tmp/go.tar.gz
+
+    ln -sf /usr/local/go/bin/go /usr/bin/go
+    ln -sf /usr/local/go/bin/gofmt /usr/bin/gofmt
+    
+    if ! grep -q "/usr/local/go/bin" ~/.bashrc; then
+        echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+    fi
+    export PATH=$PATH:/usr/local/go/bin
+fi
+
+echo "✅ Active Go version: $(go version)"
 
 echo "🗄️ Configuring MySQL database..."
+systemctl start mariadb || systemctl start mysql || true
 mysql -e "CREATE DATABASE IF NOT EXISTS wolf_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mysql -e "CREATE USER IF NOT EXISTS 'wolf_user'@'localhost' IDENTIFIED BY 'wolf_password';"
 mysql -e "GRANT ALL PRIVILEGES ON wolf_db.* TO 'wolf_user'@'localhost';"
@@ -13,6 +59,7 @@ echo "📥 Cloning Wolf repository..."
 systemctl stop wolfbot 2>/dev/null || true
 rm -rf /opt/wolf
 git clone https://github.com/JavadWolf-af/wolf /opt/wolf
+mkdir -p /opt/wolf/sessions
 cd /opt/wolf || exit 1
 
 if [ ! -f .env ]; then
@@ -50,8 +97,8 @@ C_CYAN='\033[0;36m'
 C_PURPLE='\033[0;35m'
 
 echo -e "${C_CYAN}${C_BOLD}"
-echo "  __          __   _  __   _____      _  __"
-echo "  \ \        / /  | |/ _| / ____|    | |/ _|"
+echo "  __          _  __   _____      _  __"
+echo "  \ \        / / | |/ _| / ____|    | |/ _|"
 echo "   \ \  /\  / /__ | | |_ | (___   ___| | |_ "
 echo "    \ \/  \/ / _ \| |  _| \___ \ / _ \ |  _|"
 echo "     \  /\  / (_) | | |   ____) |  __/ | |  "
@@ -59,6 +106,8 @@ echo "      \/  \/ \___/|_|_|  |_____/ \___|_|_|  "
 echo -e "          ${C_YELLOW}>>> WOLF SELF-BOT UPDATE MANAGER <<<${C_RESET}\n"
 
 cd /opt/wolf || exit 1
+
+export PATH=$PATH:/usr/local/go/bin:/usr/bin
 
 echo -e "${C_BLUE}[  5% ]${C_RESET} ${C_BOLD}Checking for remote updates...${C_RESET}"
 git fetch --all --quiet

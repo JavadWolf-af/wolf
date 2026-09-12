@@ -46,6 +46,14 @@ if [ "$NEED_GO_INSTALL" -eq 1 ]; then
     export PATH=$PATH:/usr/local/go/bin
 fi
 
+# تنظیم پروکسی تحریم‌شکن سراسری Go
+go env -w GOPROXY=https://goproxy.io,direct
+
+if ! grep -q "GOPROXY" ~/.bashrc; then
+    echo 'export GOPROXY=https://goproxy.io,direct' >> ~/.bashrc
+fi
+export GOPROXY=https://goproxy.io,direct
+
 echo "✅ Active Go version: $(go version)"
 
 echo "🗄️ Configuring MySQL database..."
@@ -108,6 +116,7 @@ echo -e "          ${C_YELLOW}>>> WOLF SELF-BOT UPDATE MANAGER <<<${C_RESET}\n"
 cd /opt/wolf || exit 1
 
 export PATH=$PATH:/usr/local/go/bin:/usr/bin
+export GOPROXY=https://goproxy.io,direct
 
 echo -e "${C_BLUE}[  5% ]${C_RESET} ${C_BOLD}Checking for remote updates...${C_RESET}"
 git fetch --all --quiet

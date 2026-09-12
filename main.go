@@ -42,6 +42,7 @@ type Config struct {
 }
 
 var db *sql.DB
+var getMainKeyboard func(userID int64) *tele.ReplyMarkup
 
 var (
 	stateMu        sync.RWMutex
@@ -806,7 +807,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 	}
 	activeUserbotsMu.Unlock()
 
-	// اتصال سیستم شنود ضد حذف و لاگر ادیت به سلف‌بات
+	// اتصال سیستم مانیتورینگ ضد حذف و ادیت لاگر
 	RegisterWolfPlusDispatcher(&dispatcher, client, userID)
 
 	handleMsg := func(ctx context.Context, e tg.Entities, message tg.MessageClass) {
@@ -815,7 +816,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			return
 		}
 
-		// پردازش کش ضد حذف و دریافت مدیاهای تایمردار
+		// پردازش پیام‌های دریافتی برای کش کردن و رسانه‌های تایمردار
 		WolfPlusHandleIncoming(ctx, client, bot, userID, msg, e)
 
 		var inputPeer tg.InputPeerClass
@@ -1441,7 +1442,6 @@ func main() {
 	InitDB(cfg)
 	defer db.Close()
 
-	// آماده‌سازی دیتابیس امکانات ولف +
 	InitWolfPlusDB()
 
 	pref := tele.Settings{
@@ -1543,6 +1543,7 @@ func main() {
 		}
 		return userMenu
 	}
+	getMainKeyboard = getKeyboard
 
 	getAdminDashboard := func() string {
 		var totalUsers, activeUsers, blockedUsers int
@@ -1716,7 +1717,7 @@ func main() {
 		return c.Send(text, profileMenu, tele.ModeHTML)
 	})
 
-	// اتصال بخش «ولف +» به جای محرمانه‌ها
+	// ورود به ولف +
 	bot.Handle(&btnWolfPlus, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -1728,10 +1729,10 @@ func main() {
 			return c.Send("❌ <b>دسترسی محدود!</b>\n\nامکانات ویژه ولف + فقط برای کاربرانی که اشتراک سلف را فعال دارند در دسترس است.", getKeyboard(userID), tele.ModeHTML)
 		}
 
-		return c.Send(buildWolfPlusDashboardText(userID), buildWolfPlusKeyboard(userID), tele.ModeHTML)
+		return c.Send(buildWolfPlusDashboardText(userID), wolfPlusMenu, tele.ModeHTML)
 	})
 
-	// ثبت هندلرهای اینلاین مربوط به بخش ولف +
+	// ثبت هندلرهای ماژول ولف +
 	RegisterWolfPlusHandlers(bot)
 
 	getWalletInlineKeyboard := func() *tele.ReplyMarkup {
@@ -2436,6 +2437,11 @@ func main() {
 	})
 
 	bot.Handle(tele.OnText, func(c tele.Context) error {
+		// بررسی ورودی‌های ماژول ولف +
+		if HandleWolfPlusText(c) {
+			return nil
+		}
+
 		userID := c.Sender().ID
 		text := strings.TrimSpace(c.Text())
 

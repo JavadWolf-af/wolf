@@ -807,7 +807,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 	activeUserbotsMu.Unlock()
 
 	// اتصال سیستم شنود ضد حذف و لاگر ادیت به سلف‌بات
-	RegisterWolfPlusDispatcher(dispatcher, client, userID)
+	RegisterWolfPlusDispatcher(&dispatcher, client, userID)
 
 	handleMsg := func(ctx context.Context, e tg.Entities, message tg.MessageClass) {
 		msg, ok := message.(*tg.Message)

@@ -4,19 +4,92 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tele "gopkg.in/telebot.v3"
 
 	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 )
 
-// InitWolfPlusDB ساخت جداول و فیلدهای دیتابیس برای ولف +
+var (
+	wolfPlusStatesMu sync.RWMutex
+	wolfPlusStates   = make(map[int64]string)
+)
+
+// منوهای کیبورد ثابت ولف +
+var (
+	wolfPlusMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
+	antiDelMenu  = &tele.ReplyMarkup{ResizeKeyboard: true}
+	editLogMenu  = &tele.ReplyMarkup{ResizeKeyboard: true}
+	timerMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
+	groupDelMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
+
+	// دکمه‌های منوی اصلی ولف +
+	btnWP_AntiDel   = wolfPlusMenu.Text("🗑 ضد حذف")
+	btnWP_EditLog   = wolfPlusMenu.Text("📝 ادیت لاگر")
+	btnWP_Timer     = wolfPlusMenu.Text("📸 رسانه تایمردار")
+	btnWP_Group     = wolfPlusMenu.Text("👥 ضد حذف گروه")
+	btnWP_Refresh   = wolfPlusMenu.Text("🔄 بروزرسانی وضعیت")
+	btnWP_BackMain  = wolfPlusMenu.Text("🔙 بازگشت به منوی اصلی")
+
+	// دکمه‌های ضد حذف
+	btnAD_On    = antiDelMenu.Text("🟢 روشن کردن ضد حذف")
+	btnAD_Off   = antiDelMenu.Text("🔴 خاموش کردن ضد حذف")
+	btnAD_Back  = antiDelMenu.Text("🔙 بازگشت به ولف +")
+
+	// دکمه‌های ادیت لاگر
+	btnEL_On    = editLogMenu.Text("🟢 روشن کردن ادیت لاگر")
+	btnEL_Off   = editLogMenu.Text("🔴 خاموش کردن ادیت لاگر")
+	btnEL_Back  = editLogMenu.Text("🔙 بازگشت به ولف +")
+
+	// دکمه‌های رسانه تایمردار
+	btnTM_On    = timerMenu.Text("🟢 روشن کردن تایمردار")
+	btnTM_Off   = timerMenu.Text("🔴 خاموش کردن تایمردار")
+	btnTM_Back  = timerMenu.Text("🔙 بازگشت به ولف +")
+
+	// دکمه‌های ضد حذف گروه
+	btnGD_Add   = groupDelMenu.Text("➕ افزودن گروه به ضد حذف")
+	btnGD_Clear = groupDelMenu.Text("🗑 پاکسازی لیست گروه‌ها")
+	btnGD_Back  = groupDelMenu.Text("🔙 بازگشت به ولف +")
+)
+
+func init() {
+	wolfPlusMenu.Reply(
+		wolfPlusMenu.Row(btnWP_AntiDel, btnWP_EditLog),
+		wolfPlusMenu.Row(btnWP_Timer, btnWP_Group),
+		wolfPlusMenu.Row(btnWP_Refresh, btnWP_BackMain),
+	)
+
+	antiDelMenu.Reply(
+		antiDelMenu.Row(btnAD_On, btnAD_Off),
+		antiDelMenu.Row(btnAD_Back),
+	)
+
+	editLogMenu.Reply(
+		editLogMenu.Row(btnEL_On, btnEL_Off),
+		editLogMenu.Row(btnEL_Back),
+	)
+
+	timerMenu.Reply(
+		timerMenu.Row(btnTM_On, btnTM_Off),
+		timerMenu.Row(btnTM_Back),
+	)
+
+	groupDelMenu.Reply(
+		groupDelMenu.Row(btnGD_Add, btnGD_Clear),
+		groupDelMenu.Row(btnGD_Back),
+	)
+}
+
+// آماده‌سازی جداول دیتابیس
 func InitWolfPlusDB() {
 	if db == nil {
 		return
@@ -33,35 +106,63 @@ func InitWolfPlusDB() {
 		message_id INT,
 		sender_id BIGINT,
 		sender_name VARCHAR(255),
+		chat_name VARCHAR(255) DEFAULT 'چت خصوصی',
 		message_text TEXT,
+		media_type VARCHAR(50) DEFAULT 'متن',
+		cached_file_path VARCHAR(500) DEFAULT '',
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY (owner_id, chat_id, message_id),
 		KEY idx_owner_msg (owner_id, message_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
-	// پاک‌سازی دوره‌ای کش پیام‌های قدیمی‌تر از ۲۴ ساعت
+	_, _ = db.Exec("ALTER TABLE wolf_message_cache ADD COLUMN chat_name VARCHAR(255) DEFAULT 'چت خصوصی'")
+	_, _ = db.Exec("ALTER TABLE wolf_message_cache ADD COLUMN media_type VARCHAR(50) DEFAULT 'متن'")
+	_, _ = db.Exec("ALTER TABLE wolf_message_cache ADD COLUMN cached_file_path VARCHAR(500) DEFAULT ''")
+
+	_, _ = db.Exec(`
+	CREATE TABLE IF NOT EXISTS wolf_antidel_groups (
+		owner_id BIGINT,
+		chat_id BIGINT,
+		chat_title VARCHAR(255),
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (owner_id, chat_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
+
+	// پاک‌سازی کش‌های فایل و دیتابیس قدیمی‌تر از ۲۴ ساعت
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		for range ticker.C {
 			if db != nil {
+				rows, err := db.Query("SELECT cached_file_path FROM wolf_message_cache WHERE created_at < NOW() - INTERVAL 1 DAY AND cached_file_path != ''")
+				if err == nil {
+					for rows.Next() {
+						var path string
+						if err := rows.Scan(&path); err == nil && path != "" {
+							_ = os.Remove(path)
+						}
+					}
+					rows.Close()
+				}
 				_, _ = db.Exec("DELETE FROM wolf_message_cache WHERE created_at < NOW() - INTERVAL 1 DAY")
 			}
 		}
 	}()
 }
 
-// دریافت وضعیت فعال بودن هر ۳ قابلیت برای کاربر
-func getWolfPlusStatus(userID int64) (antiDelete, editLogger, timerMedia bool) {
+// وضعیت امکانات
+func getWolfPlusStatus(userID int64) (antiDelete, editLogger, timerMedia bool, groupCount int) {
 	_ = db.QueryRow(`
 		SELECT is_anti_delete_enabled, is_edit_logger_enabled, is_timer_media_enabled 
 		FROM users WHERE id = ?
 	`, userID).Scan(&antiDelete, &editLogger, &timerMedia)
+
+	_ = db.QueryRow("SELECT COUNT(*) FROM wolf_antidel_groups WHERE owner_id = ?", userID).Scan(&groupCount)
 	return
 }
 
-// متن داشبورد ولف +
+// متن داشبورد اصلی ولف +
 func buildWolfPlusDashboardText(userID int64) string {
-	antiDel, editLog, timerMed := getWolfPlusStatus(userID)
+	antiDel, editLog, timerMed, groupCount := getWolfPlusStatus(userID)
 
 	statusIcon := func(b bool) string {
 		if b {
@@ -73,144 +174,333 @@ func buildWolfPlusDashboardText(userID int64) string {
 	return fmt.Sprintf(`🐺 <b>پنل امکانات پیشرفته | ولف + (Wolf+)</b>
 ➖➖➖➖➖➖➖➖➖➖
 📊 <b>وضعیت لحظه‌ای امکانات:</b>
-▫️ 🗑 <b>ضد حذف (Anti-Delete):</b> %s
-▫️ 📝 <b>لاگر ادیت (Edit Logger):</b> %s
+▫️ 🗑 <b>ضد حذف پیوی (Anti-Delete):</b> %s
+▫️ 📝 <b>لاگر ادیت پیوی (Edit Logger):</b> %s
 ▫️ 📸 <b>رسانه تایمردار (View-Once):</b> %s
+▫️ 👥 <b>ضد حذف گروه:</b> <code>%d گروه مانیتور شده</code>
 ➖➖➖➖➖➖➖➖➖➖
-💡 <i>برای روشن/خاموش کردن هر قابلیت یا مطالعه راهنمای آن، از دکمه‌های شیشه‌ای زیر استفاده کنید:</i>`,
-		statusIcon(antiDel), statusIcon(editLog), statusIcon(timerMed),
+💡 <i>برای ورود به تنظیمات و راهنمای هر قابلیت، گزینه مورد نظر را از کیبورد ثابت زیر لمس کنید:</i>`,
+		statusIcon(antiDel), statusIcon(editLog), statusIcon(timerMed), groupCount,
 	)
 }
 
-// کیبورد شیشه‌ای منوی ولف +
-func buildWolfPlusKeyboard(userID int64) *tele.ReplyMarkup {
-	menu := &tele.ReplyMarkup{}
-	antiDel, editLog, timerMed := getWolfPlusStatus(userID)
+// دریافت لیست گروه‌های مانیتور شده
+func getMonitoredGroupsText(ownerID int64) string {
+	rows, err := db.Query("SELECT chat_id, chat_title FROM wolf_antidel_groups WHERE owner_id = ?", ownerID)
+	if err != nil {
+		return "<i>خطا در دریافت لیست گروه‌ها.</i>"
+	}
+	defer rows.Close()
 
-	btnAntiDelText := "🔴 ضد حذف: خاموش"
-	if antiDel {
-		btnAntiDelText = "🟢 ضد حذف: روشن"
+	var list []string
+	idx := 1
+	for rows.Next() {
+		var cid int64
+		var title string
+		if err := rows.Scan(&cid, &title); err == nil {
+			list = append(list, fmt.Sprintf("%d. <b>%s</b> (<code>%d</code>)", idx, html.EscapeString(title), cid))
+			idx++
+		}
 	}
 
-	btnEditLogText := "🔴 ادیت لاگر: خاموش"
-	if editLog {
-		btnEditLogText = "🟢 ادیت لاگر: روشن"
+	if len(list) == 0 {
+		return "⚠️ <i>در حال حاضر هیچ گروهی ثبت نشده و ضد حذف فقط در پیوی‌های خصوصی فعال است.</i>"
 	}
-
-	btnTimerText := "🔴 تایمردار: خاموش"
-	if timerMed {
-		btnTimerText = "🟢 تایمردار: روشن"
-	}
-
-	btnToggleAntiDel := menu.Data(btnAntiDelText, "wp_toggle", "antidel")
-	btnGuideAntiDel := menu.Data("📖 راهنما", "wp_guide", "antidel")
-
-	btnToggleEditLog := menu.Data(btnEditLogText, "wp_toggle", "editlog")
-	btnGuideEditLog := menu.Data("📖 راهنما", "wp_guide", "editlog")
-
-	btnToggleTimer := menu.Data(btnTimerText, "wp_toggle", "timer")
-	btnGuideTimer := menu.Data("📖 راهنما", "wp_guide", "timer")
-
-	btnRefresh := menu.Data("🔄 بروزرسانی وضعیت", "wp_refresh")
-
-	menu.Inline(
-		menu.Row(btnToggleAntiDel, btnGuideAntiDel),
-		menu.Row(btnToggleEditLog, btnGuideEditLog),
-		menu.Row(btnToggleTimer, btnGuideTimer),
-		menu.Row(btnRefresh),
-	)
-
-	return menu
+	return "📋 <b>گروه‌های مانیتور شده فعلی:</b>\n" + strings.Join(list, "\n")
 }
 
-// ثبت هندلرهای دکمه‌های ولف + در ربات تلگرام
+// ثبت هندلرهای کیبورد ثابت ولف +
 func RegisterWolfPlusHandlers(bot *tele.Bot) {
-	// تغییر وضعیت (Toggle)
-	bot.Handle(&tele.Btn{Unique: "wp_toggle"}, func(c tele.Context) error {
+	// ورود به منوی ولف + یا رفرش وضعیت
+	showDashboard := func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ حساب شما مسدود است."})
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
+		selfStatus := GetUserSelfStatus(userID)
+		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
+			return c.Send("❌ <b>دسترسی محدود!</b>\n\nامکانات ویژه ولف + فقط برای کاربرانی که اشتراک سلف را فعال دارند در دسترس است.", getMainKeyboard(userID), tele.ModeHTML)
 		}
 
-		target := c.Data()
-		var column string
-		var alertMsg string
+		wolfPlusStatesMu.Lock()
+		delete(wolfPlusStates, userID)
+		wolfPlusStatesMu.Unlock()
 
-		switch target {
-		case "antidel":
-			column = "is_anti_delete_enabled"
-			alertMsg = "وضعیت ضد حذف تغییر کرد."
-		case "editlog":
-			column = "is_edit_logger_enabled"
-			alertMsg = "وضعیت ثبت ادیت تغییر کرد."
-		case "timer":
-			column = "is_timer_media_enabled"
-			alertMsg = "وضعیت رسانه تایمردار تغییر کرد."
-		default:
-			return c.Respond()
-		}
+		return c.Send(buildWolfPlusDashboardText(userID), wolfPlusMenu, tele.ModeHTML)
+	}
 
-		query := fmt.Sprintf("UPDATE users SET %s = NOT %s WHERE id = ?", column, column)
-		_, _ = db.Exec(query, userID)
+	bot.Handle(&btnWP_Refresh, showDashboard)
+	bot.Handle(&btnAD_Back, showDashboard)
+	bot.Handle(&btnEL_Back, showDashboard)
+	bot.Handle(&btnTM_Back, showDashboard)
+	bot.Handle(&btnGD_Back, showDashboard)
 
-		_ = c.Edit(buildWolfPlusDashboardText(userID), buildWolfPlusKeyboard(userID), tele.ModeHTML)
-		return c.Respond(&tele.CallbackResponse{Text: "✅ " + alertMsg})
-	})
-
-	// بخش راهنماها
-	bot.Handle(&tele.Btn{Unique: "wp_guide"}, func(c tele.Context) error {
-		target := c.Data()
-
-		backMenu := &tele.ReplyMarkup{}
-		btnBack := backMenu.Data("🔙 بازگشت به منوی ولف +", "wp_back")
-		backMenu.Inline(backMenu.Row(btnBack))
-
-		var guideText string
-		switch target {
-		case "antidel":
-			guideText = `🗑 <b>راهنمای جامع ضد حذف (Anti-Delete)</b>
-
-🔹 <b>این قابلیت چه کاری انجام می‌دهد؟</b>
-به محض دریافت هر پیام متنی در پی‌وی یا گروه‌ها، ربات آن را درون حافظه موقت دیتابیس کش می‌کند. اگر فرستنده پیام خود را به هر دلیلی «حذف دوطرفه» کند، سلف‌بات بلافاصله متوجه حذف شده و یک نسخه کامل از متن پاک‌شده را همراه با نام فرستنده، آیدی عددی و ساعت دقیق به <b>پیام‌های ذخیره‌شده (Saved Messages)</b> شما ارسال می‌کند.`
-
-		case "editlog":
-			guideText = `📝 <b>راهنمای جامع لاگر ادیت (Edit Logger)</b>
-
-🔹 <b>این قابلیت چه کاری انجام می‌دهد؟</b>
-اگر کاربری پیامی برای شما بفرستد و سپس آن را ویرایش (Edit) کند، ربات نسخه قبل از ادیت و نسخه جدید بعد از ادیت را با یکدیگر مقایسه می‌کند. سپس گزارشی شامل متن اولیه، متن تغییر‌یافته، مشخصات فرستنده و زمان دقیق ادیت را در <b>پیام‌های ذخیره‌شده (Saved Messages)</b> شما ثبت می‌کند.`
-
-		case "timer":
-			guideText = `📸 <b>راهنمای جامع رسانه تایمردار (View-Once)</b>
-
-🔹 <b>این قابلیت چه کاری انجام می‌دهد؟</b>
-تلگرام به افراد اجازه می‌دهد عکس یا ویدیوی زمان‌دار و یک‌بار مصرف بفرستند که پس از دیدن ناپدید می‌شود. با فعال بودن این گزینه، ربات فایل را به محض رسیدن و قبل از باز شدن توسط شما به طور خودکار دانلود کرده و نسخه بدون محدودیت زمانی آن را مستقیماً در همین ربات برای شما ارسال می‌کند.`
-		}
-
-		return c.Edit(guideText, backMenu, tele.ModeHTML)
-	})
-
-	// دکمه بازگشت به پنل اصلی ولف +
-	bot.Handle(&tele.Btn{Unique: "wp_back"}, func(c tele.Context) error {
+	// بازگشت به منوی اصلی ربات
+	bot.Handle(&btnWP_BackMain, func(c tele.Context) error {
 		userID := c.Sender().ID
-		return c.Edit(buildWolfPlusDashboardText(userID), buildWolfPlusKeyboard(userID), tele.ModeHTML)
+		wolfPlusStatesMu.Lock()
+		delete(wolfPlusStates, userID)
+		wolfPlusStatesMu.Unlock()
+		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getMainKeyboard(userID), tele.ModeHTML)
 	})
 
-	// رفرش کردن وضعیت
-	bot.Handle(&tele.Btn{Unique: "wp_refresh"}, func(c tele.Context) error {
+	// بخش ضد حذف
+	bot.Handle(&btnWP_AntiDel, func(c tele.Context) error {
 		userID := c.Sender().ID
-		_ = c.Edit(buildWolfPlusDashboardText(userID), buildWolfPlusKeyboard(userID), tele.ModeHTML)
-		return c.Respond(&tele.CallbackResponse{Text: "🔄 وضعیت به‌روز شد."})
+		antiDel, _, _, _ := getWolfPlusStatus(userID)
+		statusStr := "🔴 خاموش"
+		if antiDel {
+			statusStr = "🟢 روشن"
+		}
+
+		text := fmt.Sprintf(`🗑 <b>مدیریت ضد حذف پیام‌ها (Anti-Delete)</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی شما:</b> %s
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+این قابلیت کلیه پیام‌های متنی، عکس، صوت، ویدیو و فایل‌های دریافتی در <b>چت‌های خصوصی (پیوی)</b> را کش می‌کند.
+اگر شخصی پیامی را به صورت دوطرفه حذف کند، سلف‌بات نسخه کامل آن را به همراه مشخصات فرستنده بلافاصله در <b>پیام‌های ذخیره‌شده (Saved Messages)</b> ارسال می‌کند.
+
+⚠️ <i>ربات به هیچ عنوان به پیام‌های ارسالی خود شما واکنش نشان نمی‌دهد.</i>`, statusStr)
+		return c.Send(text, antiDelMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnAD_On, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_anti_delete_enabled = TRUE WHERE id = ?", userID)
+		return c.Send("🟢 <b>قابلیت ضد حذف پیوی روشن شد.</b>", antiDelMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnAD_Off, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_anti_delete_enabled = FALSE WHERE id = ?", userID)
+		return c.Send("🔴 <b>قابلیت ضد حذف خاموش شد.</b>", antiDelMenu, tele.ModeHTML)
+	})
+
+	// بخش ادیت لاگر
+	bot.Handle(&btnWP_EditLog, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, editLog, _, _ := getWolfPlusStatus(userID)
+		statusStr := "🔴 خاموش"
+		if editLog {
+			statusStr = "🟢 روشن"
+		}
+
+		text := fmt.Sprintf(`📝 <b>مدیریت لاگر ویرایش (Edit Logger)</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی شما:</b> %s
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+اگر کاربری در گفتگوی خصوصی متنی را برای شما ارسال کرده و سپس آن را ویرایش (Edit) کند، ربات نسخه اولیه و متن جدید را استخراج کرده و گزارش تغییرات را در <b>Saved Messages</b> شما ارسال می‌کند.
+
+⚠️ <i>به ادیت‌های پیام‌های خود اکانت هیچ واکنشی نشان داده نمی‌شود.</i>`, statusStr)
+		return c.Send(text, editLogMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnEL_On, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_edit_logger_enabled = TRUE WHERE id = ?", userID)
+		return c.Send("🟢 <b>قابلیت ادیت لاگر روشن شد.</b>", editLogMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnEL_Off, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_edit_logger_enabled = FALSE WHERE id = ?", userID)
+		return c.Send("🔴 <b>قابلیت ادیت لاگر خاموش شد.</b>", editLogMenu, tele.ModeHTML)
+	})
+
+	// بخش رسانه تایمردار
+	bot.Handle(&btnWP_Timer, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _, timerMed, _ := getWolfPlusStatus(userID)
+		statusStr := "🔴 خاموش"
+		if timerMed {
+			statusStr = "🟢 روشن"
+		}
+
+		text := fmt.Sprintf(`📸 <b>مدیریت رسانه های تایمردار (View-Once)</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی شما:</b> %s
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+با روشن بودن این قابلیت، هر عکس یا ویدیوی یک‌بار مصرف و زمان‌داری که در چت خصوصی ارسال شود، قبل از محو شدن به طور خودکار دانلود شده و نسخه دائمی آن در ربات برای شما ارسال می‌گردد.`, statusStr)
+		return c.Send(text, timerMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnTM_On, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_timer_media_enabled = TRUE WHERE id = ?", userID)
+		return c.Send("🟢 <b>قابلیت ذخیره رسانه تایمردار روشن شد.</b>", timerMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnTM_Off, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_timer_media_enabled = FALSE WHERE id = ?", userID)
+		return c.Send("🔴 <b>قابلیت ذخیره رسانه تایمردار خاموش شد.</b>", timerMenu, tele.ModeHTML)
+	})
+
+	// بخش ضد حذف گروه
+	bot.Handle(&btnWP_Group, func(c tele.Context) error {
+		userID := c.Sender().ID
+		groupsList := getMonitoredGroupsText(userID)
+
+		text := fmt.Sprintf(`👥 <b>مدیریت ضد حذف گروه‌ها (Group Anti-Delete)</b>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+برای جلوگیری از شلوغی و ترافیک بالا، سلف‌بات در گروه‌ها به هیچ پیامی واکنش نشان نمی‌دهد.
+چنانچه می‌خواهید ضد حذف در گروه‌های خاصی فعال شود، می‌توانید آیدی یا لینک آن گروه را در این بخش ثبت کنید.
+➖➖➖➖➖➖➖➖➖➖
+%s`, groupsList)
+		return c.Send(text, groupDelMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnGD_Add, func(c tele.Context) error {
+		userID := c.Sender().ID
+		wolfPlusStatesMu.Lock()
+		wolfPlusStates[userID] = "waiting_for_group_input"
+		wolfPlusStatesMu.Unlock()
+
+		return c.Send("➕ <b>افزودن گروه به لیست ضد حذف</b>\n\nلطفاً <b>آیدی عددی گروه</b> (مثلاً <code>-1001234567890</code>) یا <b>یوزرنیم گروه</b> (مثلاً <code>@MyGroup</code>) را ارسال کنید:", groupDelMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnGD_Clear, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("DELETE FROM wolf_antidel_groups WHERE owner_id = ?", userID)
+		return c.Send("🗑 <b>تمام گروه‌ها از لیست ضد حذف حذف شدند.</b>\nاز این پس ضد حذف تنها در پیوی فعال است.", groupDelMenu, tele.ModeHTML)
 	})
 }
 
-// شنود و کش پیام‌های ورودی و رسانه‌های تایمردار
+// پردازش متن ارسالی برای ثبت گروه
+func HandleWolfPlusText(c tele.Context) bool {
+	userID := c.Sender().ID
+	wolfPlusStatesMu.RLock()
+	state, exists := wolfPlusStates[userID]
+	wolfPlusStatesMu.RUnlock()
+
+	if !exists || state != "waiting_for_group_input" {
+		return false
+	}
+
+	text := strings.TrimSpace(c.Text())
+	if text == "🔙 بازگشت به ولف +" || text == "🔙 بازگشت به منوی اصلی" {
+		wolfPlusStatesMu.Lock()
+		delete(wolfPlusStates, userID)
+		wolfPlusStatesMu.Unlock()
+		return false
+	}
+
+	// حالت ۱: آیدی عددی مستقیم
+	cleanID := text
+	if strings.HasPrefix(cleanID, "-100") || strings.HasPrefix(cleanID, "-") {
+		chatID, err := strconv.ParseInt(cleanID, 10, 64)
+		if err == nil {
+			title := fmt.Sprintf("گروه (%d)", chatID)
+			_, _ = db.Exec(`
+				INSERT INTO wolf_antidel_groups (owner_id, chat_id, chat_title)
+				VALUES (?, ?, ?)
+				ON DUPLICATE KEY UPDATE chat_title = VALUES(chat_title)
+			`, userID, chatID, title)
+
+			wolfPlusStatesMu.Lock()
+			delete(wolfPlusStates, userID)
+			wolfPlusStatesMu.Unlock()
+
+			_ = c.Send(fmt.Sprintf("✅ <b>گروه با موفقیت اضافه شد:</b>\n🏷 <b>شناسه:</b> <code>%d</code>", chatID), groupDelMenu, tele.ModeHTML)
+			return true
+		}
+	}
+
+	// حالت ۲: یوزرنیم گروه
+	username := text
+	username = strings.TrimPrefix(username, "https://t.me/")
+	username = strings.TrimPrefix(username, "http://t.me/")
+	username = strings.TrimPrefix(username, "t.me/")
+	username = strings.TrimPrefix(username, "@")
+
+	activeUserbotsMu.RLock()
+	ub, ok := activeUserbots[userID]
+	activeUserbotsMu.RUnlock()
+
+	if ok && ub.Client != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		resolved, err := ub.Client.API().ContactsResolveUsername(ctx, username)
+		if err == nil && len(resolved.Chats) > 0 {
+			var chatID int64
+			var title string
+			switch ch := resolved.Chats[0].(type) {
+			case *tg.Channel:
+				chatID = -1000000000000 - ch.ID
+				title = ch.Title
+			case *tg.Chat:
+				chatID = -ch.ID
+				title = ch.Title
+			}
+
+			if chatID != 0 {
+				_, _ = db.Exec(`
+					INSERT INTO wolf_antidel_groups (owner_id, chat_id, chat_title)
+					VALUES (?, ?, ?)
+					ON DUPLICATE KEY UPDATE chat_title = VALUES(chat_title)
+				`, userID, chatID, title)
+
+				wolfPlusStatesMu.Lock()
+				delete(wolfPlusStates, userID)
+				wolfPlusStatesMu.Unlock()
+
+				_ = c.Send(fmt.Sprintf("✅ <b>گروه با موفقیت اضافه شد:</b>\n🏷 <b>نام:</b> %s\n🆔 <b>آیدی:</b> <code>%d</code>", html.EscapeString(title), chatID), groupDelMenu, tele.ModeHTML)
+				return true
+			}
+		}
+	}
+
+	_ = c.Send("❌ <b>خطا در شناسایی گروه!</b>\nلطفاً مطمئن شوید سلف شما در گروه عضو است یا مستقیماً <b>آیدی عددی</b> گروه (مثلاً <code>-100...</code>) را ارسال کنید.", groupDelMenu, tele.ModeHTML)
+	wolfPlusStatesMu.Lock()
+	delete(wolfPlusStates, userID)
+	wolfPlusStatesMu.Unlock()
+	return true
+}
+
+// کش کردن پیام‌های ورودی و دانلود مدیا
 func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *tele.Bot, userID int64, msg *tg.Message, e tg.Entities) {
+	// هرگز به پیام‌های خود اکانت واکنش نشان ندهد
 	if msg.Out {
 		return
 	}
 
-	// ۱. بررسی رسانه تایمردار
-	if _, isUser := msg.PeerID.(*tg.PeerUser); isUser && msg.Media != nil {
+	// بررسی نوع چت
+	var isPV bool
+	var chatID int64
+	chatName := "چت خصوصی"
+
+	switch p := msg.PeerID.(type) {
+	case *tg.PeerUser:
+		isPV = true
+		chatID = p.UserID
+	case *tg.PeerChat:
+		chatID = p.ChatID
+		chatName = "گروه"
+	case *tg.PeerChannel:
+		chatID = p.ChannelID
+		chatName = "سوپرگروه"
+	}
+
+	// در گروه‌ها واکنش نشان ندهد مگر اینکه در لیست گروه‌های ثبت‌شده باشد
+	if !isPV {
+		var count int
+		_ = db.QueryRow(`
+			SELECT COUNT(*) FROM wolf_antidel_groups 
+			WHERE owner_id = ? AND (chat_id = ? OR chat_id = ? OR chat_id = ?)
+		`, userID, chatID, -chatID, -1000000000000-chatID).Scan(&count)
+
+		if count == 0 {
+			return
+		}
+	}
+
+	// بررسی ذخیره رسانه تایمردار در پیوی
+	if isPV && msg.Media != nil {
 		var timerEnabled bool
 		_ = db.QueryRow("SELECT is_timer_media_enabled FROM users WHERE id = ?", userID).Scan(&timerEnabled)
 		if timerEnabled {
@@ -222,73 +512,120 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 		}
 	}
 
-	// ۲. کش کردن متن پیام‌ها جهت مقایسه در ضد حذف و ادیت
-	text := strings.TrimSpace(msg.Message)
-	if text != "" {
-		chatID := int64(0)
-		switch p := msg.PeerID.(type) {
-		case *tg.PeerUser:
-			chatID = p.UserID
-		case *tg.PeerChat:
-			chatID = p.ChatID
-		case *tg.PeerChannel:
-			chatID = p.ChannelID
-		}
+	// مشخصات فرستنده
+	senderID := int64(0)
+	senderName := "ناشناس"
+	if fromUser, ok := msg.FromID.(*tg.PeerUser); ok {
+		senderID = fromUser.UserID
+	} else if peerUser, ok := msg.PeerID.(*tg.PeerUser); ok {
+		senderID = peerUser.UserID
+	}
 
-		senderID := int64(0)
-		senderName := "ناشناس"
-		if fromUser, ok := msg.FromID.(*tg.PeerUser); ok {
-			senderID = fromUser.UserID
-		} else if peerUser, ok := msg.PeerID.(*tg.PeerUser); ok {
-			senderID = peerUser.UserID
+	if senderID != 0 {
+		if u, exists := e.Users[senderID]; exists {
+			if u.Username != "" {
+				senderName = "@" + u.Username
+			} else if u.FirstName != "" || u.LastName != "" {
+				senderName = strings.TrimSpace(u.FirstName + " " + u.LastName)
+			}
 		}
+	}
 
-		if senderID != 0 {
-			if u, exists := e.Users[senderID]; exists {
-				if u.FirstName != "" || u.LastName != "" {
-					senderName = strings.TrimSpace(u.FirstName + " " + u.LastName)
-				} else if u.Username != "" {
-					senderName = "@" + u.Username
+	// استخراج نوع مدیا و دانلود فایل در صورت نیاز
+	mediaType := "متن"
+	var fileLoc tg.InputFileLocationClass
+	var fileExt string
+
+	if msg.Media != nil {
+		switch m := msg.Media.(type) {
+		case *tg.MessageMediaPhoto:
+			mediaType = "عکس"
+			fileExt = ".jpg"
+			if photo, ok := m.Photo.(*tg.Photo); ok {
+				thumbSize := "x"
+				if len(photo.Sizes) > 0 {
+					thumbSize = photo.Sizes[len(photo.Sizes)-1].GetType()
+				}
+				fileLoc = &tg.InputPhotoFileLocation{
+					ID:            photo.ID,
+					AccessHash:    photo.AccessHash,
+					FileReference: photo.FileReference,
+					ThumbSize:     thumbSize,
+				}
+			}
+		case *tg.MessageMediaDocument:
+			if doc, ok := m.Document.(*tg.Document); ok {
+				fileLoc = &tg.InputDocumentFileLocation{
+					ID:            doc.ID,
+					AccessHash:    doc.AccessHash,
+					FileReference: doc.FileReference,
+				}
+				mime := strings.ToLower(doc.MimeType)
+				if strings.HasPrefix(mime, "audio/") || strings.Contains(mime, "ogg") {
+					mediaType = "صوت"
+					fileExt = ".ogg"
+				} else if strings.HasPrefix(mime, "video/") {
+					mediaType = "ویدیو"
+					fileExt = ".mp4"
+				} else {
+					mediaType = "فایل"
+					fileExt = ".dat"
 				}
 			}
 		}
-
-		_, _ = db.Exec(`
-			INSERT INTO wolf_message_cache (owner_id, chat_id, message_id, sender_id, sender_name, message_text)
-			VALUES (?, ?, ?, ?, ?, ?)
-			ON DUPLICATE KEY UPDATE message_text = VALUES(message_text), sender_name = VALUES(sender_name)
-		`, userID, chatID, msg.ID, senderID, senderName, text)
 	}
+
+	text := strings.TrimSpace(msg.Message)
+	if text == "" && mediaType == "متن" {
+		return
+	}
+
+	cachedFilePath := ""
+	var antiDelEnabled bool
+	_ = db.QueryRow("SELECT is_anti_delete_enabled FROM users WHERE id = ?", userID).Scan(&antiDelEnabled)
+
+	if antiDelEnabled && fileLoc != nil {
+		cacheDir := "/tmp/wolf_cache"
+		_ = os.MkdirAll(cacheDir, 0755)
+		cachedFilePath = filepath.Join(cacheDir, fmt.Sprintf("%d_%d_%d%s", userID, chatID, msg.ID, fileExt))
+		go func(target string, loc tg.InputFileLocationClass) {
+			dCtx, dCancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer dCancel()
+			_ = downloadLocationToFile(dCtx, client, loc, target)
+		}(cachedFilePath, fileLoc)
+	}
+
+	_, _ = db.Exec(`
+		INSERT INTO wolf_message_cache (owner_id, chat_id, message_id, sender_id, sender_name, chat_name, message_text, media_type, cached_file_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE message_text = VALUES(message_text), media_type = VALUES(media_type), cached_file_path = VALUES(cached_file_path)
+	`, userID, chatID, msg.ID, senderID, senderName, chatName, text, mediaType, cachedFilePath)
 }
 
-// ثبت رویدادهای حذف و ادیت در دیسپچر تلگرام
+// ثبت رویدادهای حذف و ویرایش
 func RegisterWolfPlusDispatcher(dispatcher *tg.UpdateDispatcher, client *telegram.Client, userID int64) {
-	// رویداد حذف پیام در پیوی و گروه‌های عادی
 	dispatcher.OnDeleteMessages(func(ctx context.Context, e tg.Entities, u *tg.UpdateDeleteMessages) error {
 		go handleDeletedMessages(client, userID, u.Messages)
 		return nil
 	})
 
-	// رویداد حذف پیام در سوپرگروه‌ها و کانال‌ها
 	dispatcher.OnDeleteChannelMessages(func(ctx context.Context, e tg.Entities, u *tg.UpdateDeleteChannelMessages) error {
 		go handleDeletedMessages(client, userID, u.Messages)
 		return nil
 	})
 
-	// رویداد ادیت پیام در پیوی و گروه‌ها
 	dispatcher.OnEditMessage(func(ctx context.Context, e tg.Entities, u *tg.UpdateEditMessage) error {
 		go handleEditedMessage(client, userID, u.Message)
 		return nil
 	})
 
-	// رویداد ادیت پیام در کانال‌ها و سوپرگروه‌ها
 	dispatcher.OnEditChannelMessage(func(ctx context.Context, e tg.Entities, u *tg.UpdateEditChannelMessage) error {
 		go handleEditedMessage(client, userID, u.Message)
 		return nil
 	})
 }
 
-// مدیریت نوتیفیکیشن حذف پیام به Saved Messages
+// گزارش خلوت و شیک ضد حذف به Saved Messages
 func handleDeletedMessages(client *telegram.Client, ownerID int64, msgIDs []int) {
 	var antiDelete bool
 	_ = db.QueryRow("SELECT is_anti_delete_enabled FROM users WHERE id = ?", ownerID).Scan(&antiDelete)
@@ -297,27 +634,76 @@ func handleDeletedMessages(client *telegram.Client, ownerID int64, msgIDs []int)
 	}
 
 	for _, msgID := range msgIDs {
-		var chatID, senderID int64
-		var senderName, msgText string
-		err := db.QueryRow("SELECT chat_id, sender_id, sender_name, message_text FROM wolf_message_cache WHERE owner_id = ? AND message_id = ?", ownerID, msgID).Scan(&chatID, &senderID, &senderName, &msgText)
+		var senderID int64
+		var senderName, chatName, msgText, mediaType, cachedPath string
 
-		if err == nil && msgText != "" {
+		err := db.QueryRow(`
+			SELECT sender_id, sender_name, chat_name, message_text, media_type, cached_file_path 
+			FROM wolf_message_cache 
+			WHERE owner_id = ? AND message_id = ?
+		`, ownerID, msgID).Scan(&senderID, &senderName, &chatName, &msgText, &mediaType, &cachedPath)
+
+		if err == nil {
 			report := fmt.Sprintf(
-				"🗑 #حذف_پیام (Anti-Delete)\n\n"+
+				"🐺 <b>گزارش ضد حذف | ولف +</b>\n"+
+					"➖➖➖➖➖➖➖➖➖➖\n"+
 					"👤 <b>فرستنده:</b> %s\n"+
-					"🆔 <b>آیدی عددی:</b> <code>%d</code>\n"+
-					"💬 <b>شناسه چت:</b> <code>%d</code>\n"+
-					"⏰ <b>زمان حذف:</b> %s\n\n"+
-					"📄 <b>متن پاک‌شده:</b>\n%s",
-				html.EscapeString(senderName), senderID, chatID, time.Now().Format("15:04:05"), html.EscapeString(msgText),
+					"🆔 <b>آیدی:</b> <code>%d</code>\n"+
+					"💬 <b>چت:</b> %s\n"+
+					"⏰ <b>زمان حذف:</b> %s\n"+
+					"🗑 <b>حذف شده:</b> %s",
+				html.EscapeString(senderName), senderID, html.EscapeString(chatName), time.Now().Format("15:04:05"), mediaType,
 			)
 
-			cTimeout, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_, _ = client.API().MessagesSendMessage(cTimeout, &tg.MessagesSendMessageRequest{
-				Peer:     &tg.InputPeerSelf{},
-				Message:  report,
-				RandomID: time.Now().UnixNano(),
-			})
+			if strings.TrimSpace(msgText) != "" {
+				report += fmt.Sprintf("\n\n📄 <b>محتوا:</b>\n%s", html.EscapeString(msgText))
+			}
+
+			cTimeout, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+
+			// اگر فایل مدیا دانلود شده است، آن را به همراه کپشن به Saved Messages می‌فرستد
+			sentMedia := false
+			if cachedPath != "" {
+				if _, statErr := os.Stat(cachedPath); statErr == nil {
+					u := uploader.NewUploader(client.API())
+					inputFile, upErr := u.FromPath(cTimeout, cachedPath)
+					if upErr == nil {
+						if mediaType == "عکس" {
+							_, err = client.API().MessagesSendMedia(cTimeout, &tg.MessagesSendMediaRequest{
+								Peer:     &tg.InputPeerSelf{},
+								Media:    &tg.InputMediaUploadedPhoto{File: inputFile},
+								Message:  report,
+								RandomID: rand.Int63(),
+							})
+							sentMedia = (err == nil)
+						} else {
+							mime := "application/octet-stream"
+							if mediaType == "صوت" {
+								mime = "audio/ogg"
+							} else if mediaType == "ویدیو" {
+								mime = "video/mp4"
+							}
+							_, err = client.API().MessagesSendMedia(cTimeout, &tg.MessagesSendMediaRequest{
+								Peer:     &tg.InputPeerSelf{},
+								Media:    &tg.InputMediaUploadedDocument{File: inputFile, MimeType: mime},
+								Message:  report,
+								RandomID: rand.Int63(),
+							})
+							sentMedia = (err == nil)
+						}
+					}
+					_ = os.Remove(cachedPath)
+				}
+			}
+
+			// اگر متنی بود یا آپلود مدیا انجام نشد، پیام متنی ارسال می‌شود
+			if !sentMedia {
+				_, _ = client.API().MessagesSendMessage(cTimeout, &tg.MessagesSendMessageRequest{
+					Peer:     &tg.InputPeerSelf{},
+					Message:  report,
+					RandomID: rand.Int63(),
+				})
+			}
 			cancel()
 
 			_, _ = db.Exec("DELETE FROM wolf_message_cache WHERE owner_id = ? AND message_id = ?", ownerID, msgID)
@@ -325,7 +711,7 @@ func handleDeletedMessages(client *telegram.Client, ownerID int64, msgIDs []int)
 	}
 }
 
-// مدیریت نوتیفیکیشن ویرایش پیام به Saved Messages
+// گزارش خلوت و شیک ادیت پیام به Saved Messages
 func handleEditedMessage(client *telegram.Client, ownerID int64, messageClass tg.MessageClass) {
 	var editLogger bool
 	_ = db.QueryRow("SELECT is_edit_logger_enabled FROM users WHERE id = ?", ownerID).Scan(&editLogger)
@@ -339,27 +725,36 @@ func handleEditedMessage(client *telegram.Client, ownerID int64, messageClass tg
 	}
 
 	newText := strings.TrimSpace(msg.Message)
-	var oldText, senderName string
-	var senderID, chatID int64
-	err := db.QueryRow("SELECT chat_id, sender_id, sender_name, message_text FROM wolf_message_cache WHERE owner_id = ? AND message_id = ?", ownerID, msg.ID).Scan(&chatID, &senderID, &senderName, &oldText)
+	var oldText, senderName, chatName, mediaType string
+	var senderID int64
+
+	err := db.QueryRow(`
+		SELECT sender_id, sender_name, chat_name, message_text, media_type 
+		FROM wolf_message_cache 
+		WHERE owner_id = ? AND message_id = ?
+	`, ownerID, msg.ID).Scan(&senderID, &senderName, &chatName, &oldText, &mediaType)
 
 	if err == nil && oldText != "" && oldText != newText {
 		report := fmt.Sprintf(
-			"📝 #ویرایش_پیام (Edit Logger)\n\n"+
+			"🐺 <b>گزارش ویرایش پیام | ولف +</b>\n"+
+				"➖➖➖➖➖➖➖➖➖➖\n"+
 				"👤 <b>فرستنده:</b> %s\n"+
-				"🆔 <b>آیدی عددی:</b> <code>%d</code>\n"+
-				"💬 <b>شناسه چت:</b> <code>%d</code>\n"+
-				"⏰ <b>زمان ویرایش:</b> %s\n\n"+
+				"🆔 <b>آیدی:</b> <code>%d</code>\n"+
+				"💬 <b>چت:</b> %s\n"+
+				"⏰ <b>زمان ویرایش:</b> %s\n"+
+				"✏️ <b>نوع:</b> %s\n"+
+				"➖➖➖➖➖➖➖➖➖➖\n"+
 				"📌 <b>متن اولیه:</b>\n%s\n\n"+
-				"✏️ <b>متن جدید:</b>\n%s",
-			html.EscapeString(senderName), senderID, chatID, time.Now().Format("15:04:05"), html.EscapeString(oldText), html.EscapeString(newText),
+				"📝 <b>متن جدید:</b>\n%s",
+			html.EscapeString(senderName), senderID, html.EscapeString(chatName), time.Now().Format("15:04:05"), mediaType,
+			html.EscapeString(oldText), html.EscapeString(newText),
 		)
 
 		cTimeout, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		_, _ = client.API().MessagesSendMessage(cTimeout, &tg.MessagesSendMessageRequest{
 			Peer:     &tg.InputPeerSelf{},
 			Message:  report,
-			RandomID: time.Now().UnixNano(),
+			RandomID: rand.Int63(),
 		})
 		cancel()
 
@@ -367,13 +762,51 @@ func handleEditedMessage(client *telegram.Client, ownerID int64, messageClass tg
 	}
 }
 
-// دانلود و ارسال رسانه‌های تایمردار به ربات
+// دانلود فایل باینری از تلگرام
+func downloadLocationToFile(ctx context.Context, client *telegram.Client, loc tg.InputFileLocationClass, targetFile string) error {
+	var fileData []byte
+	offset := int64(0)
+	limit := 1024 * 1024
+
+	for {
+		reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		res, err := client.API().UploadGetFile(reqCtx, &tg.UploadGetFileRequest{
+			Location: loc,
+			Offset:   offset,
+			Limit:    limit,
+		})
+		cancel()
+		if err != nil {
+			return err
+		}
+
+		file, ok := res.(*tg.UploadFile)
+		if !ok || len(file.Bytes) == 0 {
+			break
+		}
+
+		fileData = append(fileData, file.Bytes...)
+		if len(file.Bytes) < limit {
+			break
+		}
+		offset += int64(len(file.Bytes))
+		if len(fileData) > 15*1024*1024 { // حداکثر ۱۵ مگابایت
+			break
+		}
+	}
+
+	if len(fileData) == 0 {
+		return fmt.Errorf("empty file")
+	}
+
+	return os.WriteFile(targetFile, fileData, 0644)
+}
+
+// دانلود و رله رسانه‌های تایمردار به ربات
 func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele.Bot, targetUserID int64, msg *tg.Message, e tg.Entities) {
-	var (
-		isTTL      bool
-		ttlSeconds int
-		mediaType  string
-	)
+	var isTTL bool
+	var ttlSeconds int
+	var mediaType string
 
 	switch m := msg.Media.(type) {
 	case *tg.MessageMediaPhoto:
@@ -424,17 +857,9 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 		if !ok {
 			return
 		}
-		var thumbSize string
-		for _, s := range photo.Sizes {
-			switch sz := s.(type) {
-			case *tg.PhotoSize:
-				thumbSize = sz.Type
-			case *tg.PhotoSizeProgressive:
-				thumbSize = sz.Type
-			}
-		}
-		if thumbSize == "" {
-			thumbSize = "x"
+		thumbSize := "x"
+		if len(photo.Sizes) > 0 {
+			thumbSize = photo.Sizes[len(photo.Sizes)-1].GetType()
 		}
 		loc = &tg.InputPhotoFileLocation{
 			ID:            photo.ID,
@@ -460,44 +885,8 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 		return
 	}
 
-	var fileData []byte
-	offset := int64(0)
-	limit := 1024 * 1024
-
-	for {
-		reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		res, err := client.API().UploadGetFile(reqCtx, &tg.UploadGetFileRequest{
-			Location: loc,
-			Offset:   offset,
-			Limit:    limit,
-		})
-		cancel()
-		if err != nil {
-			log.Printf("❌ UploadGetFile error: %v", err)
-			break
-		}
-
-		file, ok := res.(*tg.UploadFile)
-		if !ok || len(file.Bytes) == 0 {
-			break
-		}
-
-		fileData = append(fileData, file.Bytes...)
-		if len(file.Bytes) < limit {
-			break
-		}
-		offset += int64(len(file.Bytes))
-		if len(fileData) > 50*1024*1024 {
-			break
-		}
-	}
-
-	if len(fileData) == 0 {
-		return
-	}
-
 	tmpFile := filepath.Join("/tmp", fmt.Sprintf("wolf_ttl_%d%s", time.Now().UnixNano(), fileExt))
-	if err := os.WriteFile(tmpFile, fileData, 0600); err != nil {
+	if err := downloadLocationToFile(ctx, client, loc, tmpFile); err != nil {
 		return
 	}
 	defer os.Remove(tmpFile)
@@ -518,16 +907,10 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 	)
 
 	if mediaType == "photo" {
-		p := &tele.Photo{
-			File:    tele.FromDisk(tmpFile),
-			Caption: caption,
-		}
+		p := &tele.Photo{File: tele.FromDisk(tmpFile), Caption: caption}
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, p, tele.ModeHTML)
 	} else {
-		v := &tele.Video{
-			File:    tele.FromDisk(tmpFile),
-			Caption: caption,
-		}
+		v := &tele.Video{File: tele.FromDisk(tmpFile), Caption: caption}
 		_, _ = bot.Send(&tele.User{ID: targetUserID}, v, tele.ModeHTML)
 	}
 }

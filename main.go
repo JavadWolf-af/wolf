@@ -807,7 +807,6 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 	}
 	activeUserbotsMu.Unlock()
 
-	// اتصال سیستم مانیتورینگ ضد حذف و ادیت لاگر
 	RegisterWolfPlusDispatcher(&dispatcher, client, userID)
 
 	handleMsg := func(ctx context.Context, e tg.Entities, message tg.MessageClass) {
@@ -816,7 +815,6 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			return
 		}
 
-		// پردازش پیام‌های دریافتی برای کش کردن و رسانه‌های تایمردار
 		WolfPlusHandleIncoming(ctx, client, bot, userID, msg, e)
 
 		var inputPeer tg.InputPeerClass
@@ -1537,6 +1535,92 @@ func main() {
 		walletReplyMenu.Row(btnBack),
 	)
 
+	// ==================== کیبوردهای ثابت بخش راهنما ====================
+	guideMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guideClockMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guideEmojiMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guideBioMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guidePVMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guideGroupMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+
+	btnGClock := guideMenu.Text("⏱ ساعت زنده")
+	btnGEmoji := guideMenu.Text("🎭 اموجی رندوم")
+	btnGBio := guideMenu.Text("📝 بیوگرافی هوشمند")
+	btnGPV := guideMenu.Text("📩 پیوی همه")
+	btnGGroup := guideMenu.Text("👥 گروه همه")
+	btnGBackMain := guideMenu.Text("🔙 بازگشت به منوی اصلی")
+
+	guideMenu.Reply(
+		guideMenu.Row(btnGClock, btnGEmoji),
+		guideMenu.Row(btnGBio),
+		guideMenu.Row(btnGPV, btnGGroup),
+		guideMenu.Row(btnGBackMain),
+	)
+
+	btnClockOn := guideClockMenu.Text("🟢 روشن کردن ساعت")
+	btnClockOff := guideClockMenu.Text("🔴 خاموش کردن ساعت")
+	btnClockBack := guideClockMenu.Text("🔙 بازگشت به راهنما")
+	guideClockMenu.Reply(
+		guideClockMenu.Row(btnClockOn, btnClockOff),
+		guideClockMenu.Row(btnClockBack),
+	)
+
+	btnEmojiOn := guideEmojiMenu.Text("🟢 روشن کردن اموجی")
+	btnEmojiOff := guideEmojiMenu.Text("🔴 خاموش کردن اموجی")
+	btnEmojiBack := guideEmojiMenu.Text("🔙 بازگشت به راهنما")
+	guideEmojiMenu.Reply(
+		guideEmojiMenu.Row(btnEmojiOn, btnEmojiOff),
+		guideEmojiMenu.Row(btnEmojiBack),
+	)
+
+	btnBioOn := guideBioMenu.Text("🟢 روشن کردن بیو (رندوم)")
+	btnBioOff := guideBioMenu.Text("🔴 خاموش کردن بیو")
+	btnBioBack := guideBioMenu.Text("🔙 بازگشت به راهنما")
+	guideBioMenu.Reply(
+		guideBioMenu.Row(btnBioOn, btnBioOff),
+		guideBioMenu.Row(btnBioBack),
+	)
+
+	btnPVBack := guidePVMenu.Text("🔙 بازگشت به راهنما")
+	guidePVMenu.Reply(guidePVMenu.Row(btnPVBack))
+
+	btnGroupBack := guideGroupMenu.Text("🔙 بازگشت به راهنما")
+	guideGroupMenu.Reply(guideGroupMenu.Row(btnGroupBack))
+
+	buildGuideDashboardText := func(userID int64) string {
+		var isClock, isEmoji, isBio bool
+		var bioMode string
+		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode)
+
+		clockStatus := "🔴 خاموش"
+		if isClock {
+			clockStatus = "🟢 روشن"
+		}
+		emojiStatus := "🔴 خاموش"
+		if isEmoji {
+			emojiStatus = "🟢 روشن"
+		}
+		bioStatus := "🔴 خاموش"
+		if isBio {
+			if bioMode == "custom" {
+				bioStatus = "🟢 روشن (دستی)"
+			} else {
+				bioStatus = "🟢 روشن (رندوم)"
+			}
+		}
+
+		return fmt.Sprintf(`📚 <b>بخش راهنما و امکانات سلف ولف 🐺</b>
+➖➖➖➖➖➖➖➖➖➖
+📊 <b>وضعیت لحظه‌ای قابلیت‌ها:</b>
+▫️ ⏱ <b>ساعت زنده:</b> %s
+▫️ 🎭 <b>اموجی رندوم:</b> %s
+▫️ 📝 <b>بیوگرافی هوشمند:</b> %s
+➖➖➖➖➖➖➖➖➖➖
+💡 <i>جهت مطالعه راهنما، دستورات چت یا روشن/خاموش کردن هر بخش، از کیبورد ثابت زیر انتخاب کنید:</i>`,
+			clockStatus, emojiStatus, bioStatus,
+		)
+	}
+
 	getKeyboard := func(userID int64) *tele.ReplyMarkup {
 		if cfg.IsAdmin(userID) {
 			return adminMenu
@@ -1735,6 +1819,225 @@ func main() {
 	// ثبت هندلرهای ماژول ولف +
 	RegisterWolfPlusHandlers(bot)
 
+	// ==================== هندلرهای بخش راهنما ====================
+	bot.Handle(&btnGuide, func(c tele.Context) error {
+		userID := c.Sender().ID
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
+
+		selfStatus := GetUserSelfStatus(userID)
+		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
+			return c.Send("❌ <b>دسترسی محدود!</b>\n\nبخش راهنما فقط برای کاربرانی که اشتراک سلف را خریداری کرده‌اند فعال می‌باشد.", getKeyboard(userID), tele.ModeHTML)
+		}
+
+		return c.Send(buildGuideDashboardText(userID), guideMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnGClock, func(c tele.Context) error {
+		userID := c.Sender().ID
+		var isClock bool
+		_ = db.QueryRow("SELECT is_clock_enabled FROM users WHERE id = ?", userID).Scan(&isClock)
+		statusStr := "🔴 خاموش"
+		if isClock {
+			statusStr = "🟢 روشن"
+		}
+		text := fmt.Sprintf(`⏱ <b>راهنمای ساعت زنده روی پروفایل</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی:</b> %s
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>توضیحات:</b>
+با فعال‌سازی این قابلیت، ساعت رسمی تهران به صورت زنده و با فونت بولد شکیل روی نام خانوادگی (Last Name) اکانت شما قرار می‌گیرد و هر دقیقه تغییر می‌کند.
+
+💬 <b>دستورات چت:</b>
+▫️ روشن کردن: <code>ساعت روشن شو</code> یا <code>ساعت روشن</code>
+▫️ خاموش کردن: <code>ساعت خاموش شو</code> یا <code>ساعت خاموش</code>
+
+👇 همچنین می‌توانید مستقیماً از کلیدهای زیر جهت کنترل استفاده کنید:`, statusStr)
+		return c.Send(text, guideClockMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnClockOn, func(c tele.Context) error {
+		userID := c.Sender().ID
+		activeUserbotsMu.RLock()
+		ub, ok := activeUserbots[userID]
+		activeUserbotsMu.RUnlock()
+		if !ok || ub.Client == nil {
+			return c.Send("❌ <b>سلف شما آنلاین نیست!</b> لطفاً ابتدا از بخش پروفایل سلف خود را روشن کنید.", guideClockMenu, tele.ModeHTML)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		handleClockOn(ctx, userID, ub.Client)
+		return c.Send("🟢 <b>ساعت زنده با موفقیت فعال شد و روی فامیلی اکانت قرار گرفت.</b>", guideClockMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnClockOff, func(c tele.Context) error {
+		userID := c.Sender().ID
+		activeUserbotsMu.RLock()
+		ub, ok := activeUserbots[userID]
+		activeUserbotsMu.RUnlock()
+		if !ok || ub.Client == nil {
+			return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideClockMenu, tele.ModeHTML)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		handleClockOff(ctx, userID, ub.Client)
+		return c.Send("🔴 <b>ساعت زنده خاموش شد و نام خانوادگی قبلی شما بازگردانده شد.</b>", guideClockMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnGEmoji, func(c tele.Context) error {
+		userID := c.Sender().ID
+		var isEmoji bool
+		_ = db.QueryRow("SELECT is_emoji_enabled FROM users WHERE id = ?", userID).Scan(&isEmoji)
+		statusStr := "🔴 خاموش"
+		if isEmoji {
+			statusStr = "🟢 روشن"
+		}
+		text := fmt.Sprintf(`🎭 <b>راهنمای اموجی رندوم کنار اسم</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی:</b> %s
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>توضیحات:</b>
+یک اموجی رندوم و جذاب کنار نام شما (First Name) قرار می‌گیرد و هر ۱۰ دقیقه یک‌بار به صورت خودکار تغییر می‌کند.
+
+💬 <b>دستورات چت:</b>
+▫️ روشن کردن: <code>اموجی روشن شو</code> یا <code>اموجی روشن</code>
+▫️ خاموش کردن: <code>اموجی خاموش شو</code> یا <code>اموجی خاموش</code>
+
+👇 همچنین می‌توانید از دکمه‌های زیر برای روشن/خاموش کردن استفاده کنید:`, statusStr)
+		return c.Send(text, guideEmojiMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnEmojiOn, func(c tele.Context) error {
+		userID := c.Sender().ID
+		activeUserbotsMu.RLock()
+		ub, ok := activeUserbots[userID]
+		activeUserbotsMu.RUnlock()
+		if !ok || ub.Client == nil {
+			return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideEmojiMenu, tele.ModeHTML)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		handleEmojiOn(ctx, userID, ub.Client)
+		return c.Send("🟢 <b>اموجی رندوم کنار اسم با موفقیت روشن شد.</b>", guideEmojiMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnEmojiOff, func(c tele.Context) error {
+		userID := c.Sender().ID
+		activeUserbotsMu.RLock()
+		ub, ok := activeUserbots[userID]
+		activeUserbotsMu.RUnlock()
+		if !ok || ub.Client == nil {
+			return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideEmojiMenu, tele.ModeHTML)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		handleEmojiOff(ctx, userID, ub.Client)
+		return c.Send("🔴 <b>اموجی خاموش شد و اسم قبلی شما بازگردانده شد.</b>", guideEmojiMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnGBio, func(c tele.Context) error {
+		userID := c.Sender().ID
+		var isBio bool
+		var bioMode string
+		_ = db.QueryRow("SELECT is_bio_enabled, bio_mode FROM users WHERE id = ?", userID).Scan(&isBio, &bioMode)
+		statusStr := "🔴 خاموش"
+		if isBio {
+			if bioMode == "custom" {
+				statusStr = "🟢 روشن (متن انتخابی)"
+			} else {
+				statusStr = "🟢 روشن (رندوم چرخشی)"
+			}
+		}
+		text := fmt.Sprintf(`📝 <b>راهنمای بیوگرافی هوشمند و چرخشی</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی:</b> %s
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>توضیحات:</b>
+این قابلیت هر ۳۰ دقیقه بیوگرافی اکانت را از میان ۲۵ جمله و تک‌بیت مفهومی تغییر می‌دهد، یا هر پیامی را به بیو تبدیل می‌کند.
+
+💬 <b>دستورات چت:</b>
+▫️ روشن کردن بیو رندوم: <code>بیو روشن شو</code> یا <code>بیو روشن</code>
+▫️ خاموش کردن و بازگردانی بیو قبلی: <code>بیو خاموش شو</code> یا <code>بیو خاموش</code>
+▫️ تعویض فوری به بیو رندوم دیگر: <code>رندوم شو</code>
+▫️ تبدیل متن پیام به بیو: ریپلای روی پیام و ارسال دستور <code>بیو شو</code>
+
+👇 کنترل سریع بیو با دکمه‌های زیر:`, statusStr)
+		return c.Send(text, guideBioMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnBioOn, func(c tele.Context) error {
+		userID := c.Sender().ID
+		activeUserbotsMu.RLock()
+		ub, ok := activeUserbots[userID]
+		activeUserbotsMu.RUnlock()
+		if !ok || ub.Client == nil {
+			return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideBioMenu, tele.ModeHTML)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		handleBioOn(ctx, userID, ub.Client)
+		return c.Send("🟢 <b>بیوگرافی رندوم و چرخشی فعال شد.</b>", guideBioMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnBioOff, func(c tele.Context) error {
+		userID := c.Sender().ID
+		activeUserbotsMu.RLock()
+		ub, ok := activeUserbots[userID]
+		activeUserbotsMu.RUnlock()
+		if !ok || ub.Client == nil {
+			return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideBioMenu, tele.ModeHTML)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		handleBioOff(ctx, userID, ub.Client)
+		return c.Send("🔴 <b>بیوگرافی خاموش شد و بیوی اولیه شما بازگردانده شد.</b>", guideBioMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnGPV, func(c tele.Context) error {
+		text := `📩 <b>راهنمای فوروارد همگانی به پیوی‌ها (Broadcast PV)</b>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>نحوه ارسال:</b>
+روی پیام مورد نظر خود در هر چتی ریپلای (Reply) کرده و یکی از دستورات زیر را بفرستید:
+
+🔸 <code>بفرست پیوی همه</code>
+پیام بدون درج نام فرستنده اصلی برای تمام مخاطبان خصوصی فوروارد می‌شود.
+
+🔸 <code>پیوی همه</code>
+پیام با حفظ نام فرستنده برای تمامی پیوی‌ها فوروارد می‌گردد.`
+		return c.Send(text, guidePVMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnGGroup, func(c tele.Context) error {
+		text := `👥 <b>راهنمای فوروارد همگانی به گروه‌ها (Broadcast Groups)</b>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>نحوه ارسال:</b>
+روی پیام مورد نظر در هر چتی ریپلای (Reply) کرده و یکی از دستورات زیر را بفرستید:
+
+🔸 <code>بفرست گروه همه</code>
+پیام بدون درج نام فرستنده اصلی برای تمام گروه‌ها فوروارد می‌شود.
+
+🔸 <code>گروه همه</code>
+پیام با حفظ نام فرستنده برای تمامی گروه‌ها ارسال می‌گردد.`
+		return c.Send(text, guideGroupMenu, tele.ModeHTML)
+	})
+
+	backToGuideHandler := func(c tele.Context) error {
+		userID := c.Sender().ID
+		return c.Send(buildGuideDashboardText(userID), guideMenu, tele.ModeHTML)
+	}
+
+	bot.Handle(&btnClockBack, backToGuideHandler)
+	bot.Handle(&btnEmojiBack, backToGuideHandler)
+	bot.Handle(&btnBioBack, backToGuideHandler)
+	bot.Handle(&btnPVBack, backToGuideHandler)
+	bot.Handle(&btnGroupBack, backToGuideHandler)
+
+	bot.Handle(&btnGBackMain, func(c tele.Context) error {
+		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getMainKeyboard(c.Sender().ID), tele.ModeHTML)
+	})
+
+	// ==================== کیف پول ====================
 	getWalletInlineKeyboard := func() *tele.ReplyMarkup {
 		menu := &tele.ReplyMarkup{}
 		btnP25k := menu.Data("➕ 25,000", "wallet_change", "25000")
@@ -2437,7 +2740,6 @@ func main() {
 	})
 
 	bot.Handle(tele.OnText, func(c tele.Context) error {
-		// بررسی ورودی‌های ماژول ولف +
 		if HandleWolfPlusText(c) {
 			return nil
 		}
@@ -2645,209 +2947,6 @@ func main() {
 		sID := GetSetting("support_id")
 		text := fmt.Sprintf("%s\n\n🆔 <b>آیدی ارتباط:</b> %s", sText, sID)
 		return c.Send(text, tele.ModeHTML)
-	})
-
-	getGuideInlineKeyboard := func() *tele.ReplyMarkup {
-		guideMenu := &tele.ReplyMarkup{}
-		btnGuideClock := guideMenu.Data("⏱ ساعت", "guide_clock")
-		btnGuideEmoji := guideMenu.Data("🎭 اموجی", "guide_emoji")
-		btnGuideBio := guideMenu.Data("📝 بیو", "guide_bio")
-		btnGuidePV := guideMenu.Data("📩 پیوی همه", "guide_pv")
-		btnGuideGroup := guideMenu.Data("👥 گروه همه", "guide_group")
-		guideMenu.Inline(
-			guideMenu.Row(btnGuideClock, btnGuideEmoji, btnGuideBio),
-			guideMenu.Row(btnGuidePV, btnGuideGroup),
-		)
-		return guideMenu
-	}
-
-	bot.Handle(&btnGuide, func(c tele.Context) error {
-		userID := c.Sender().ID
-		if IsUserBlocked(userID) {
-			return c.Send("❌ حساب کاربری شما مسدود شده است.")
-		}
-
-		selfStatus := GetUserSelfStatus(userID)
-		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
-			return c.Send("❌ <b>دسترسی محدود!</b>\n\nبخش راهنما فقط برای کاربرانی که اشتراک سلف را خریداری کرده‌اند فعال می‌باشد.", getKeyboard(userID), tele.ModeHTML)
-		}
-
-		text := "📚 <b>بخش راهنما و آموزش امکانات سلف</b>\n\nجهت مشاهده راهنمای هر قابلیت، روی دکمه مربوط به آن کلیک کنید:"
-		return c.Send(text, getGuideInlineKeyboard(), tele.ModeHTML)
-	})
-
-	bot.Handle(&tele.Btn{Unique: "guide_clock"}, func(c tele.Context) error {
-		userID := c.Sender().ID
-		selfStatus := GetUserSelfStatus(userID)
-		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید.", ShowAlert: true})
-		}
-
-		var isClockEnabled bool
-		_ = db.QueryRow("SELECT is_clock_enabled FROM users WHERE id = ?", userID).Scan(&isClockEnabled)
-		statusStr := "🔴 خاموش"
-		if isClockEnabled {
-			statusStr = "🟢 روشن"
-		}
-
-		backMenu := &tele.ReplyMarkup{}
-		btnBackGuide := backMenu.Data("🔙 بازگشت", "guide_back")
-		backMenu.Inline(backMenu.Row(btnBackGuide))
-
-		text := fmt.Sprintf("⏱ <b>راهنمای فعال‌سازی ساعت زنده روی پروفایل</b>\n\n"+
-			"با استفاده از این قابلیت، ساعت رسمی تهران به صورت زنده و با فونت بولد روی نام خانوادگی (Last Name) اکانت شما قرار می‌گیرد و هر دقیقه تغییر می‌کند.\n\n"+
-			"📌 <b>وضعیت فعلی برای شما:</b> %s\n\n"+
-			"🟢 <b>روشن کردن ساعت:</b>\n"+
-			"کافیست در هر چتی عبارت زیر را بفرستید:\n"+
-			"<code>ساعت روشن شو</code>\n\n"+
-			"🔴 <b>خاموش کردن ساعت:</b>\n"+
-			"برای خاموش کردن ساعت و بازگرداندن نام خانوادگی قبلی‌تان، در هر چتی عبارت زیر را بفرستید:\n"+
-			"<code>ساعت خاموش شو</code>", statusStr)
-
-		if c.Message() != nil {
-			_ = c.Edit(text, backMenu, tele.ModeHTML)
-		} else {
-			_ = c.Send(text, backMenu, tele.ModeHTML)
-		}
-		return c.Respond()
-	})
-
-	bot.Handle(&tele.Btn{Unique: "guide_emoji"}, func(c tele.Context) error {
-		userID := c.Sender().ID
-		selfStatus := GetUserSelfStatus(userID)
-		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید.", ShowAlert: true})
-		}
-
-		var isEmojiEnabled bool
-		_ = db.QueryRow("SELECT is_emoji_enabled FROM users WHERE id = ?", userID).Scan(&isEmojiEnabled)
-		statusStr := "🔴 خاموش"
-		if isEmojiEnabled {
-			statusStr = "🟢 روشن"
-		}
-
-		backMenu := &tele.ReplyMarkup{}
-		btnBackGuide := backMenu.Data("🔙 بازگشت", "guide_back")
-		backMenu.Inline(backMenu.Row(btnBackGuide))
-
-		text := fmt.Sprintf("🎭 <b>راهنمای فعال‌سازی اموجی رندوم کنار اسم</b>\n\n"+
-			"با استفاده از این قابلیت، یک اموجی رندوم و جذاب کنار نام شما (First Name) قرار می‌گیرد و هر ۱۰ دقیقه به صورت خودکار تغییر می‌کند.\n\n"+
-			"📌 <b>وضعیت فعلی برای شما:</b> %s\n\n"+
-			"🟢 <b>روشن کردن اموجی:</b>\n"+
-			"کافیست در هر چتی عبارت زیر را بفرستید:\n"+
-			"<code>اموجی روشن شو</code>\n\n"+
-			"🔴 <b>خاموش کردن اموجی:</b>\n"+
-			"برای خاموش کردن و بازگرداندن اسم اصلی‌تان، در هر چتی عبارت زیر را بفرستید:\n"+
-			"<code>اموجی خاموش شو</code>", statusStr)
-
-		if c.Message() != nil {
-			_ = c.Edit(text, backMenu, tele.ModeHTML)
-		} else {
-			_ = c.Send(text, backMenu, tele.ModeHTML)
-		}
-		return c.Respond()
-	})
-
-	bot.Handle(&tele.Btn{Unique: "guide_bio"}, func(c tele.Context) error {
-		userID := c.Sender().ID
-		selfStatus := GetUserSelfStatus(userID)
-		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید.", ShowAlert: true})
-		}
-
-		var isBioEnabled bool
-		var bioMode string
-		_ = db.QueryRow("SELECT is_bio_enabled, bio_mode FROM users WHERE id = ?", userID).Scan(&isBioEnabled, &bioMode)
-		statusStr := "🔴 خاموش"
-		if isBioEnabled {
-			if bioMode == "custom" {
-				statusStr = "🟢 روشن (متن انتخابی)"
-			} else {
-				statusStr = "🟢 روشن (رندوم چرخشی)"
-			}
-		}
-
-		backMenu := &tele.ReplyMarkup{}
-		btnBackGuide := backMenu.Data("🔙 بازگشت", "guide_back")
-		backMenu.Inline(backMenu.Row(btnBackGuide))
-
-		text := fmt.Sprintf("📝 <b>راهنمای بیوگرافی هوشمند و چرخشی</b>\n\n"+
-			"با این ابزار می‌توانید از میان ۲۵ جمله و شعر جذاب با اموجی‌های خاص، بیوگرافی چرخشی داشته باشید یا هر متنی را مستقیماً به بیو تبدیل کنید.\n\n"+
-			"📌 <b>وضعیت فعلی برای شما:</b> %s\n\n"+
-			"🟢 <b>روشن کردن بیو چرخشی:</b>\n"+
-			"<code>بیو روشن</code> یا <code>بیو روشن شو</code>\n\n"+
-			"🔴 <b>خاموش کردن و بازگردانی بیو قبلی:</b>\n"+
-			"<code>بیو خاموش</code> یا <code>بیو خاموش شو</code>\n\n"+
-			"🎲 <b>بازگشت به بیو رندوم:</b>\n"+
-			"<code>رندوم شو</code>\n\n"+
-			"✍️ <b>تبدیل متن پیام به بیو:</b>\n"+
-			"روی هر پیامی در چت‌ها ریپلای کنید و بفرستید:\n"+
-			"<code>بیو شو</code>", statusStr)
-
-		if c.Message() != nil {
-			_ = c.Edit(text, backMenu, tele.ModeHTML)
-		} else {
-			_ = c.Send(text, backMenu, tele.ModeHTML)
-		}
-		return c.Respond()
-	})
-
-	bot.Handle(&tele.Btn{Unique: "guide_pv"}, func(c tele.Context) error {
-		userID := c.Sender().ID
-		selfStatus := GetUserSelfStatus(userID)
-		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید.", ShowAlert: true})
-		}
-
-		backMenu := &tele.ReplyMarkup{}
-		btnBackGuide := backMenu.Data("🔙 بازگشت", "guide_back")
-		backMenu.Inline(backMenu.Row(btnBackGuide))
-
-		text := "📩 <b>راهنمای فوروارد به تمام پیوی‌ها</b>\n\n" +
-			"روی پیام مورد نظر ریپلای کنید و بنویسید:\n" +
-			"🔸 <code>بفرست پیوی همه</code> (بدون نام فرستنده)\n" +
-			"🔸 <code>پیوی همه</code> (با درج نام فرستنده)"
-
-		if c.Message() != nil {
-			_ = c.Edit(text, backMenu, tele.ModeHTML)
-		} else {
-			_ = c.Send(text, backMenu, tele.ModeHTML)
-		}
-		return c.Respond()
-	})
-
-	bot.Handle(&tele.Btn{Unique: "guide_group"}, func(c tele.Context) error {
-		userID := c.Sender().ID
-		selfStatus := GetUserSelfStatus(userID)
-		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ شما دسترسی ندارید.", ShowAlert: true})
-		}
-
-		backMenu := &tele.ReplyMarkup{}
-		btnBackGuide := backMenu.Data("🔙 بازگشت", "guide_back")
-		backMenu.Inline(backMenu.Row(btnBackGuide))
-
-		text := "👥 <b>راهنمای فوروارد به تمام گروه‌ها</b>\n\n" +
-			"روی پیام مورد نظر ریپلای کنید و بنویسید:\n" +
-			"🔸 <code>بفرست گروه همه</code> (بدون نام فرستنده)\n" +
-			"🔸 <code>گروه همه</code> (با درج نام فرستنده)"
-
-		if c.Message() != nil {
-			_ = c.Edit(text, backMenu, tele.ModeHTML)
-		} else {
-			_ = c.Send(text, backMenu, tele.ModeHTML)
-		}
-		return c.Respond()
-	})
-
-	bot.Handle(&tele.Btn{Unique: "guide_back"}, func(c tele.Context) error {
-		text := "📚 <b>بخش راهنما و آموزش امکانات سلف</b>\n\nجهت مشاهده راهنمای هر قابلیت، روی دکمه مربوط به آن کلیک کنید:"
-		if c.Message() != nil {
-			_ = c.Edit(text, getGuideInlineKeyboard(), tele.ModeHTML)
-		} else {
-			_ = c.Send(text, getGuideInlineKeyboard(), tele.ModeHTML)
-		}
-		return c.Respond()
 	})
 
 	startBillingWorker(bot)

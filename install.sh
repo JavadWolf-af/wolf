@@ -17,7 +17,6 @@ systemctl stop wolfbot 2>/dev/null || true
 mkdir -p /opt/wolf/sessions
 cd /opt/wolf || exit 1
 
-# کلون کردن فایل‌های کم‌حجم پروژه در صورت نیاز
 if [ ! -d "/opt/wolf/.git" ]; then
     git clone https://github.com/JavadWolf-af/wolf /opt/wolf
 fi
@@ -41,7 +40,7 @@ EOF
     echo "✅ فایل .env با موفقیت ایجاد شد."
 fi
 
-echo "📦 دریافت مستقیم فایل باینری و آماده سلف‌بات از گیت‌هاب..."
+echo "📦 دریافت مستقیم فایل آماده سلف‌بات از گیت‌هاب..."
 curl -sSL -L -o /opt/wolf/wolfbot https://github.com/JavadWolf-af/wolf/releases/download/latest/wolfbot
 chmod +x /opt/wolf/wolfbot
 
@@ -101,4 +100,4 @@ systemctl daemon-reload
 systemctl enable wolfbot
 systemctl restart wolfbot
 
-echo "🎉 نصب روی سرور خام با موفقیت و در چند ثانیه به پایان رسید!"
+echo "🎉 نصب با موفقیت انجام شد و ربات فعال گردید!"

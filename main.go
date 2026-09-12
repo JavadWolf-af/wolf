@@ -770,176 +770,6 @@ func handleForwardToAllGroups(ctx context.Context, client *telegram.Client, inpu
 	}
 }
 
-func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele.Bot, targetUserID int64, msg *tg.Message, e tg.Entities) {
-	var (
-		isTTL      bool
-		ttlSeconds int
-		mediaType  string
-	)
-
-	switch m := msg.Media.(type) {
-	case *tg.MessageMediaPhoto:
-		if m.TTLSeconds > 0 {
-			isTTL = true
-			ttlSeconds = m.TTLSeconds
-			mediaType = "photo"
-		}
-	case *tg.MessageMediaDocument:
-		if m.TTLSeconds > 0 {
-			isTTL = true
-			ttlSeconds = m.TTLSeconds
-			mediaType = "video"
-		}
-	}
-
-	if !isTTL {
-		return
-	}
-
-	senderID := int64(0)
-	senderName := "ناشناس"
-	usernameStr := "ثبت نشده"
-
-	if fromUser, ok := msg.FromID.(*tg.PeerUser); ok {
-		senderID = fromUser.UserID
-	} else if peerUser, ok := msg.PeerID.(*tg.PeerUser); ok {
-		senderID = peerUser.UserID
-	}
-
-	if senderID != 0 {
-		if u, exists := e.Users[senderID]; exists {
-			if u.FirstName != "" || u.LastName != "" {
-				senderName = strings.TrimSpace(u.FirstName + " " + u.LastName)
-			}
-			if u.Username != "" {
-				usernameStr = "@" + u.Username
-			}
-		}
-	}
-
-	var loc tg.InputFileLocationClass
-	var fileExt string
-
-	switch m := msg.Media.(type) {
-	case *tg.MessageMediaPhoto:
-		photo, ok := m.Photo.(*tg.Photo)
-		if !ok {
-			return
-		}
-		var thumbSize string
-		for _, s := range photo.Sizes {
-			switch sz := s.(type) {
-			case *tg.PhotoSize:
-				thumbSize = sz.Type
-			case *tg.PhotoSizeProgressive:
-				thumbSize = sz.Type
-			}
-		}
-		if thumbSize == "" {
-			thumbSize = "x"
-		}
-		loc = &tg.InputPhotoFileLocation{
-			ID:            photo.ID,
-			AccessHash:    photo.AccessHash,
-			FileReference: photo.FileReference,
-			ThumbSize:     thumbSize,
-		}
-		fileExt = ".jpg"
-	case *tg.MessageMediaDocument:
-		doc, ok := m.Document.(*tg.Document)
-		if !ok {
-			return
-		}
-		loc = &tg.InputDocumentFileLocation{
-			ID:            doc.ID,
-			AccessHash:    doc.AccessHash,
-			FileReference: doc.FileReference,
-		}
-		fileExt = ".mp4"
-	}
-
-	if loc == nil {
-		return
-	}
-
-	var fileData []byte
-	offset := int64(0)
-	limit := 1024 * 1024
-
-	for {
-		reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		res, err := client.API().UploadGetFile(reqCtx, &tg.UploadGetFileRequest{
-			Location: loc,
-			Offset:   offset,
-			Limit:    limit,
-		})
-		cancel()
-		if err != nil {
-			log.Printf("❌ UploadGetFile error: %v", err)
-			break
-		}
-
-		file, ok := res.(*tg.UploadFile)
-		if !ok || len(file.Bytes) == 0 {
-			break
-		}
-
-		fileData = append(fileData, file.Bytes...)
-		if len(file.Bytes) < limit {
-			break
-		}
-		offset += int64(len(file.Bytes))
-		if len(fileData) > 50*1024*1024 {
-			break
-		}
-	}
-
-	if len(fileData) == 0 {
-		return
-	}
-
-	tmpFile := filepath.Join("/tmp", fmt.Sprintf("wolf_ttl_%d%s", time.Now().UnixNano(), fileExt))
-	if err := os.WriteFile(tmpFile, fileData, 0600); err != nil {
-		return
-	}
-	defer os.Remove(tmpFile)
-
-	caption := fmt.Sprintf(
-		"📸 <b>رسانه تایمردار ذخیره شد! 😛</b>\n\n"+
-			"👤 <b>فرستنده:</b> %s (%s)\n"+
-			"🆔 <b>آیدی:</b> <code>%d</code>\n"+
-			"⏱ <b>مدت زمان:</b> %d ثانیه\n"+
-			"🗂 <b>نوع:</b> %s",
-		html.EscapeString(senderName), html.EscapeString(usernameStr), senderID, ttlSeconds,
-		func() string {
-			if mediaType == "photo" {
-				return "عکس"
-			}
-			return "ویدیو"
-		}(),
-	)
-
-	if mediaType == "photo" {
-		p := &tele.Photo{
-			File:    tele.FromDisk(tmpFile),
-			Caption: caption,
-		}
-		_, err := bot.Send(&tele.User{ID: targetUserID}, p, tele.ModeHTML)
-		if err != nil {
-			log.Printf("❌ Bot send TTL photo error: %v", err)
-		}
-	} else {
-		v := &tele.Video{
-			File:    tele.FromDisk(tmpFile),
-			Caption: caption,
-		}
-		_, err := bot.Send(&tele.User{ID: targetUserID}, v, tele.ModeHTML)
-		if err != nil {
-			log.Printf("❌ Bot send TTL video error: %v", err)
-		}
-	}
-}
-
 func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 	activeUserbotsMu.Lock()
 	if _, exists := activeUserbots[userID]; exists {
@@ -976,11 +806,17 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 	}
 	activeUserbotsMu.Unlock()
 
+	// اتصال سیستم شنود ضد حذف و لاگر ادیت به سلف‌بات
+	RegisterWolfPlusDispatcher(dispatcher, client, userID)
+
 	handleMsg := func(ctx context.Context, e tg.Entities, message tg.MessageClass) {
 		msg, ok := message.(*tg.Message)
 		if !ok {
 			return
 		}
+
+		// پردازش کش ضد حذف و دریافت مدیاهای تایمردار
+		WolfPlusHandleIncoming(ctx, client, bot, userID, msg, e)
 
 		var inputPeer tg.InputPeerClass
 		self, err := client.Self(ctx)
@@ -991,17 +827,6 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		inputPeer = getInputPeer(msg.PeerID, e, selfID)
 
 		if !msg.Out {
-			if _, isUser := msg.PeerID.(*tg.PeerUser); isUser && msg.Media != nil {
-				var timerEnabled bool
-				_ = db.QueryRow("SELECT is_timer_media_enabled FROM users WHERE id = ?", userID).Scan(&timerEnabled)
-				if timerEnabled {
-					go func() {
-						dCtx, dCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-						defer dCancel()
-						downloadAndRelayTTL(dCtx, client, bot, userID, msg, e)
-					}()
-				}
-			}
 			return
 		}
 
@@ -1616,6 +1441,9 @@ func main() {
 	InitDB(cfg)
 	defer db.Close()
 
+	// آماده‌سازی دیتابیس امکانات ولف +
+	InitWolfPlusDB()
+
 	pref := tele.Settings{
 		Token:  cfg.BotToken,
 		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
@@ -1634,13 +1462,11 @@ func main() {
 	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	confirmSelfMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	walletReplyMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
-	confidentialMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
-	timerMediaMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
 	btnBuy := userMenu.Text("🛍️ خرید سلف")
 	btnProfile := userMenu.Text("👤 حساب کاربری")
 	btnWallet := userMenu.Text("👛 کیف پول 💳")
-	btnConfidential := userMenu.Text("🔐 محرمانه ها")
+	btnWolfPlus := userMenu.Text("🐺 ولف +")
 	btnSupport := userMenu.Text("🎧 پشتیبانی")
 	btnGuide := userMenu.Text("📚 راهنما")
 	btnAdminPanel := adminMenu.Text("⚙️ مدیریت")
@@ -1648,13 +1474,13 @@ func main() {
 
 	userMenu.Reply(
 		userMenu.Row(btnBuy, btnProfile),
-		userMenu.Row(btnWallet, btnConfidential),
+		userMenu.Row(btnWallet, btnWolfPlus),
 		userMenu.Row(btnSupport, btnGuide),
 	)
 
 	adminMenu.Reply(
 		adminMenu.Row(btnBuy, btnProfile),
-		adminMenu.Row(btnWallet, btnConfidential),
+		adminMenu.Row(btnWallet, btnWolfPlus),
 		adminMenu.Row(btnSupport, btnGuide),
 		adminMenu.Row(btnAdminPanel),
 	)
@@ -1709,19 +1535,6 @@ func main() {
 	walletReplyMenu.Reply(
 		walletReplyMenu.Row(btnWalletConfirm),
 		walletReplyMenu.Row(btnBack),
-	)
-
-	btnTimerMedia := confidentialMenu.Text("📸 رسانه تایمردار")
-	confidentialMenu.Reply(
-		confidentialMenu.Row(btnTimerMedia),
-		confidentialMenu.Row(btnBack),
-	)
-
-	btnTurnOnTimer := timerMediaMenu.Text("🟢 روشن کردن رسانه تایمردار")
-	btnTurnOffTimer := timerMediaMenu.Text("🔴 خاموش کردن رسانه تایمردار")
-	timerMediaMenu.Reply(
-		timerMediaMenu.Row(btnTurnOnTimer, btnTurnOffTimer),
-		timerMediaMenu.Row(btnBack),
 	)
 
 	getKeyboard := func(userID int64) *tele.ReplyMarkup {
@@ -1903,7 +1716,8 @@ func main() {
 		return c.Send(text, profileMenu, tele.ModeHTML)
 	})
 
-	bot.Handle(&btnConfidential, func(c tele.Context) error {
+	// اتصال بخش «ولف +» به جای محرمانه‌ها
+	bot.Handle(&btnWolfPlus, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
 			return c.Send("❌ حساب کاربری شما مسدود شده است.")
@@ -1911,44 +1725,14 @@ func main() {
 
 		selfStatus := GetUserSelfStatus(userID)
 		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
-			return c.Send("❌ <b>دسترسی محدود!</b>\n\nبخش محرمانه ها فقط برای کاربرانی که اشتراک سلف را خریداری کرده‌اند فعال می‌باشد.", getKeyboard(userID), tele.ModeHTML)
+			return c.Send("❌ <b>دسترسی محدود!</b>\n\nامکانات ویژه ولف + فقط برای کاربرانی که اشتراک سلف را فعال دارند در دسترس است.", getKeyboard(userID), tele.ModeHTML)
 		}
 
-		return c.Send("🔐 <b>به بخش محرمانه ها خوش آمدید!</b>\n\nامکانات امنیتی و ویژه سلف در این بخش قرار دارد:", confidentialMenu, tele.ModeHTML)
+		return c.Send(buildWolfPlusDashboardText(userID), buildWolfPlusKeyboard(userID), tele.ModeHTML)
 	})
 
-	bot.Handle(&btnTimerMedia, func(c tele.Context) error {
-		userID := c.Sender().ID
-		if IsUserBlocked(userID) {
-			return c.Send("❌ حساب کاربری شما مسدود شده است.")
-		}
-
-		var isTimerEnabled bool
-		_ = db.QueryRow("SELECT is_timer_media_enabled FROM users WHERE id = ?", userID).Scan(&isTimerEnabled)
-
-		statusStr := "🔴 خاموش"
-		if isTimerEnabled {
-			statusStr = "🟢 روشن"
-		}
-
-		text := fmt.Sprintf("📸 <b>مدیریت رسانه های تایمردار (View-Once)</b>\n\n"+
-			"با فعالسازی این قابلیت، به محض دریافت عکس یا ویدیوی تایم‌دار در پیوی، فایل به صورت مستقیم دانلود شده و یک نسخه دائمی از آن در ربات برای شما ارسال می‌شود.\n\n"+
-			"📌 <b>وضعیت فعلی شما:</b> %s", statusStr)
-
-		return c.Send(text, timerMediaMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnTurnOnTimer, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET is_timer_media_enabled = TRUE WHERE id = ?", userID)
-		return c.Send("🟢 <b>قابلیت ذخیره رسانه تایمردار با موفقیت روشن شد.</b>", timerMediaMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnTurnOffTimer, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET is_timer_media_enabled = FALSE WHERE id = ?", userID)
-		return c.Send("🔴 <b>قابلیت ذخیره رسانه تایمردار خاموش شد.</b>", timerMediaMenu, tele.ModeHTML)
-	})
+	// ثبت هندلرهای اینلاین مربوط به بخش ولف +
+	RegisterWolfPlusHandlers(bot)
 
 	getWalletInlineKeyboard := func() *tele.ReplyMarkup {
 		menu := &tele.ReplyMarkup{}
@@ -2286,13 +2070,13 @@ func main() {
 		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
 		_ = os.Remove(sessionPath)
 
-		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE, is_bio_enabled = FALSE WHERE id = ?", userID)
+		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE, is_bio_enabled = FALSE, is_anti_delete_enabled = FALSE, is_edit_logger_enabled = FALSE WHERE id = ?", userID)
 
 		if c.Message() != nil {
 			_ = bot.Delete(c.Message())
 		}
 
-		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف شدید و اتصال اکانت شما به طور کامل قطع گردید.</b>", getKeyboard(userID), tele.ModeHTML)
+		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف خارج شدید و نشست اکانت شما حذف شد.</b>", getKeyboard(userID), tele.ModeHTML)
 	})
 
 	bot.Handle(&tele.Btn{Unique: "exit_cancel"}, func(c tele.Context) error {

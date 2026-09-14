@@ -21,7 +21,9 @@ import (
 var (
 	wolfPlusStatesMu sync.RWMutex
 	wolfPlusStates   = make(map[int64]string)
-	controllerBotID  int64
+
+	peerNamesMu sync.RWMutex
+	peerNames   = make(map[int64]string)
 )
 
 // منوهای کیبورد ثابت ولف +
@@ -84,6 +86,49 @@ func init() {
 	)
 }
 
+func formatTelegramUser(u *tg.User) string {
+	if u == nil {
+		return ""
+	}
+	fullName := strings.TrimSpace(u.FirstName + " " + u.LastName)
+	if fullName != "" && u.Username != "" {
+		return fmt.Sprintf("%s (@%s)", fullName, u.Username)
+	} else if fullName != "" {
+		return fullName
+	} else if u.Username != "" {
+		return "@" + u.Username
+	}
+	return ""
+}
+
+func PopulatePeerCache(users []tg.UserClass) {
+	peerNamesMu.Lock()
+	defer peerNamesMu.Unlock()
+	for _, uClass := range users {
+		if u, ok := uClass.(*tg.User); ok {
+			name := formatTelegramUser(u)
+			if name != "" {
+				peerNames[u.ID] = name
+			}
+		}
+	}
+}
+
+func InitUserbotPeerCache(ctx context.Context, client *telegram.Client) {
+	res, err := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+		OffsetPeer: &tg.InputPeerEmpty{},
+		Limit:      100,
+	})
+	if err == nil {
+		switch d := res.(type) {
+		case *tg.MessagesDialogs:
+			PopulatePeerCache(d.Users)
+		case *tg.MessagesDialogsSlice:
+			PopulatePeerCache(d.Users)
+		}
+	}
+}
+
 func InitWolfPlusDB() {
 	if db == nil {
 		return
@@ -100,7 +145,7 @@ func InitWolfPlusDB() {
 		message_id INT,
 		sender_id BIGINT,
 		sender_name VARCHAR(255),
-		chat_name VARCHAR(255) DEFAULT 'چت خصوصی',
+		chat_name VARCHAR(255) DEFAULT 'خصوصی',
 		message_text TEXT,
 		media_type VARCHAR(50) DEFAULT 'متن',
 		cached_file_path VARCHAR(500) DEFAULT '',
@@ -436,14 +481,13 @@ func HandleWolfPlusText(c tele.Context) bool {
 }
 
 func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *tele.Bot, userID int64, msg *tg.Message, e tg.Entities) {
-	// ۱. هرگز به پیام‌های ارسالی خود اکانت واکنش نشان ندهد
 	if msg.Out {
 		return
 	}
 
 	var isPV bool
 	var chatID int64
-	chatName := "چت خصوصی"
+	chatName := "خصوصی"
 
 	switch p := msg.PeerID.(type) {
 	case *tg.PeerUser:
@@ -457,12 +501,10 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 		chatName = "سوپرگروه"
 	}
 
-	// ۲. نادیده گرفتن قطعی ربات مدیریت (جلوگیری از ثبت منوهای دکمه‌ای)
 	if controllerBotID != 0 && (chatID == controllerBotID) {
 		return
 	}
 
-	// ۳. در گروه‌ها واکنش نشان ندهد مگر اینکه ثبت شده باشد
 	if !isPV {
 		var count int
 		_ = db.QueryRow(`
@@ -475,9 +517,9 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 		}
 	}
 
-	// ۴. نادیده گرفتن تمام ربات‌های دیگر
 	senderID := int64(0)
-	senderName := "کاربر تلگرام"
+	senderName := ""
+
 	if fromUser, ok := msg.FromID.(*tg.PeerUser); ok {
 		senderID = fromUser.UserID
 	} else if peerUser, ok := msg.PeerID.(*tg.PeerUser); ok {
@@ -488,19 +530,54 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 		if controllerBotID != 0 && senderID == controllerBotID {
 			return
 		}
+
+		// ۱. بررسی موجودیت کاربر در آپدیت دریافتی
 		if u, exists := e.Users[senderID]; exists {
 			if u.Bot {
-				return // عدم مانیتورینگ بات‌ها
+				return
 			}
-			if u.Username != "" {
-				senderName = "@" + u.Username
-			} else if u.FirstName != "" || u.LastName != "" {
-				senderName = strings.TrimSpace(u.FirstName + " " + u.LastName)
+			senderName = formatTelegramUser(u)
+			if senderName != "" {
+				peerNamesMu.Lock()
+				peerNames[senderID] = senderName
+				peerNamesMu.Unlock()
 			}
+		}
+
+		// ۲. بررسی در کش حافظه
+		if senderName == "" {
+			peerNamesMu.RLock()
+			senderName = peerNames[senderID]
+			peerNamesMu.RUnlock()
+		}
+
+		// ۳. دریافت مستقیم هویت فرستنده از پیام در تلگرام
+		if senderName == "" {
+			gCtx, gCancel := context.WithTimeout(context.Background(), 4*time.Second)
+			mRes, mErr := client.API().MessagesGetMessages(gCtx, []tg.InputMessageClass{&tg.InputMessageID{ID: msg.ID}})
+			gCancel()
+			if mErr == nil {
+				var usersList []tg.UserClass
+				switch mr := mRes.(type) {
+				case *tg.MessagesMessages:
+					usersList = mr.Users
+				case *tg.MessagesMessagesSlice:
+					usersList = mr.Users
+				case *tg.MessagesChannelMessages:
+					usersList = mr.Users
+				}
+				PopulatePeerCache(usersList)
+				peerNamesMu.RLock()
+				senderName = peerNames[senderID]
+				peerNamesMu.RUnlock()
+			}
+		}
+
+		if senderName == "" {
+			senderName = fmt.Sprintf("کاربر (%d)", senderID)
 		}
 	}
 
-	// ۵. رسانه تایمردار
 	if isPV && msg.Media != nil {
 		var timerEnabled bool
 		_ = db.QueryRow("SELECT is_timer_media_enabled FROM users WHERE id = ?", userID).Scan(&timerEnabled)
@@ -513,7 +590,6 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 		}
 	}
 
-	// ۶. استخراج نوع مدیا
 	mediaType := "متن"
 	var fileLoc tg.InputFileLocationClass
 	var fileExt string
@@ -606,7 +682,6 @@ func RegisterWolfPlusDispatcher(dispatcher *tg.UpdateDispatcher, client *telegra
 	})
 }
 
-// متن مینیمال، شیک و بدون تگ‌های خراب برای Saved Messages
 func handleDeletedMessages(client *telegram.Client, ownerID int64, msgIDs []int) {
 	var antiDelete bool
 	_ = db.QueryRow("SELECT is_anti_delete_enabled FROM users WHERE id = ?", ownerID).Scan(&antiDelete)
@@ -625,6 +700,14 @@ func handleDeletedMessages(client *telegram.Client, ownerID int64, msgIDs []int)
 		`, ownerID, msgID).Scan(&senderID, &senderName, &chatName, &msgText, &mediaType, &cachedPath)
 
 		if err == nil {
+			if strings.HasPrefix(senderName, "کاربر (") || senderName == "" {
+				peerNamesMu.RLock()
+				if cached, ok := peerNames[senderID]; ok && cached != "" {
+					senderName = cached
+				}
+				peerNamesMu.RUnlock()
+			}
+
 			report := fmt.Sprintf(
 				"🐺 گزارش ضد حذف | ولف +\n"+
 					"──────────────────\n"+
@@ -689,7 +772,6 @@ func handleDeletedMessages(client *telegram.Client, ownerID int64, msgIDs []int)
 	}
 }
 
-// گزارش ویرایش پیام بدون تگ‌های اضافی
 func handleEditedMessage(client *telegram.Client, ownerID int64, messageClass tg.MessageClass) {
 	var editLogger bool
 	_ = db.QueryRow("SELECT is_edit_logger_enabled FROM users WHERE id = ?", ownerID).Scan(&editLogger)
@@ -713,6 +795,14 @@ func handleEditedMessage(client *telegram.Client, ownerID int64, messageClass tg
 	`, ownerID, msg.ID).Scan(&senderID, &senderName, &chatName, &oldText, &mediaType)
 
 	if err == nil && oldText != "" && oldText != newText {
+		if strings.HasPrefix(senderName, "کاربر (") || senderName == "" {
+			peerNamesMu.RLock()
+			if cached, ok := peerNames[senderID]; ok && cached != "" {
+				senderName = cached
+			}
+			peerNamesMu.RUnlock()
+		}
+
 		report := fmt.Sprintf(
 			"🐺 گزارش ویرایش پیام | ولف +\n"+
 				"──────────────────\n"+
@@ -804,7 +894,6 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 
 	senderID := int64(0)
 	senderName := "کاربر تلگرام"
-	usernameStr := "ثبت نشده"
 
 	if fromUser, ok := msg.FromID.(*tg.PeerUser); ok {
 		senderID = fromUser.UserID
@@ -814,11 +903,9 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 
 	if senderID != 0 {
 		if u, exists := e.Users[senderID]; exists {
-			if u.FirstName != "" || u.LastName != "" {
-				senderName = strings.TrimSpace(u.FirstName + " " + u.LastName)
-			}
-			if u.Username != "" {
-				usernameStr = "@" + u.Username
+			formatted := formatTelegramUser(u)
+			if formatted != "" {
+				senderName = formatted
 			}
 		}
 	}
@@ -868,11 +955,11 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 
 	caption := fmt.Sprintf(
 		"📸 رسانه تایمردار ذخیره شد! 🐺\n\n"+
-			"فرستنده : %s (%s)\n"+
+			"فرستنده : %s\n"+
 			"ایدی : %d\n"+
 			"تایمر : %d ثانیه\n"+
 			"نوع : %s",
-		senderName, usernameStr, senderID, ttlSeconds,
+		senderName, senderID, ttlSeconds,
 		func() string {
 			if mediaType == "photo" {
 				return "عکس"

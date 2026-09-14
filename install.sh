@@ -14,19 +14,34 @@ mysql -e "FLUSH PRIVILEGES;"
 
 echo "📥 دریافت پروژه و ایجاد پوشه‌ها..."
 systemctl stop wolfbot 2>/dev/null || true
+
+# مدیریت ایمن پوشه پروژه جهت جلوگیری از ارور git clone
+if [ -d "/opt/wolf/.git" ]; then
+    cd /opt/wolf
+    git fetch --all --quiet
+    git reset --hard origin/main --quiet
+else
+    if [ -f "/opt/wolf/.env" ]; then
+        cp /opt/wolf/.env /tmp/wolf_env_backup 2>/dev/null || true
+    fi
+    rm -rf /opt/wolf
+    git clone https://github.com/JavadWolf-af/wolf /opt/wolf
+    cd /opt/wolf
+    if [ -f "/tmp/wolf_env_backup" ]; then
+        mv /tmp/wolf_env_backup /opt/wolf/.env
+    fi
+fi
+
+# ساخت پوشه نشست‌ها بعد از کلون شدن مخزن
 mkdir -p /opt/wolf/sessions
 cd /opt/wolf || exit 1
 
-if [ ! -d "/opt/wolf/.git" ]; then
-    git clone https://github.com/JavadWolf-af/wolf /opt/wolf
-fi
-
 if [ ! -f .env ]; then
     echo "⚙️ فایل تنظیمات (.env) یافت نشد. لطفاً اطلاعات را وارد کنید:"
-    read -p "Enter BOT_TOKEN: " bot_token < /dev/tty
-    read -p "Enter ADMIN_ID: " admin_id < /dev/tty
-    read -p "Enter API_ID: " api_id < /dev/tty
-    read -p "Enter API_HASH: " api_hash < /dev/tty
+    read -r -p "Enter BOT_TOKEN: " bot_token < /dev/tty
+    read -r -p "Enter ADMIN_ID: " admin_id < /dev/tty
+    read -r -p "Enter API_ID: " api_id < /dev/tty
+    read -r -p "Enter API_HASH: " api_hash < /dev/tty
 
     cat << EOF > .env
 BOT_TOKEN=$bot_token
@@ -40,7 +55,7 @@ EOF
     echo "✅ فایل .env با موفقیت ایجاد شد."
 fi
 
-echo "📦 دریافت مستقیم فایل آماده سلف‌بات از گیت‌هاب..."
+echo "📦 دریافت مستقیم فایل باینری سلف‌بات از گیت‌هاب..."
 curl -sSL -L -o /opt/wolf/wolfbot https://github.com/JavadWolf-af/wolf/releases/download/latest/wolfbot
 chmod +x /opt/wolf/wolfbot
 

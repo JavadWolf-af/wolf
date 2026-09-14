@@ -43,6 +43,7 @@ type Config struct {
 
 var db *sql.DB
 var getMainKeyboard func(userID int64) *tele.ReplyMarkup
+var controllerBotID int64
 
 var (
 	stateMu        sync.RWMutex
@@ -1003,6 +1004,14 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 	go func() {
 		err := client.Run(ctx, func(ctx context.Context) error {
+			// بارگذاری و پیش‌کش کردن نام کاربران گفتگوها
+			go func() {
+				time.Sleep(1 * time.Second)
+				cInit, cancelInit := context.WithTimeout(ctx, 15*time.Second)
+				defer cancelInit()
+				InitUserbotPeerCache(cInit, client)
+			}()
+
 			go func() {
 				time.Sleep(1500 * time.Millisecond)
 				cTimeout, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -1437,6 +1446,10 @@ func getTehranLocation() *time.Location {
 func main() {
 	cfg := loadConfig()
 
+	if parts := strings.Split(cfg.BotToken, ":"); len(parts) > 0 {
+		controllerBotID, _ = strconv.ParseInt(parts[0], 10, 64)
+	}
+
 	InitDB(cfg)
 	defer db.Close()
 
@@ -1459,7 +1472,9 @@ func main() {
 	supportConfigMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	profileMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	confirmSelfMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+
 	walletReplyMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	waitingReceiptMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
 	btnBuy := userMenu.Text("🛍️ خرید سلف")
 	btnProfile := userMenu.Text("👤 حساب کاربری")
@@ -1535,7 +1550,11 @@ func main() {
 		walletReplyMenu.Row(btnBack),
 	)
 
-	// ==================== کیبوردهای ثابت بخش راهنما ====================
+	btnCancelReceipt := waitingReceiptMenu.Text("🔙 لغو و بازگشت به منوی اصلی")
+	waitingReceiptMenu.Reply(
+		waitingReceiptMenu.Row(btnCancelReceipt),
+	)
+
 	guideMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideClockMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideEmojiMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
@@ -1745,7 +1764,7 @@ func main() {
 			}
 			delete(userStates, userID)
 		}
-		delete(userWalletTemp, userID)
+		userWalletTemp[userID] = 0
 		stateMu.Unlock()
 
 		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getKeyboard(userID), tele.ModeHTML)
@@ -1801,7 +1820,6 @@ func main() {
 		return c.Send(text, profileMenu, tele.ModeHTML)
 	})
 
-	// ورود به ولف +
 	bot.Handle(&btnWolfPlus, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -1816,10 +1834,8 @@ func main() {
 		return c.Send(buildWolfPlusDashboardText(userID), wolfPlusMenu, tele.ModeHTML)
 	})
 
-	// ثبت هندلرهای ماژول ولف +
 	RegisterWolfPlusHandlers(bot)
 
-	// ==================== هندلرهای بخش راهنما ====================
 	bot.Handle(&btnGuide, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -2037,7 +2053,6 @@ func main() {
 		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getMainKeyboard(c.Sender().ID), tele.ModeHTML)
 	})
 
-	// ==================== کیف پول ====================
 	getWalletInlineKeyboard := func() *tele.ReplyMarkup {
 		menu := &tele.ReplyMarkup{}
 		btnP25k := menu.Data("➕ 25,000", "wallet_change", "25000")
@@ -2130,11 +2145,27 @@ func main() {
 		cBank := GetSetting("card_bank")
 
 		text := fmt.Sprintf(
-			"🧾 <b>فاکتور شارژ کیف پول</b>\n\n💰 <b>مبلغ قابل پرداخت:</b> <code>%s تومان</code>\n🔑 <b>تعداد کلید دریافتی:</b> <code>%.2f کلید</code>\n(نرخ هر کلید: %s تومان)\n\n💳 لطفاً مبلغ فوق را به کارت زیر واریز کرده و سپس <b>تصویر رسید (فیش) واریزی</b> را همینجا برای ربات ارسال کنید:\n\n🏦 <b>%s</b>\n💳 <code>%s</code>\n👤 به نام: <b>%s</b>",
+			"🧾 <b>فاکتور شارژ کیف پول صادر شد</b>\n\n"+
+				"💰 <b>مبلغ قابل پرداخت:</b> <code>%s تومان</code>\n"+
+				"🔑 <b>تعداد کلید دریافتی:</b> <code>%.2f کلید</code>\n"+
+				"🏷 (نرخ هر کلید: %s تومان)\n\n"+
+				"💳 لطفاً مبلغ فوق را به کارت زیر واریز نمایید:\n\n"+
+				"🏦 <b>%s</b>\n"+
+				"💳 <code>%s</code>\n"+
+				"👤 به نام: <b>%s</b>\n\n"+
+				"📸 <b>سپس تصویر رسید (فیش) واریزی را همینجا ارسال نمایید:</b>",
 			formatMoney(amount), keys, formatMoney(price), cBank, cNum, cName,
 		)
 
-		return c.Send(text, tele.ModeHTML)
+		return c.Send(text, waitingReceiptMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnCancelReceipt, func(c tele.Context) error {
+		userID := c.Sender().ID
+		stateMu.Lock()
+		userWalletTemp[userID] = 0
+		stateMu.Unlock()
+		return c.Send("❌ <b>فرآیند پرداخت لغو گردید.</b>", getMainKeyboard(userID), tele.ModeHTML)
 	})
 
 	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
@@ -2209,7 +2240,7 @@ func main() {
 		userWalletTemp[user.ID] = 0
 		stateMu.Unlock()
 
-		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getKeyboard(user.ID))
+		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getMainKeyboard(user.ID))
 	})
 
 	bot.Handle(&btnBuy, func(c tele.Context) error {

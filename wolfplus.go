@@ -463,12 +463,12 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 📊 <b>تعداد اهداف تحت نظر:</b> <code>%d نفر</code>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
-این سیستم به طور مداوم و نامحسوس پروفایل شخص مورد نظر شما را بررسی می‌کند.
+این سیستم مداوم و نامحسوس پروفایل شخص مورد نظر شما را بررسی می‌کند.
 در صورت وقوع هر یک از تغییرات زیر، بلافاصله گزارشی به <b>Saved Messages</b> شما ارسال می‌شود:
 ▫️ تغییر نام یا نام خانوادگی
 ▫️ تغییر یوزرنیم (@username)
 ▫️ تغییر بیوگرافی (Bio)
-▫️ تعویض عکس پروفایل`, targetCount)
+▫️ تعویض، حذف یا ثبت عکس پروفایل جدید`, targetCount)
 
 		return c.Send(text, targetMenu, tele.ModeHTML)
 	})
@@ -479,7 +479,7 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 		wolfPlusStates[userID] = "waiting_for_target_input"
 		wolfPlusStatesMu.Unlock()
 
-		return c.Send("🎯 <b>ثبت مخاطب هدف:</b>\n\nلطفاً <b>یوزرنیم فرد مورد نظر</b> (با @ یا بدون @) را ارسال کنید:", targetMenu, tele.ModeHTML)
+		return c.Send("🎯 <b>ثبت مخاطب هدف:</b>\n\nلطفاً <b>یوزرنیم</b> (مثلاً <code>@username</code>) یا <b>آیدی عددی</b> مخاطب هدف را ارسال کنید:", targetMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnTG_List, func(c tele.Context) error {
@@ -512,7 +512,7 @@ func HandleWolfPlusText(c tele.Context) bool {
 		return false
 	}
 
-	if state == "waiting_for_group_input" {
+	if state == "waiting_group_input" || state == "waiting_for_group_input" {
 		cleanID := text
 		if strings.HasPrefix(cleanID, "-100") || strings.HasPrefix(cleanID, "-") {
 			chatID, err := strconv.ParseInt(cleanID, 10, 64)
@@ -605,35 +605,64 @@ func HandleWolfPlusText(c tele.Context) bool {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 
-			resolved, err := ub.Client.API().ContactsResolveUsername(ctx, input)
-			if err == nil && len(resolved.Users) > 0 {
-				if u, ok := resolved.Users[0].(*tg.User); ok {
-					var bio string
-					full, fErr := ub.Client.API().UsersGetFullUser(ctx, &tg.InputUser{
-						UserID:     u.ID,
-						AccessHash: u.AccessHash,
-					})
-					if fErr == nil {
-						bio = full.FullUser.About
+			var targetUser *tg.User
+			var targetInputUser tg.InputUserClass
+
+			// حالت ۱: بررسی آیدی عددی
+			if numID, err := strconv.ParseInt(input, 10, 64); err == nil {
+				if numID == ub.UserID {
+					self, sErr := ub.Client.Self(ctx)
+					if sErr == nil {
+						targetUser = self
+						targetInputUser = &tg.InputUserSelf{}
 					}
-
-					var photoID int64
-					if p, ok := u.Photo.(*tg.UserProfilePhoto); ok {
-						photoID = p.PhotoID
-					}
-
-					_, _ = db.Exec(`
-						INSERT INTO wolf_targets (owner_id, target_id, access_hash, first_name, last_name, username, bio, photo_id)
-						VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-						ON DUPLICATE KEY UPDATE access_hash=VALUES(access_hash), first_name=VALUES(first_name),
-						last_name=VALUES(last_name), username=VALUES(username), bio=VALUES(bio), photo_id=VALUES(photo_id)
-					`, userID, u.ID, u.AccessHash, u.FirstName, u.LastName, u.Username, bio, photoID)
-
-					_ = c.Send(fmt.Sprintf("✅ <b>مخاطب با موفقیت به ردیاب اضافه شد:</b>\n👤 <b>نام:</b> %s\n🆔 <b>آیدی:</b> <code>%d</code>", formatTelegramUser(u), u.ID), targetMenu, tele.ModeHTML)
-					return
 				}
 			}
-			_ = c.Send("❌ <b>مخاطب یافت نشد!</b> اطمینان حاصل کنید که یوزرنیم صحیح است.", targetMenu, tele.ModeHTML)
+
+			// حالت ۲: بررسی یوزرنیم
+			if targetUser == nil {
+				resolved, err := ub.Client.API().ContactsResolveUsername(ctx, input)
+				if err == nil && len(resolved.Users) > 0 {
+					if u, ok := resolved.Users[0].(*tg.User); ok {
+						targetUser = u
+						if u.Self || u.ID == ub.UserID {
+							targetInputUser = &tg.InputUserSelf{}
+						} else {
+							targetInputUser = &tg.InputUser{UserID: u.ID, AccessHash: u.AccessHash}
+						}
+					}
+				}
+			}
+
+			if targetUser != nil {
+				var bio string
+				full, fErr := ub.Client.API().UsersGetFullUser(ctx, targetInputUser)
+				if fErr == nil {
+					bio = strings.TrimSpace(full.FullUser.About)
+				}
+
+				var photoID int64
+				if p, ok := targetUser.Photo.(*tg.UserProfilePhoto); ok {
+					photoID = p.PhotoID
+				}
+
+				var aHash int64
+				if inp, ok := targetInputUser.(*tg.InputUser); ok {
+					aHash = inp.AccessHash
+				}
+
+				_, _ = db.Exec(`
+					INSERT INTO wolf_targets (owner_id, target_id, access_hash, first_name, last_name, username, bio, photo_id)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+					ON DUPLICATE KEY UPDATE access_hash=VALUES(access_hash), first_name=VALUES(first_name),
+					last_name=VALUES(last_name), username=VALUES(username), bio=VALUES(bio), photo_id=VALUES(photo_id)
+				`, userID, targetUser.ID, aHash, targetUser.FirstName, targetUser.LastName, targetUser.Username, bio, photoID)
+
+				_ = c.Send(fmt.Sprintf("✅ <b>مخاطب با موفقیت به ردیاب اضافه شد:</b>\n👤 <b>نام:</b> %s\n🆔 <b>آیدی:</b> <code>%d</code>", formatTelegramUser(targetUser), targetUser.ID), targetMenu, tele.ModeHTML)
+				return
+			}
+
+			_ = c.Send("❌ <b>مخاطب یافت نشد!</b> لطفاً مطمئن شوید یوزرنیم صحیح است.", targetMenu, tele.ModeHTML)
 		}(targetInput)
 
 		wolfPlusStatesMu.Lock()
@@ -740,7 +769,6 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 		}
 	}
 
-	// ذخیره مستقیم مدیاهای تایمردار در پیام‌های ذخیره‌شده (Saved Messages)
 	if isPV && msg.Media != nil {
 		var timerEnabled bool
 		_ = db.QueryRow("SELECT is_timer_media_enabled FROM users WHERE id = ?", userID).Scan(&timerEnabled)
@@ -994,9 +1022,10 @@ func handleEditedMessage(client *telegram.Client, ownerID int64, messageClass tg
 	}
 }
 
-// موتور ردیاب تغییرات پروفایل مخاطب خاص
+// موتور ردیاب تغییرات پروفایل مخاطب خاص (بررسی هوشمند و سریع)
 func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, ownerID int64) {
-	ticker := time.NewTicker(3 * time.Minute)
+	// بررسی سریع هر ۴۵ ثانیه برای دریافت بلادرنگ تغییرات
+	ticker := time.NewTicker(45 * time.Second)
 	go func() {
 		for {
 			select {
@@ -1018,13 +1047,15 @@ func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, owne
 						continue
 					}
 
-					time.Sleep(time.Duration(rand.Intn(3)+2) * time.Second)
+					var inputUser tg.InputUserClass
+					if targetID == ownerID {
+						inputUser = &tg.InputUserSelf{}
+					} else {
+						inputUser = &tg.InputUser{UserID: targetID, AccessHash: accessHash}
+					}
 
 					reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-					full, err := client.API().UsersGetFullUser(reqCtx, &tg.InputUser{
-						UserID:     targetID,
-						AccessHash: accessHash,
-					})
+					full, err := client.API().UsersGetFullUser(reqCtx, inputUser)
 					cancel()
 
 					if err != nil {
@@ -1042,7 +1073,11 @@ func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, owne
 						continue
 					}
 
-					newBio := full.FullUser.About
+					newFirst := strings.TrimSpace(u.FirstName)
+					newLast := strings.TrimSpace(u.LastName)
+					newUsername := strings.TrimSpace(u.Username)
+					newBio := strings.TrimSpace(full.FullUser.About)
+
 					var newPhotoID int64
 					if p, ok := u.Photo.(*tg.UserProfilePhoto); ok {
 						newPhotoID = p.PhotoID
@@ -1050,19 +1085,57 @@ func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, owne
 
 					var changes []string
 
-					if oldFirst != u.FirstName || oldLast != u.LastName {
-						changes = append(changes, fmt.Sprintf("👤 تغییر نام:\nاز: %s %s\nبه: %s %s", oldFirst, oldLast, u.FirstName, u.LastName))
-					}
-					if oldUser != u.Username {
-						changes = append(changes, fmt.Sprintf("🌐 تغییر یوزرنیم:\nاز: @%s\nبه: @%s", oldUser, u.Username))
-					}
-					if oldBio != newBio {
-						changes = append(changes, fmt.Sprintf("📝 تغییر بیوگرافی:\nاز: %s\nبه: %s", oldBio, newBio))
-					}
-					if oldPhotoID != 0 && newPhotoID != 0 && oldPhotoID != newPhotoID {
-						changes = append(changes, "📸 تغییر عکس پروفایل : عکس جدید تنظیم شد.")
+					// ۱. بررسی تغییر نام و نام خانوادگی
+					if oldFirst != newFirst || oldLast != newLast {
+						oldName := strings.TrimSpace(oldFirst + " " + oldLast)
+						newName := strings.TrimSpace(newFirst + " " + newLast)
+						if oldName == "" {
+							oldName = "بدون نام"
+						}
+						if newName == "" {
+							newName = "حذف شد"
+						}
+						changes = append(changes, fmt.Sprintf("👤 تغییر نام :\nاز: %s\nبه: %s", oldName, newName))
 					}
 
+					// ۲. بررسی تغییر یوزرنیم
+					if oldUser != newUsername {
+						oldU := "@" + oldUser
+						if oldUser == "" {
+							oldU = "نداشت"
+						}
+						newU := "@" + newUsername
+						if newUsername == "" {
+							newU = "حذف شد"
+						}
+						changes = append(changes, fmt.Sprintf("🌐 تغییر یوزرنیم :\nاز: %s\nبه: %s", oldU, newU))
+					}
+
+					// ۳. بررسی تغییر بیوگرافی
+					if oldBio != newBio {
+						oldB := oldBio
+						if oldB == "" {
+							oldB = "خالی"
+						}
+						newB := newBio
+						if newB == "" {
+							newB = "حذف شد"
+						}
+						changes = append(changes, fmt.Sprintf("📝 تغییر بیوگرافی :\nاز: %s\nبه: %s", oldB, newB))
+					}
+
+					// ۴. بررسی تغییر، حذف یا افزودن عکس پروفایل
+					if oldPhotoID != newPhotoID {
+						if newPhotoID == 0 {
+							changes = append(changes, "📸 عکس پروفایل حذف شد.")
+						} else if oldPhotoID == 0 {
+							changes = append(changes, "📸 عکس پروفایل جدید تنظیم شد.")
+						} else {
+							changes = append(changes, "📸 تغییر عکس پروفایل : عکس جدید تنظیم شد.")
+						}
+					}
+
+					// ارسال گزارش تجمیعی در صورت وجود هرگونه تغییر
 					if len(changes) > 0 {
 						report := fmt.Sprintf(
 							"🐺 ᴛᴀʀɢᴇᴛ ᴛʀᴀᴄᴋᴇʀ | ولف پلاس\n"+
@@ -1084,11 +1157,12 @@ func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, owne
 						})
 						sCancel()
 
+						// بروزرسانی مشخصات در دیتابیس
 						_, _ = db.Exec(`
 							UPDATE wolf_targets 
 							SET first_name=?, last_name=?, username=?, bio=?, photo_id=? 
 							WHERE owner_id=? AND target_id=?
-						`, u.FirstName, u.LastName, u.Username, newBio, newPhotoID, ownerID, targetID)
+						`, newFirst, newLast, newUsername, newBio, newPhotoID, ownerID, targetID)
 					}
 				}
 				rows.Close()

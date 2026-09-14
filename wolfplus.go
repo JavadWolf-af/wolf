@@ -618,7 +618,7 @@ func HandleWolfPlusText(c tele.Context) bool {
 					}
 
 					var photoID int64
-					if p, ok := u.ProfilePhoto.(*tg.UserProfilePhoto); ok {
+					if p, ok := u.Photo.(*tg.UserProfilePhoto); ok {
 						photoID = p.PhotoID
 					}
 
@@ -1044,7 +1044,7 @@ func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, owne
 
 					newBio := full.FullUser.About
 					var newPhotoID int64
-					if p, ok := u.ProfilePhoto.(*tg.UserProfilePhoto); ok {
+					if p, ok := u.Photo.(*tg.UserProfilePhoto); ok {
 						newPhotoID = p.PhotoID
 					}
 

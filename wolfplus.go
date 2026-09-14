@@ -86,6 +86,11 @@ func init() {
 	)
 }
 
+// استخراج ساعت رسمی تهران
+func getTehranCurrentTime() string {
+	return time.Now().In(getTehranLocation()).Format("15:04:05")
+}
+
 func formatTelegramUser(u *tg.User) string {
 	if u == nil {
 		return ""
@@ -145,7 +150,7 @@ func InitWolfPlusDB() {
 		message_id INT,
 		sender_id BIGINT,
 		sender_name VARCHAR(255),
-		chat_name VARCHAR(255) DEFAULT 'خصوصی',
+		chat_name VARCHAR(255) DEFAULT 'چت خصوصی',
 		message_text TEXT,
 		media_type VARCHAR(50) DEFAULT 'متن',
 		cached_file_path VARCHAR(500) DEFAULT '',
@@ -346,7 +351,7 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 📌 <b>وضعیت فعلی شما:</b> %s
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
-عکس‌ها و ویدیوهای تایمردار دریافتی در پیوی به طور خودکار قبل از انقضا دانلود شده و یک نسخه دائمی از آن در ربات برای شما ارسال می‌شود.`, statusStr)
+عکس‌ها و ویدیوهای تایمردار دریافتی در پیوی به طور خودکار قبل از محو شدن دانلود شده و نسخه دائمی آن بدون دخالت ربات، مستقیماً به <b>Saved Messages (پیام‌های ذخیره‌شده)</b> خودتان ارسال می‌شود.`, statusStr)
 		return c.Send(text, timerMenu, tele.ModeHTML)
 	})
 
@@ -487,7 +492,7 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 
 	var isPV bool
 	var chatID int64
-	chatName := "خصوصی"
+	chatName := "چت خصوصی"
 
 	switch p := msg.PeerID.(type) {
 	case *tg.PeerUser:
@@ -531,7 +536,6 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 			return
 		}
 
-		// ۱. بررسی موجودیت کاربر در آپدیت دریافتی
 		if u, exists := e.Users[senderID]; exists {
 			if u.Bot {
 				return
@@ -544,14 +548,12 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 			}
 		}
 
-		// ۲. بررسی در کش حافظه
 		if senderName == "" {
 			peerNamesMu.RLock()
 			senderName = peerNames[senderID]
 			peerNamesMu.RUnlock()
 		}
 
-		// ۳. دریافت مستقیم هویت فرستنده از پیام در تلگرام
 		if senderName == "" {
 			gCtx, gCancel := context.WithTimeout(context.Background(), 4*time.Second)
 			mRes, mErr := client.API().MessagesGetMessages(gCtx, []tg.InputMessageClass{&tg.InputMessageID{ID: msg.ID}})
@@ -578,6 +580,7 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 		}
 	}
 
+	// ذخیره مستقیم رسانه‌های تایمردار در Saved Messages اکانت
 	if isPV && msg.Media != nil {
 		var timerEnabled bool
 		_ = db.QueryRow("SELECT is_timer_media_enabled FROM users WHERE id = ?", userID).Scan(&timerEnabled)
@@ -585,7 +588,7 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 			go func() {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer dCancel()
-				downloadAndRelayTTL(dCtx, client, bot, userID, msg, e)
+				downloadAndRelayTTL(dCtx, client, userID, msg, e)
 			}()
 		}
 	}
@@ -709,17 +712,18 @@ func handleDeletedMessages(client *telegram.Client, ownerID int64, msgIDs []int)
 			}
 
 			report := fmt.Sprintf(
-				"🐺 گزارش ضد حذف | ولف +\n"+
-					"──────────────────\n"+
-					"فرستنده : %s\n"+
-					"ایدی : %d\n"+
-					"زمان حذف : %s\n"+
-					"حذف شده : %s",
-				senderName, senderID, time.Now().Format("15:04:05"), mediaType,
+				"🐺 ɢᴜᴀʀᴅ | ولف پلاس\n"+
+					"━━━━━━━━━━━━━━━━━\n"+
+					"👤 فرستنده : %s\n"+
+					"🆔 آیدی : %d\n"+
+					"💬 چت : %s\n"+
+					"⏰ زمان حذف : %s\n"+
+					"🗑 حذف شده : %s",
+				senderName, senderID, chatName, getTehranCurrentTime(), mediaType,
 			)
 
 			if strings.TrimSpace(msgText) != "" {
-				report += fmt.Sprintf("\n\n📄 محتوا :\n%s", msgText)
+				report += fmt.Sprintf("\n━━━━━━━━━━━━━━━━━\n📄 محتوای پیام :\n%s", msgText)
 			}
 
 			cTimeout, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -804,16 +808,17 @@ func handleEditedMessage(client *telegram.Client, ownerID int64, messageClass tg
 		}
 
 		report := fmt.Sprintf(
-			"🐺 گزارش ویرایش پیام | ولف +\n"+
-				"──────────────────\n"+
-				"فرستنده : %s\n"+
-				"ایدی : %d\n"+
-				"زمان ادیت : %s\n"+
-				"ویرایش شده : %s\n"+
-				"──────────────────\n"+
+			"🐺 ᴇᴅɪᴛ ʟᴏɢɢᴇʀ | ولف پلاس\n"+
+				"━━━━━━━━━━━━━━━━━\n"+
+				"👤 فرستنده : %s\n"+
+				"🆔 آیدی : %d\n"+
+				"💬 چت : %s\n"+
+				"⏰ زمان ادیت : %s\n"+
+				"✏️ نوع محتوا : %s\n"+
+				"━━━━━━━━━━━━━━━━━\n"+
 				"📌 متن قبلی :\n%s\n\n"+
-				"✏️ متن جدید :\n%s",
-			senderName, senderID, time.Now().Format("15:04:05"), mediaType,
+				"📝 متن جدید :\n%s",
+			senderName, senderID, chatName, getTehranCurrentTime(), mediaType,
 			oldText, newText,
 		)
 
@@ -868,7 +873,8 @@ func downloadLocationToFile(ctx context.Context, client *telegram.Client, loc tg
 	return os.WriteFile(targetFile, fileData, 0644)
 }
 
-func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele.Bot, targetUserID int64, msg *tg.Message, e tg.Entities) {
+// ذخیره مستقیم مدیاهای تایمردار در Saved Messages
+func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, targetUserID int64, msg *tg.Message, e tg.Entities) {
 	var isTTL bool
 	var ttlSeconds int
 	var mediaType string
@@ -907,6 +913,13 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 			if formatted != "" {
 				senderName = formatted
 			}
+		}
+		if senderName == "کاربر تلگرام" {
+			peerNamesMu.RLock()
+			if cached, ok := peerNames[senderID]; ok && cached != "" {
+				senderName = cached
+			}
+			peerNamesMu.RUnlock()
 		}
 	}
 
@@ -954,12 +967,14 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 	defer os.Remove(tmpFile)
 
 	caption := fmt.Sprintf(
-		"📸 رسانه تایمردار ذخیره شد! 🐺\n\n"+
-			"فرستنده : %s\n"+
-			"ایدی : %d\n"+
-			"تایمر : %d ثانیه\n"+
-			"نوع : %s",
-		senderName, senderID, ttlSeconds,
+		"🐺 رسانه تایمردار (View-Once) | ولف +\n"+
+			"━━━━━━━━━━━━━━━━━\n"+
+			"👤 فرستنده : %s\n"+
+			"🆔 آیدی : %d\n"+
+			"⏰ زمان دریافت : %s\n"+
+			"⏱ تایمر : %d ثانیه\n"+
+			"📸 نوع مدیا : %s",
+		senderName, senderID, getTehranCurrentTime(), ttlSeconds,
 		func() string {
 			if mediaType == "photo" {
 				return "عکس"
@@ -968,11 +983,23 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, bot *tele
 		}(),
 	)
 
-	if mediaType == "photo" {
-		p := &tele.Photo{File: tele.FromDisk(tmpFile), Caption: caption}
-		_, _ = bot.Send(&tele.User{ID: targetUserID}, p)
-	} else {
-		v := &tele.Video{File: tele.FromDisk(tmpFile), Caption: caption}
-		_, _ = bot.Send(&tele.User{ID: targetUserID}, v)
+	u := uploader.NewUploader(client.API())
+	inputFile, err := u.FromPath(ctx, tmpFile)
+	if err == nil {
+		if mediaType == "photo" {
+			_, _ = client.API().MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
+				Peer:     &tg.InputPeerSelf{},
+				Media:    &tg.InputMediaUploadedPhoto{File: inputFile},
+				Message:  caption,
+				RandomID: rand.Int63(),
+			})
+		} else {
+			_, _ = client.API().MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
+				Peer:     &tg.InputPeerSelf{},
+				Media:    &tg.InputMediaUploadedDocument{File: inputFile, MimeType: "video/mp4"},
+				Message:  caption,
+				RandomID: rand.Int63(),
+			})
+		}
 	}
 }

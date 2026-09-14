@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math/rand"
 	"os"
@@ -59,10 +60,12 @@ var (
 	btnGD_Clear = groupDelMenu.Text("🗑 پاکسازی لیست گروه‌ها")
 	btnGD_Back  = groupDelMenu.Text("🔙 بازگشت به ولف +")
 
-	btnTG_Add   = targetMenu.Text("➕ افزودن مخاطب")
-	btnTG_List  = targetMenu.Text("📋 لیست مخاطبان")
-	btnTG_Clear = targetMenu.Text("🗑 پاکسازی لیست اهداف")
-	btnTG_Back  = targetMenu.Text("🔙 بازگشت به ولف +")
+	btnTG_Add          = targetMenu.Text("➕ افزودن مخاطب")
+	btnTG_Delete       = targetMenu.Text("➖ حذف مخاطب")
+	btnTG_List         = targetMenu.Text("📋 لیست مخاطبان")
+	btnTG_Clear        = targetMenu.Text("🗑 پاکسازی لیست اهداف")
+	btnTG_Back         = targetMenu.Text("🔙 بازگشت به ولف +")
+	btnTG_BackToTarget = targetMenu.Text("🔙 بازگشت به ردیاب")
 )
 
 func init() {
@@ -94,8 +97,8 @@ func init() {
 	)
 
 	targetMenu.Reply(
-		targetMenu.Row(btnTG_Add, btnTG_List),
-		targetMenu.Row(btnTG_Clear),
+		targetMenu.Row(btnTG_Add, btnTG_Delete),
+		targetMenu.Row(btnTG_List, btnTG_Clear),
 		targetMenu.Row(btnTG_Back),
 	)
 }
@@ -302,6 +305,41 @@ func getMonitoredTargetsText(ownerID int64) string {
 	return "📋 <b>لیست اهداف تحت نظر:</b>\n" + strings.Join(list, "\n")
 }
 
+// ساخت کیبورد ثابت پویا برای حذف تکی مخاطبان
+func buildTargetDeleteKeyboard(ownerID int64) (*tele.ReplyMarkup, int) {
+	menu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	rows, err := db.Query("SELECT target_id, first_name, last_name, username FROM wolf_targets WHERE owner_id = ?", ownerID)
+	if err != nil {
+		menu.Reply(menu.Row(btnTG_BackToTarget))
+		return menu, 0
+	}
+	defer rows.Close()
+
+	var btnRows []tele.Row
+	count := 0
+	for rows.Next() {
+		var tid int64
+		var fn, ln, un string
+		if err := rows.Scan(&tid, &fn, &ln, &un); err == nil {
+			name := strings.TrimSpace(fn + " " + ln)
+			if name == "" {
+				if un != "" {
+					name = "@" + un
+				} else {
+					name = "کاربر"
+				}
+			}
+			btn := menu.Text(fmt.Sprintf("❌ %s (%d)", name, tid))
+			btnRows = append(btnRows, menu.Row(btn))
+			count++
+		}
+	}
+
+	btnRows = append(btnRows, menu.Row(btnTG_BackToTarget))
+	menu.Reply(btnRows...)
+	return menu, count
+}
+
 func RegisterWolfPlusHandlers(bot *tele.Bot) {
 	showDashboard := func(c tele.Context) error {
 		userID := c.Sender().ID
@@ -454,8 +492,12 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 	})
 
 	// ردیاب مخاطب خاص
-	bot.Handle(&btnWP_Target, func(c tele.Context) error {
+	showTargetMenu := func(c tele.Context) error {
 		userID := c.Sender().ID
+		wolfPlusStatesMu.Lock()
+		delete(wolfPlusStates, userID)
+		wolfPlusStatesMu.Unlock()
+
 		_, _, _, _, targetCount := getWolfPlusStatus(userID)
 
 		text := fmt.Sprintf(`🎯 <b>مدیریت ردیاب مخاطب خاص (Target Tracker)</b>
@@ -471,7 +513,10 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 ▫️ تعویض، حذف یا ثبت عکس پروفایل جدید`, targetCount)
 
 		return c.Send(text, targetMenu, tele.ModeHTML)
-	})
+	}
+
+	bot.Handle(&btnWP_Target, showTargetMenu)
+	bot.Handle(&btnTG_BackToTarget, showTargetMenu)
 
 	bot.Handle(&btnTG_Add, func(c tele.Context) error {
 		userID := c.Sender().ID
@@ -480,6 +525,20 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 		wolfPlusStatesMu.Unlock()
 
 		return c.Send("🎯 <b>ثبت مخاطب هدف:</b>\n\nلطفاً <b>یوزرنیم</b> (مثلاً <code>@username</code>) یا <b>آیدی عددی</b> مخاطب هدف را ارسال کنید:", targetMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnTG_Delete, func(c tele.Context) error {
+		userID := c.Sender().ID
+		delMenu, count := buildTargetDeleteKeyboard(userID)
+		if count == 0 {
+			return c.Send("⚠️ <b>لیست اهداف خالی است!</b> مخاطبی برای حذف وجود ندارد.", targetMenu, tele.ModeHTML)
+		}
+
+		wolfPlusStatesMu.Lock()
+		wolfPlusStates[userID] = "waiting_for_target_delete"
+		wolfPlusStatesMu.Unlock()
+
+		return c.Send("🎯 <b>حذف مخاطب از ردیاب:</b>\n\nبرای حذف، روی نام مخاطب در کیبورد پایین کلیک کنید یا آیدی عددی/یوزرنیم آن را ارسال کنید:", delMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnTG_List, func(c tele.Context) error {
@@ -608,7 +667,6 @@ func HandleWolfPlusText(c tele.Context) bool {
 			var targetUser *tg.User
 			var targetInputUser tg.InputUserClass
 
-			// حالت ۱: بررسی آیدی عددی
 			if numID, err := strconv.ParseInt(input, 10, 64); err == nil {
 				if numID == ub.UserID {
 					self, sErr := ub.Client.Self(ctx)
@@ -619,7 +677,6 @@ func HandleWolfPlusText(c tele.Context) bool {
 				}
 			}
 
-			// حالت ۲: بررسی یوزرنیم
 			if targetUser == nil {
 				resolved, err := ub.Client.API().ContactsResolveUsername(ctx, input)
 				if err == nil && len(resolved.Users) > 0 {
@@ -668,6 +725,47 @@ func HandleWolfPlusText(c tele.Context) bool {
 		wolfPlusStatesMu.Lock()
 		delete(wolfPlusStates, userID)
 		wolfPlusStatesMu.Unlock()
+		return true
+	}
+
+	if state == "waiting_for_target_delete" {
+		var targetID int64
+		if strings.Contains(text, "(") && strings.Contains(text, ")") {
+			start := strings.LastIndex(text, "(")
+			end := strings.LastIndex(text, ")")
+			if start != -1 && end != -1 && end > start {
+				idStr := text[start+1 : end]
+				targetID, _ = strconv.ParseInt(idStr, 10, 64)
+			}
+		}
+		if targetID == 0 {
+			clean := strings.TrimSpace(text)
+			clean = strings.TrimPrefix(clean, "❌ ")
+			if id, err := strconv.ParseInt(clean, 10, 64); err == nil {
+				targetID = id
+			}
+		}
+
+		var res sql.Result
+		var err error
+		if targetID != 0 {
+			res, err = db.Exec("DELETE FROM wolf_targets WHERE owner_id = ? AND target_id = ?", userID, targetID)
+		} else {
+			cleanUser := strings.TrimPrefix(strings.TrimSpace(text), "@")
+			res, err = db.Exec("DELETE FROM wolf_targets WHERE owner_id = ? AND username = ?", userID, cleanUser)
+		}
+
+		wolfPlusStatesMu.Lock()
+		delete(wolfPlusStates, userID)
+		wolfPlusStatesMu.Unlock()
+
+		if err == nil {
+			if affected, _ := res.RowsAffected(); affected > 0 {
+				_ = c.Send("✅ <b>مخاطب با موفقیت از ردیاب حذف شد.</b>", targetMenu, tele.ModeHTML)
+				return true
+			}
+		}
+		_ = c.Send("❌ <b>مخاطب در لیست یافت نشد یا قبلاً حذف شده است.</b>", targetMenu, tele.ModeHTML)
 		return true
 	}
 
@@ -1022,9 +1120,7 @@ func handleEditedMessage(client *telegram.Client, ownerID int64, messageClass tg
 	}
 }
 
-// موتور ردیاب تغییرات پروفایل مخاطب خاص (بررسی هوشمند و سریع)
 func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, ownerID int64) {
-	// بررسی سریع هر ۴۵ ثانیه برای دریافت بلادرنگ تغییرات
 	ticker := time.NewTicker(45 * time.Second)
 	go func() {
 		for {
@@ -1085,7 +1181,6 @@ func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, owne
 
 					var changes []string
 
-					// ۱. بررسی تغییر نام و نام خانوادگی
 					if oldFirst != newFirst || oldLast != newLast {
 						oldName := strings.TrimSpace(oldFirst + " " + oldLast)
 						newName := strings.TrimSpace(newFirst + " " + newLast)
@@ -1098,7 +1193,6 @@ func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, owne
 						changes = append(changes, fmt.Sprintf("👤 تغییر نام :\nاز: %s\nبه: %s", oldName, newName))
 					}
 
-					// ۲. بررسی تغییر یوزرنیم
 					if oldUser != newUsername {
 						oldU := "@" + oldUser
 						if oldUser == "" {
@@ -1111,7 +1205,6 @@ func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, owne
 						changes = append(changes, fmt.Sprintf("🌐 تغییر یوزرنیم :\nاز: %s\nبه: %s", oldU, newU))
 					}
 
-					// ۳. بررسی تغییر بیوگرافی
 					if oldBio != newBio {
 						oldB := oldBio
 						if oldB == "" {
@@ -1124,7 +1217,6 @@ func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, owne
 						changes = append(changes, fmt.Sprintf("📝 تغییر بیوگرافی :\nاز: %s\nبه: %s", oldB, newB))
 					}
 
-					// ۴. بررسی تغییر، حذف یا افزودن عکس پروفایل
 					if oldPhotoID != newPhotoID {
 						if newPhotoID == 0 {
 							changes = append(changes, "📸 عکس پروفایل حذف شد.")
@@ -1135,7 +1227,6 @@ func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, owne
 						}
 					}
 
-					// ارسال گزارش تجمیعی در صورت وجود هرگونه تغییر
 					if len(changes) > 0 {
 						report := fmt.Sprintf(
 							"🐺 ᴛᴀʀɢᴇᴛ ᴛʀᴀᴄᴋᴇʀ | ولف پلاس\n"+
@@ -1157,7 +1248,6 @@ func StartTargetTrackerWorker(ctx context.Context, client *telegram.Client, owne
 						})
 						sCancel()
 
-						// بروزرسانی مشخصات در دیتابیس
 						_, _ = db.Exec(`
 							UPDATE wolf_targets 
 							SET first_name=?, last_name=?, username=?, bio=?, photo_id=? 

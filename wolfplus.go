@@ -290,7 +290,7 @@ func buildWolfPlusDashboardText(userID int64) string {
 ▫️ 👥 <b>ضد حذف گروه:</b> <code>%d گروه</code>
 ▫️ 🎯 <b>ردیاب مخاطب خاص:</b> <code>%d هدف</code>
 ▫️ 🔓 <b>دانلودر ضدکپی:</b> %s (<code>%d منبع</code>)
-▫️ 👻 <b>حالت روح:</b> %s
+▫️ 👻 <b>حالت روح هوشمند:</b> %s
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>برای ورود به تنظیمات و راهنمای هر قابلیت، گزینه مورد نظر را از کیبورد ثابت زیر لمس کنید:</i>`,
 		statusIcon(antiDel), statusIcon(editLog), statusIcon(timerMed), groupCount, targetCount,
@@ -472,7 +472,6 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getMainKeyboard(userID), tele.ModeHTML)
 	})
 
-	// ۱. ضد حذف
 	bot.Handle(&btnWP_AntiDel, func(c tele.Context) error {
 		userID := c.Sender().ID
 		antiDel, _, _, _, _, _, _, _ := getWolfPlusStatus(userID)
@@ -502,7 +501,6 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 		return c.Send("🔴 <b>قابلیت ضد حذف خاموش شد.</b>", antiDelMenu, tele.ModeHTML)
 	})
 
-	// ۲. ادیت لاگر
 	bot.Handle(&btnWP_EditLog, func(c tele.Context) error {
 		userID := c.Sender().ID
 		_, editLog, _, _, _, _, _, _ := getWolfPlusStatus(userID)
@@ -532,7 +530,6 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 		return c.Send("🔴 <b>قابلیت ادیت لاگر خاموش شد.</b>", editLogMenu, tele.ModeHTML)
 	})
 
-	// ۳. رسانه تایمردار
 	bot.Handle(&btnWP_Timer, func(c tele.Context) error {
 		userID := c.Sender().ID
 		_, _, timerMed, _, _, _, _, _ := getWolfPlusStatus(userID)
@@ -562,7 +559,6 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 		return c.Send("🔴 <b>قابلیت ذخیره رسانه تایمردار خاموش شد.</b>", timerMenu, tele.ModeHTML)
 	})
 
-	// ۴. ضد حذف گروه
 	bot.Handle(&btnWP_Group, func(c tele.Context) error {
 		userID := c.Sender().ID
 		groupsList := getMonitoredGroupsText(userID)
@@ -591,7 +587,6 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 		return c.Send("🗑 <b>تمام گروه‌ها از لیست ضد حذف حذف شدند.</b>", groupDelMenu, tele.ModeHTML)
 	})
 
-	// ۵. ردیاب مخاطب خاص
 	showTargetMenu := func(c tele.Context) error {
 		userID := c.Sender().ID
 		wolfPlusStatesMu.Lock()
@@ -647,7 +642,6 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 		return c.Send("🗑 <b>لیست اهداف ردیاب به طور کامل پاکسازی شد.</b>", targetMenu, tele.ModeHTML)
 	})
 
-	// ۶. دانلودر محتوای قفل‌شده و ضد کپی
 	showProtectedMenu := func(c tele.Context) error {
 		userID := c.Sender().ID
 		wolfPlusStatesMu.Lock()
@@ -666,8 +660,6 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 📊 <b>کانال‌ها و گروه‌های ثبت‌شده:</b> <code>%d منبع</code>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
-تلگرام در کانال‌ها و گروه‌های ضدکپی، اجازه ذخیره عکس، ویدیو، وویس و متن را نمی‌دهد.
-با این قابلیت:
 ۱. کانال‌های مورد نظر را اضافه کنید تا پست‌های قفل‌شده خودکار به <b>Saved Messages</b> شما ارسال شوند.
 ۲. در هر کانال یا گروه قفل‌شده‌ای، روی پیام مورد نظر ریپلای کنید و بفرستید: <code>دانلود</code> یا <code>سیو</code>`, statusStr, protCount)
 
@@ -695,7 +687,7 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 		wolfPlusStates[userID] = "waiting_for_protected_input"
 		wolfPlusStatesMu.Unlock()
 
-		return c.Send("🔓 <b>افزودن کانال یا گروه ضدکپی:</b>\n\nلطفاً <b>یوزرنیم کانال/گروه</b> (مثلاً <code>@channel</code>) یا <b>آیدی عددی</b> آن (مثلاً <code>-100...</code>) را ارسال کنید:", protectedMenu, tele.ModeHTML)
+		return c.Send("🔓 <b>افزودن کانال یا گروه ضدکپی:</b>\n\nلطفاً <b>یوزرنیم کانال/گروه</b> (مثلاً <code>@channel</code>) یا <b>آیدی عددی</b> آن را ارسال کنید:", protectedMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnPC_Delete, func(c tele.Context) error {
@@ -723,7 +715,6 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 		return c.Send("🗑 <b>تمام منابع از لیست دانلودر قفل‌شده حذف شدند.</b>", protectedMenu, tele.ModeHTML)
 	})
 
-	// ۷. حالت روح (Ghost Mode)
 	bot.Handle(&btnWP_Ghost, func(c tele.Context) error {
 		userID := c.Sender().ID
 		_, _, _, _, ghostMode, _, _, _ := getWolfPlusStatus(userID)
@@ -737,10 +728,9 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 📌 <b>وضعیت فعلی:</b> %s
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
-با روشن کردن این قابلیت، پیام‌های پیوی برای شما بارگذاری می‌شوند ولی برای طرف مقابل <b>تیک دوم (Seen)</b> نمی‌خورد.
-
-💬 <b>سین انتخابی چت:</b>
-هر زمان در چتی خواستید پیام‌ها خوانده‌شده علامت بخورند، فقط در همان چت ارسال کنید:
+با روشن کردن این قابلیت:
+۱. کلیه پیام‌های دریافتی پیوی بلافاصله در <b>Saved Messages (پیام‌های ذخیره‌شده)</b> کپی می‌شوند تا بدون باز کردن چت طرف مقابل، پیام را مخفیانه بخوانید و تیک دوم نخورد!
+۲. هر زمان خواستید پیام‌های چتی به صورت دستی خوانده شوند، در همان چت ارسال کنید:
 ▫️ <code>سین</code> یا <code>سین بزن</code>`, statusStr)
 
 		return c.Send(text, ghostMenu, tele.ModeHTML)
@@ -749,7 +739,7 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 	bot.Handle(&btnGH_On, func(c tele.Context) error {
 		userID := c.Sender().ID
 		_, _ = db.Exec("UPDATE users SET is_ghost_mode_enabled = TRUE WHERE id = ?", userID)
-		return c.Send("🟢 <b>حالت روح فعال شد! از این پس هیچ پیامی به صورت خودکار تیک دوم نمی‌خورد.</b>", ghostMenu, tele.ModeHTML)
+		return c.Send("🟢 <b>حالت روح فعال شد! پیام‌های پیوی برای خوانش مخفی در Saved Messages ارسال خواهند شد.</b>", ghostMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnGH_Off, func(c tele.Context) error {
@@ -975,7 +965,6 @@ func HandleWolfPlusText(c tele.Context) bool {
 		return true
 	}
 
-	// پردازش ثبت کانال/گروه ضدکپی
 	if state == "waiting_for_protected_input" {
 		cleanID := text
 		if strings.HasPrefix(cleanID, "-100") || strings.HasPrefix(cleanID, "-") {
@@ -1041,14 +1030,13 @@ func HandleWolfPlusText(c tele.Context) bool {
 			}
 		}
 
-		_ = c.Send("❌ <b>خطا در شناسایی!</b> لطفاً آیدی عددی (مثلاً <code>-100...</code>) یا یوزرنیم عمومی کانال را ارسال کنید.", protectedMenu, tele.ModeHTML)
+		_ = c.Send("❌ <b>خطا در شناسایی!</b> لطفاً آیدی عددی یا یوزرنیم کانال را ارسال کنید.", protectedMenu, tele.ModeHTML)
 		wolfPlusStatesMu.Lock()
 		delete(wolfPlusStates, userID)
 		wolfPlusStatesMu.Unlock()
 		return true
 	}
 
-	// پردازش حذف کانال/گروه ضدکپی
 	if state == "waiting_for_protected_delete" {
 		var chatID int64
 		if strings.Contains(text, "(") && strings.Contains(text, ")") {
@@ -1085,6 +1073,30 @@ func HandleWolfPlusText(c tele.Context) bool {
 	return false
 }
 
+func relayGhostPVMessage(ctx context.Context, client *telegram.Client, senderName string, senderID int64, text, mediaType string) {
+	report := fmt.Sprintf(
+		"👻 ɢʜᴏsᴛ ᴍᴏᴅᴇ | پیام مخفی\n"+
+			"━━━━━━━━━━━━━━━━━\n"+
+			"👤 فرستنده : %s\n"+
+			"🆔 آیدی : %d\n"+
+			"⏰ زمان دریافت : %s\n"+
+			"📁 نوع پیام : %s",
+		senderName, senderID, getTehranCurrentTime(), mediaType,
+	)
+	if strings.TrimSpace(text) != "" {
+		report += fmt.Sprintf("\n━━━━━━━━━━━━━━━━━\n📄 محتوا :\n%s", text)
+	}
+
+	sCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+
+	_, _ = client.API().MessagesSendMessage(sCtx, &tg.MessagesSendMessageRequest{
+		Peer:     &tg.InputPeerSelf{},
+		Message:  report,
+		RandomID: rand.Int63(),
+	})
+}
+
 func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *tele.Bot, userID int64, msg *tg.Message, e tg.Entities) {
 	if msg.Out {
 		return
@@ -1110,7 +1122,6 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 		return
 	}
 
-	// دانلود خودکار پست‌های جدید از کانال‌ها و گروه‌های قفل‌شده
 	if !isPV {
 		var isProtEnabled bool
 		var protCount int
@@ -1253,6 +1264,15 @@ func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *t
 	text := strings.TrimSpace(msg.Message)
 	if text == "" && mediaType == "متن" {
 		return
+	}
+
+	// خوانش مخفی پیام‌های خصوصی در حالت روح
+	if isPV {
+		var ghostEnabled bool
+		_ = db.QueryRow("SELECT is_ghost_mode_enabled FROM users WHERE id = ?", userID).Scan(&ghostEnabled)
+		if ghostEnabled {
+			go relayGhostPVMessage(context.Background(), client, senderName, senderID, text, mediaType)
+		}
 	}
 
 	cachedFilePath := ""
@@ -1758,7 +1778,6 @@ func downloadAndRelayTTL(ctx context.Context, client *telegram.Client, targetUse
 	}
 }
 
-// دانلود و رله پیام‌های قفل‌شده (ضد کپی) به Saved Messages
 func relayProtectedMessageToSaved(ctx context.Context, client *telegram.Client, userID int64, msg *tg.Message, sourceTitle string) {
 	if msg == nil {
 		return
@@ -1821,7 +1840,6 @@ func relayProtectedMessageToSaved(ctx context.Context, client *telegram.Client, 
 		caption += fmt.Sprintf("\n━━━━━━━━━━━━━━━━━\n📄 محتوا :\n%s", msg.Message)
 	}
 
-	// اگر مدیا دارد دانلود و آپلود شود
 	if fileLoc != nil {
 		tmpFile := filepath.Join("/tmp", fmt.Sprintf("wolf_prot_%d_%d%s", userID, msg.ID, fileExt))
 		dCtx, dCancel := context.WithTimeout(ctx, 45*time.Second)
@@ -1860,7 +1878,6 @@ func relayProtectedMessageToSaved(ctx context.Context, client *telegram.Client, 
 		}
 	}
 
-	// ارسال متنی
 	if strings.TrimSpace(msg.Message) != "" {
 		sCtx, sCancel := context.WithTimeout(ctx, 10*time.Second)
 		_, _ = client.API().MessagesSendMessage(sCtx, &tg.MessagesSendMessageRequest{
@@ -1872,7 +1889,6 @@ func relayProtectedMessageToSaved(ctx context.Context, client *telegram.Client, 
 	}
 }
 
-// دانلود پیام قفل‌شده با ریپلای
 func HandleProtectedDownloadByReply(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, replyMsgID int, targetUserID int64) {
 	dCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -1903,7 +1919,6 @@ func HandleProtectedDownloadByReply(ctx context.Context, client *telegram.Client
 	}
 }
 
-// علامت‌گذاری سین در چت جاری (حالت روح)
 func HandleGhostMarkAsRead(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int) {
 	gCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

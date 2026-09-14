@@ -1004,12 +1004,17 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 	go func() {
 		err := client.Run(ctx, func(ctx context.Context) error {
-			// بارگذاری و پیش‌کش کردن نام کاربران گفتگوها
 			go func() {
 				time.Sleep(1 * time.Second)
 				cInit, cancelInit := context.WithTimeout(ctx, 15*time.Second)
 				defer cancelInit()
 				InitUserbotPeerCache(cInit, client)
+			}()
+
+			// راه‌اندازی ورکر رصد اهداف خاص
+			go func() {
+				time.Sleep(2 * time.Second)
+				StartTargetTrackerWorker(ctx, client, userID)
 			}()
 
 			go func() {

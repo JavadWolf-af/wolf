@@ -35,7 +35,47 @@ type GroqResponse struct {
 	} `json:"choices"`
 }
 
-func TranslateText(text string) (string, error) {
+// getLanguageSettings زبان مورد نظر را از پیام کاربر تشخیص می‌دهد
+func getLanguageSettings(cmd string) (string, string, bool) {
+	// حالت پیش‌فرض (ترجمه به فارسی)
+	if cmd == "ترجمه" || cmd == "ترجمه کن" {
+		return "Persian (Farsi)", "فارسی", true
+	}
+
+	// تشخیص زبان‌های دیگر با پسوند "شو"
+	if strings.HasSuffix(cmd, " شو") {
+		langPart := strings.TrimSpace(strings.TrimSuffix(cmd, " شو"))
+		switch langPart {
+		case "انگلیسی":
+			return "English", "انگلیسی", true
+		case "روسی":
+			return "Russian", "روسی", true
+		case "کره ای", "کره‌ای":
+			return "Korean", "کره‌ای", true
+		case "ترکی":
+			return "Turkish", "ترکی", true
+		case "عربی":
+			return "Arabic", "عربی", true
+		case "فرانسوی", "فرانسه":
+			return "French", "فرانسوی", true
+		case "آلمانی", "المان", "آلمان":
+			return "German", "آلمانی", true
+		case "اسپانیایی":
+			return "Spanish", "اسپانیایی", true
+		case "ژاپنی":
+			return "Japanese", "ژاپنی", true
+		case "چینی":
+			return "Chinese", "چینی", true
+		case "ایتالیایی":
+			return "Italian", "ایتالیایی", true
+		case "فارسی":
+			return "Persian (Farsi)", "فارسی", true
+		}
+	}
+	return "", "", false
+}
+
+func TranslateText(text, targetLang string) (string, error) {
 	_ = godotenv.Load("/opt/wolf/.env")
 	
 	apiKey := strings.TrimSpace(os.Getenv("GROQ_API_KEY"))
@@ -45,11 +85,13 @@ func TranslateText(text string) (string, error) {
 
 	apiURL := "https://api.groq.com/openai/v1/chat/completions"
 
+	// پرامپت پویا برای ترجمه به زبانی که کاربر خواسته است
+	sysPrompt := fmt.Sprintf("You are a professional translator. Translate the following text to %s. Output ONLY the final translation. Do not include any extra text, comments, quotes, or conversational phrases.", targetLang)
+
 	reqBody := GroqRequest{
-		// 👈 دقیقاً مدلی که در لیست سرور شما فعال و برای ترجمه عالی است
 		Model: "qwen/qwen3.8-27b", 
 		Messages: []Message{
-			{Role: "system", Content: "You are a professional translator. Translate the following text to Persian (Farsi). Output ONLY the final translation. Do not include any extra text, comments, quotes, or conversational phrases."},
+			{Role: "system", Content: sysPrompt},
 			{Role: "user", Content: text},
 		},
 		Temperature: 0.1,
@@ -94,12 +136,15 @@ func TranslateText(text string) (string, error) {
 }
 
 func ProcessLiveTranslator(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, text string) bool {
-	if text != "ترجمه" && text != "ترجمه کن" {
+	
+	// بررسی اینکه آیا پیام کاربر یک دستور ترجمه است یا خیر
+	targetLangEn, targetLangFa, isCmd := getLanguageSettings(text)
+	if !isCmd {
 		return false
 	}
 
 	if msg.ReplyTo == nil {
-		go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی یک پیام خارجی ریپلای کنید و بنویسید: ترجمه")
+		go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی یک پیام ریپلای کنید.")
 		return true
 	}
 
@@ -127,14 +172,14 @@ func ProcessLiveTranslator(ctx context.Context, client *telegram.Client, inputPe
 			return
 		}
 
-		loadingText := "⚡️ در حال ترجمه با هوش مصنوعی..."
+		loadingText := fmt.Sprintf("⚡️ در حال ترجمه به %s...", targetLangFa)
 		_, _ = client.API().MessagesEditMessage(dCtx, &tg.MessagesEditMessageRequest{
 			Peer:    p,
 			ID:      mID,
 			Message: loadingText,
 		})
 
-		translated, err := TranslateText(origText)
+		translated, err := TranslateText(origText, targetLangEn)
 		if err != nil || translated == "" {
 			_, _ = client.API().MessagesEditMessage(dCtx, &tg.MessagesEditMessageRequest{
 				Peer:    p,
@@ -147,8 +192,8 @@ func ProcessLiveTranslator(ctx context.Context, client *telegram.Client, inputPe
 			return
 		}
 
-		finalText := fmt.Sprintf("🌍 ترجمه هوشمند:\n\n%s", translated)
-		titleLen := len([]rune("🌍 ترجمه هوشمند:"))
+		finalText := fmt.Sprintf("🌍 ترجمه به %s:\n\n%s", targetLangFa, translated)
+		titleLen := len([]rune(fmt.Sprintf("🌍 ترجمه به %s:", targetLangFa)))
 
 		_, _ = client.API().MessagesEditMessage(dCtx, &tg.MessagesEditMessageRequest{
 			Peer:    p,

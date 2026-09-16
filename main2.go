@@ -36,7 +36,6 @@ type GroqResponse struct {
 }
 
 func TranslateText(text string) (string, error) {
-	// لود کردن مستقیم فایل تنظیمات برای اطمینان صد در صدی
 	_ = godotenv.Load("/opt/wolf/.env")
 	
 	apiKey := strings.TrimSpace(os.Getenv("GROQ_API_KEY"))
@@ -47,7 +46,8 @@ func TranslateText(text string) (string, error) {
 	apiURL := "https://api.groq.com/openai/v1/chat/completions"
 
 	reqBody := GroqRequest{
-		Model: "llama-3.1-70b-versatile", // 👈 تغییر به پایدارترین مدل لاما برای ترجمه بی‌نقص
+		// استفاده از پایدارترین، سریع‌ترین و همیشگی‌ترین مدل شبکه گروک
+		Model: "llama-3.1-8b-instant", 
 		Messages: []Message{
 			{Role: "system", Content: "You are a professional translator. Translate the following text to Persian (Farsi). Output ONLY the final translation. Do not include any extra text, comments, quotes, or conversational phrases."},
 			{Role: "user", Content: text},

@@ -1379,6 +1379,45 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 		text := strings.TrimSpace(msg.Message)
 
+		// پردازش دستور شمارش معکوس (تایمر زنده)
+		if strings.HasPrefix(text, "تایمر ") || strings.HasPrefix(text, "شمارش ") {
+			prefix := "تایمر "
+			if strings.HasPrefix(text, "شمارش ") {
+				prefix = "شمارش "
+			}
+			numStr := strings.TrimSpace(strings.TrimPrefix(text, prefix))
+			count, err := strconv.Atoi(numStr)
+			if err == nil && count > 0 {
+				if count > 60 {
+					count = 60
+				}
+				go func(p tg.InputPeerClass, mID int, startCount int) {
+					for i := startCount; i > 0; i-- {
+						eCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						msgText := fmt.Sprintf("⏳ %d", i)
+						_, _ = client.API().MessagesEditMessage(eCtx, &tg.MessagesEditMessageRequest{
+							Peer:    p,
+							ID:      mID,
+							Message: msgText,
+							Entities: []tg.MessageEntityClass{
+								&tg.MessageEntityBold{Offset: 0, Length: len([]rune(msgText))},
+							},
+						})
+						cancel()
+						time.Sleep(1 * time.Second)
+					}
+					eCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					_, _ = client.API().MessagesEditMessage(eCtx, &tg.MessagesEditMessageRequest{
+						Peer:    p,
+						ID:      mID,
+						Message: "💥",
+					})
+					cancel()
+				}(inputPeer, msg.ID, count)
+				return
+			}
+		}
+
 		// پردازش دستورات پاکسازی سریع پیام‌ها با دستور «پاکشو»
 		if text == "پاکشو" || strings.HasPrefix(text, "پاکشو ") {
 			if msg.ReplyTo != nil {
@@ -2526,6 +2565,7 @@ func main() {
 	guideFontMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideActionMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guidePurgeMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guideTimerMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guidePVMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideGroupMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
@@ -2537,6 +2577,7 @@ func main() {
 	btnGEnemy := guideMenu.Text("⚔️ دشمن")
 	btnGAction := guideMenu.Text("🎬 اکشن‌ها")
 	btnGPurge := guideMenu.Text("🗑 پاکسازی")
+	btnGTimer := guideMenu.Text("⏳ تایمر")
 	btnGPV := guideMenu.Text("📩 پیوی همه")
 	btnGGroup := guideMenu.Text("👥 گروه همه")
 	btnGBackMain := guideMenu.Text("🔙 بازگشت به منوی اصلی")
@@ -2547,8 +2588,8 @@ func main() {
 		guideMenu.Row(btnGBio, btnGFont),
 		guideMenu.Row(btnGFriend, btnGEnemy),
 		guideMenu.Row(btnGAction, btnGPurge),
-		guideMenu.Row(btnGPV, btnGGroup),
-		guideMenu.Row(btnGBackMain),
+		guideMenu.Row(btnGTimer, btnGPV),
+		guideMenu.Row(btnGGroup, btnGBackMain),
 	)
 
 	btnClockOn := guideClockMenu.Text("🟢 روشن کردن ساعت")
@@ -2617,6 +2658,9 @@ func main() {
 	btnPurgeBack := guidePurgeMenu.Text("🔙 بازگشت به راهنما")
 	guidePurgeMenu.Reply(guidePurgeMenu.Row(btnPurgeBack))
 
+	btnTimerBack := guideTimerMenu.Text("🔙 بازگشت به راهنما")
+	guideTimerMenu.Reply(guideTimerMenu.Row(btnTimerBack))
+
 	btnPVBack := guidePVMenu.Text("🔙 بازگشت به راهنما")
 	guidePVMenu.Reply(guidePVMenu.Row(btnPVBack))
 
@@ -2663,6 +2707,7 @@ func main() {
 ▫️ ⚔️ <b>سیستم دشمن:</b> <code>%d نفر</code> (همیشه فعال)
 ▫️ 🎬 <b>اکشن‌های جعلی:</b> فعال و آماده
 ▫️ 🗑 <b>پاکسازی پیام‌ها:</b> فعال و آماده
+▫️ ⏳ <b>تایمر شمارش معکوس:</b> فعال و آماده
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>جهت مطالعه راهنما و تنظیم هر قابلیت، از کیبورد ثابت زیر گزینه مورد نظر را انتخاب کنید:</i>`,
 			clockStatus, emojiStatus, bioStatus, fontStatus, friendCount, enemyCount,
@@ -2784,7 +2829,7 @@ func main() {
 
 		currentKeyPrice := getKeyPrice()
 
-		return fmt.Sprintf(`👑 <b>مدیریت کل سیستم به دست شماست!</b>
+		return fmt.Sprintf(`👑 <b>مدیریت کل سیستم به دستাস্ট شماست!</b>
 
 🖥 <b>مشخصات سرور به شرح زیر است:</b>
 ⚙️ <b>CPU :</b> <code>%.1f%%</code>
@@ -3352,6 +3397,24 @@ func main() {
 		return c.Send(text, guidePurgeMenu, tele.ModeHTML)
 	})
 
+	// منوی تایمر زنده
+	bot.Handle(&btnGTimer, func(c tele.Context) error {
+		text := `⏳ <b>راهنمای شمارش معکوس زنده (تایمر)</b>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>عملکرد:</b>
+این قابلیت پیام شما را به یک تایمر شمارش معکوس زنده تبدیل می‌کند که ثانیه به ثانیه تغییر کرده و در نهایت با یک اموجی هیجان‌انگیز (💥) به پایان می‌رسد!
+
+💬 <b>دستورات چت:</b>
+
+▫️ <code>تایمر 10</code>
+▫️ <code>شمارش 5</code>
+<i>(عدد مقابل دستور، زمان تایمر به ثانیه است. برای جلوگیری از محدودیت تلگرام، حداکثر زمان مجاز ۶۰ ثانیه می‌باشد)</i>
+
+⚡ <i>این دستور مستقیماً روی پیام خودتان اعمال شده و به صورت زنده ویرایش می‌شود.</i>`
+
+		return c.Send(text, guideTimerMenu, tele.ModeHTML)
+	})
+
 	bot.Handle(&btnGPV, func(c tele.Context) error {
 		text := `📩 <b>راهنمای فوروارد همگانی به پیوی‌ها (Broadcast PV)</b>
 ➖➖➖➖➖➖➖➖➖➖
@@ -3393,6 +3456,7 @@ func main() {
 	bot.Handle(&btnFontBack, backToGuideHandler)
 	bot.Handle(&btnActionBack, backToGuideHandler)
 	bot.Handle(&btnPurgeBack, backToGuideHandler)
+	bot.Handle(&btnTimerBack, backToGuideHandler)
 	bot.Handle(&btnPVBack, backToGuideHandler)
 	bot.Handle(&btnGroupBack, backToGuideHandler)
 

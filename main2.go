@@ -13,9 +13,9 @@ import (
 
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
+	"github.com/joho/godotenv"
 )
 
-// ساختارهای مورد نیاز برای API گروک (استاندارد OpenAI)
 type GroqRequest struct {
 	Model       string    `json:"model"`
 	Messages    []Message `json:"messages"`
@@ -35,53 +35,54 @@ type GroqResponse struct {
 	} `json:"choices"`
 }
 
-// TranslateText با استفاده از سرعت بی‌نظیر هوش مصنوعی Groq (مدل Llama 3)
 func TranslateText(text string) (string, error) {
-	apiKey := os.Getenv("GROQ_API_KEY")
+	// لود کردن مستقیم فایل تنظیمات برای اطمینان صد در صدی
+	_ = godotenv.Load("/opt/wolf/.env")
+	
+	apiKey := strings.TrimSpace(os.Getenv("GROQ_API_KEY"))
 	if apiKey == "" {
-		return "", fmt.Errorf("کلید API گروک در فایل .env تنظیم نشده است")
+		return "", fmt.Errorf("کلید API در سرور یافت نشد. مطمئن شوید در فایل .env قرار دارد")
 	}
 
 	apiURL := "https://api.groq.com/openai/v1/chat/completions"
 
-	// استفاده از مدل LLaMA 3.3 که برای زبان فارسی عالی و پرسرعت است
 	reqBody := GroqRequest{
-		Model: "llama-3.3-70b-versatile",
+		Model: "llama3-70b-8192", // مدل پایدار و قدرتمند
 		Messages: []Message{
 			{Role: "system", Content: "You are a professional translator. Translate the following text to Persian (Farsi). Output ONLY the final translation. Do not include any extra text, comments, quotes, or conversational phrases."},
 			{Role: "user", Content: text},
 		},
-		Temperature: 0.1, // دمای بسیار پایین برای ترجمه کاملاً دقیق و پرهیز از داستان‌سرایی
+		Temperature: 0.1,
 	}
 
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("خطای ساخت جیسون: %v", err)
 	}
 
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("خطای ساخت ریکوئست: %v", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := &http.Client{Timeout: 15 * time.Second} // گروک آنقدر سریع است که نیاز به تایم‌اوت طولانی ندارد
+	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("خطای شبکه یا اینترنت سرور: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("خطای گروک (کد %d): %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("کد %d - %s", resp.StatusCode, string(body))
 	}
 
 	var result GroqResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+		return "", fmt.Errorf("خطا در خواندن پاسخ هوش مصنوعی: %v", err)
 	}
 
 	if len(result.Choices) > 0 {
@@ -92,7 +93,6 @@ func TranslateText(text string) (string, error) {
 	return "", fmt.Errorf("پاسخی از شبکه گروک دریافت نشد")
 }
 
-// ProcessLiveTranslator هندل کننده دستورات مترجم در چت تلگرام
 func ProcessLiveTranslator(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, text string) bool {
 	if text != "ترجمه" && text != "ترجمه کن" {
 		return false
@@ -136,7 +136,15 @@ func ProcessLiveTranslator(ctx context.Context, client *telegram.Client, inputPe
 
 		translated, err := TranslateText(origText)
 		if err != nil || translated == "" {
-			notifyAndSelfDestruct(dCtx, client, p, mID, "❌ خطا در ارتباط با هوش مصنوعی Groq.")
+			// در اینجا به جای پاک شدن پیام، ارور دقیق را برای شما چاپ می‌کنیم تا ببینید مشکل از کجاست
+			_, _ = client.API().MessagesEditMessage(dCtx, &tg.MessagesEditMessageRequest{
+				Peer:    p,
+				ID:      mID,
+				Message: fmt.Sprintf("❌ خطا در ترجمه:\n<code>%v</code>", err),
+				Entities: []tg.MessageEntityClass{
+					&tg.MessageEntityCode{Offset: 16, Length: len([]rune(fmt.Sprintf("%v", err)))},
+				},
+			})
 			return
 		}
 

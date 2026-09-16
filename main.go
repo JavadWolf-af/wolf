@@ -935,7 +935,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 		text := strings.TrimSpace(msg.Message)
 
-		// دستورات سیستم دوست
+		// دستورات چت سیستم دوست
 		if text == "تنظیم دوست" {
 			if msg.ReplyTo == nil {
 				if inputPeer != nil {
@@ -1781,19 +1781,21 @@ func main() {
 	guideClockMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideEmojiMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideBioMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guideFriendMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guidePVMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideGroupMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
 	btnGClock := guideMenu.Text("⏱ ساعت زنده")
 	btnGEmoji := guideMenu.Text("🎭 اموجی رندوم")
 	btnGBio := guideMenu.Text("📝 بیوگرافی هوشمند")
+	btnGFriend := guideMenu.Text("🌸 دوست")
 	btnGPV := guideMenu.Text("📩 پیوی همه")
 	btnGGroup := guideMenu.Text("👥 گروه همه")
 	btnGBackMain := guideMenu.Text("🔙 بازگشت به منوی اصلی")
 
 	guideMenu.Reply(
 		guideMenu.Row(btnGClock, btnGEmoji),
-		guideMenu.Row(btnGBio),
+		guideMenu.Row(btnGBio, btnGFriend),
 		guideMenu.Row(btnGPV, btnGGroup),
 		guideMenu.Row(btnGBackMain),
 	)
@@ -1820,6 +1822,17 @@ func main() {
 	guideBioMenu.Reply(
 		guideBioMenu.Row(btnBioOn, btnBioOff),
 		guideBioMenu.Row(btnBioBack),
+	)
+
+	btnFriendOn := guideFriendMenu.Text("🟢 روشن کردن دوست")
+	btnFriendOff := guideFriendMenu.Text("🔴 خاموش کردن دوست")
+	btnFriendList := guideFriendMenu.Text("📋 لیست دوستان")
+	btnFriendClear := guideFriendMenu.Text("🗑 پاکسازی دوستان")
+	btnFriendBack := guideFriendMenu.Text("🔙 بازگشت به راهنما")
+	guideFriendMenu.Reply(
+		guideFriendMenu.Row(btnFriendOn, btnFriendOff),
+		guideFriendMenu.Row(btnFriendList, btnFriendClear),
+		guideFriendMenu.Row(btnFriendBack),
 	)
 
 	btnPVBack := guidePVMenu.Text("🔙 بازگشت به راهنما")
@@ -1860,16 +1873,9 @@ func main() {
 ▫️ ⏱ <b>ساعت زنده:</b> %s
 ▫️ 🎭 <b>اموجی رندوم:</b> %s
 ▫️ 📝 <b>بیوگرافی هوشمند:</b> %s
-▫️ 🌸 <b>سیستم پاسخ‌دهی دوست:</b> %s
+▫️ 🌸 <b>سیستم دوست:</b> %s
 ➖➖➖➖➖➖➖➖➖➖
-💬 <b>دستورات چت سیستم دوست:</b>
-▫️ افزودن: ریپلای با <code>تنظیم دوست</code>
-▫️ حذف: ریپلای با <code>حذف دوست</code>
-▫️ لیست: ارسال <code>لیست دوست</code>
-▫️ پاکسازی: ارسال <code>پاکسازی دوست</code>
-▫️ فعال/غیرفعال: <code>دوست روشن</code> | <code>دوست خاموش</code>
-➖➖➖➖➖➖➖➖➖➖
-💡 <i>جهت مطالعه راهنما و کنترل سایر امکانات، از کیبورد ثابت زیر استفاده کنید:</i>`,
+💡 <i>جهت مطالعه راهنما و تنظیم هر قابلیت، از کیبورد ثابت زیر گزینه مورد نظر را انتخاب کنید:</i>`,
 			clockStatus, emojiStatus, bioStatus, friendStatus,
 		)
 	}
@@ -2127,6 +2133,7 @@ func main() {
 
 	RegisterWolfPlusHandlers(bot)
 
+	// ثبت هندلرهای بخش راهنما
 	bot.Handle(&btnGuide, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -2301,6 +2308,80 @@ func main() {
 		return c.Send("🔴 <b>بیوگرافی خاموش شد و بیوی اولیه شما بازگردانده شد.</b>", guideBioMenu, tele.ModeHTML)
 	})
 
+	// بخش اختصاصی دکمه دوست در راهنما
+	bot.Handle(&btnGFriend, func(c tele.Context) error {
+		userID := c.Sender().ID
+		var isFriend bool
+		_ = db.QueryRow("SELECT is_friend_enabled FROM users WHERE id = ?", userID).Scan(&isFriend)
+		var friendCount int
+		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_friends WHERE owner_id = ?", userID).Scan(&friendCount)
+
+		statusStr := "🔴 خاموش"
+		if isFriend {
+			statusStr = "🟢 روشن"
+		}
+
+		text := fmt.Sprintf(`🌸 <b>مدیریت سیستم هوشمند دوست</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی:</b> %s
+👥 <b>تعداد دوستان فعال:</b> <code>%d نفر</code>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+هنگامی که این قابلیت روشن باشد، هر زمان مخاطبان لیست دوستان شما در هر گروه مشترکی با سلف پیامی بفرستند، سلف‌بات بلافاصله به پیام آن‌ها ریپلای زده و یک جمله زیبا به همراه گل ارسال می‌کند.
+
+💬 <b>دستورات چت (با ریپلای روی پیام فرد):</b>
+▫️ افزودن دوست: <code>تنظیم دوست</code>
+▫️ حذف دوست: <code>حذف دوست</code>
+
+👇 جهت تغییر وضعیت یا مشاهده لیست دوستان از کلیدهای زیر استفاده کنید:`, statusStr, friendCount)
+		return c.Send(text, guideFriendMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnFriendOn, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_friend_enabled = TRUE WHERE id = ?", userID)
+		return c.Send("🟢 <b>سیستم پاسخ‌دهی به دوستان روشن شد 🌸</b>", guideFriendMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnFriendOff, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_friend_enabled = FALSE WHERE id = ?", userID)
+		return c.Send("🔴 <b>سیستم پاسخ‌دهی به دوستان خاموش شد.</b>", guideFriendMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnFriendList, func(c tele.Context) error {
+		userID := c.Sender().ID
+		rows, err := db.Query("SELECT friend_id, friend_name FROM wolf_friends WHERE owner_id = ?", userID)
+		if err != nil {
+			return c.Send("❌ خطا در دریافت اطلاعات دوستان.", guideFriendMenu, tele.ModeHTML)
+		}
+		defer rows.Close()
+
+		var list []string
+		idx := 1
+		for rows.Next() {
+			var fid int64
+			var fname string
+			if err := rows.Scan(&fid, &fname); err == nil {
+				list = append(list, fmt.Sprintf("%d. %s (<code>%d</code>)", idx, fname, fid))
+				idx++
+			}
+		}
+
+		msgText := "📋 <b>لیست دوستان شما:</b>\n\n" + strings.Join(list, "\n")
+		if len(list) == 0 {
+			msgText = "⚠️ <i>لیست دوستان شما در حال حاضر خالی است!</i>"
+		}
+		return c.Send(msgText, guideFriendMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnFriendClear, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("DELETE FROM wolf_friends WHERE owner_id = ?", userID)
+		clearFriendsCache(userID)
+		return c.Send("🗑 <b>لیست دوستان شما به طور کامل پاکسازی شد 🌸</b>", guideFriendMenu, tele.ModeHTML)
+	})
+
 	bot.Handle(&btnGPV, func(c tele.Context) error {
 		text := `📩 <b>راهنمای فوروارد همگانی به پیوی‌ها (Broadcast PV)</b>
 ➖➖➖➖➖➖➖➖➖➖
@@ -2337,6 +2418,7 @@ func main() {
 	bot.Handle(&btnClockBack, backToGuideHandler)
 	bot.Handle(&btnEmojiBack, backToGuideHandler)
 	bot.Handle(&btnBioBack, backToGuideHandler)
+	bot.Handle(&btnFriendBack, backToGuideHandler)
 	bot.Handle(&btnPVBack, backToGuideHandler)
 	bot.Handle(&btnGroupBack, backToGuideHandler)
 

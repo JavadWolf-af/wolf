@@ -1472,6 +1472,11 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 		text := strings.TrimSpace(msg.Message)
 
+		// --- اتصال به قابلیت‌های فایل main2.go ---
+		if ProcessLiveTranslator(ctx, client, inputPeer, msg, text) {
+			return
+		}
+
 		// پردازش دستورات ری‌اکشن خودکار
 		if text == "ری‌اکشن" || strings.HasPrefix(text, "ری‌اکشن ") {
 			if msg.ReplyTo == nil {
@@ -2927,7 +2932,7 @@ func main() {
 	buildGuideDashboardText := func(userID int64) string {
 		var isClock, isEmoji, isBio, isFont bool
 		var bioMode string
-		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bioMode, is_font_enabled FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
+		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
 		var friendCount, enemyCount int
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_friends WHERE owner_id = ?", userID).Scan(&friendCount)
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_enemies WHERE owner_id = ?", userID).Scan(&enemyCount)

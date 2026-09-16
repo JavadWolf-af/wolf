@@ -2094,10 +2094,11 @@ func main() {
 	btnGGroup := guideMenu.Text("👥 گروه همه")
 	btnGBackMain := guideMenu.Text("🔙 بازگشت به منوی اصلی")
 
+	// دکمه‌های دوست و دشمن کنار هم قرار گرفتند
 	guideMenu.Reply(
 		guideMenu.Row(btnGClock, btnGEmoji),
-		guideMenu.Row(btnGBio, btnGFriend),
-		guideMenu.Row(btnGEnemy),
+		guideMenu.Row(btnGBio),
+		guideMenu.Row(btnGFriend, btnGEnemy),
 		guideMenu.Row(btnGPV, btnGGroup),
 		guideMenu.Row(btnGBackMain),
 	)
@@ -2440,6 +2441,7 @@ func main() {
 
 	RegisterWolfPlusHandlers(bot)
 
+	// ثبت هندلرهای بخش راهنما
 	bot.Handle(&btnGuide, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -2631,9 +2633,7 @@ func main() {
 ▫️ <b>افزودن دوست:</b> ریپلای روی پیام و ارسال <code>تنظیم دوست</code>
 ▫️ <b>حذف دوست:</b> ریپلای روی پیام دوست و ارسال <code>حذف دوست</code>
 ▫️ <b>لیست دوستان:</b> ارسال <code>لیست دوست</code>
-▫️ <b>پاکسازی همه:</b> ارسال <code>پاکسازی دوست</code>
-
-⚡ <i>دستورات سلف به پیام تأیید ادیت شده، تیک فعال خورده و پس از ۱۰۰ میلی‌ثانیه پاک می‌شوند.</i>`, friendCount)
+▫️ <b>پاکسازی همه:</b> ارسال <code>پاکسازی دوست</code>`, friendCount)
 		return c.Send(text, guideFriendMenu, tele.ModeHTML)
 	})
 
@@ -2681,15 +2681,13 @@ func main() {
 📊 <b>تعداد دشمنان فعال:</b> <code>%d نفر</code> (همیشه فعال)
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
-این قابلیت همیشه فعال است. با ریپلای روی پیام فرد و ارسال دستور <code>تنظیم دشمن</code>، از این پس هر پیامی در گروه‌ها بفرستد سلف‌بات شما بلافاصله با متن‌های تیکه‌دار و کوبنده از فایل <code>doshman.go</code> به او پاسخ می‌دهد.
+این قابلیت همیشه فعال است. با ریپلای روی پیام فرد و ارسال دستور <code>تنظیم دشمن</code>، از این پس هر پیامی در گروه‌ها بفرستد سلف‌بات شما بلافاصله با متن‌های تیکه‌دار و سنگین به او پاسخ می‌دهد.
 
 💬 <b>دستورات چت (با ریپلای روی پیام فرد):</b>
 ▫️ <b>افزودن دشمن:</b> ریپلای روی پیام و ارسال <code>تنظیم دشمن</code>
 ▫️ <b>حذف دشمن:</b> ریپلای روی پیام و ارسال <code>حذف دشمن</code>
 ▫️ <b>لیست دشمنان:</b> ارسال <code>لیست دشمن</code>
-▫️ <b>پاکسازی همه:</b> ارسال <code>پاکسازی دشمن</code>
-
-⚡ <i>دستورات سلف به پیام تأیید ادیت شده، تیک فعال خورده و پس از ۱۰۰ میلی‌ثانیه پاک می‌شوند.</i>`, enemyCount)
+▫️ <b>پاکسازی همه:</b> ارسال <code>پاکسازی دشمن</code>`, enemyCount)
 		return c.Send(text, guideEnemyMenu, tele.ModeHTML)
 	})
 

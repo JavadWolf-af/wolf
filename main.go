@@ -2020,14 +2020,14 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(bCtx, client, inputPeer, msg, true)
+				handleForwardToAllGroups(gCtx, client, inputPeer, msg, true)
 			}()
 			return
 		} else if text == "گروه همه" {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(bCtx, client, inputPeer, msg, false)
+				handleForwardToAllGroups(gCtx, client, inputPeer, msg, false)
 			}()
 			return
 		}
@@ -3276,54 +3276,22 @@ func main() {
 		return c.Send("🔴 <b>سیستم خوشنویسی خاموش شد.</b>", guideFontMenu, tele.ModeHTML)
 	})
 
-	bot.Handle(&btnFontBoldItalic, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET font_mode = 'bold_italic', is_font_enabled = TRUE WHERE id = ?", userID)
-		updateFontCache(userID, true, "bold_italic")
-		return c.Send("✅ <b>فونت خوشنویسی به «بولد ایتالیک» تغییر یافت و روشن شد.</b>", guideFontMenu, tele.ModeHTML)
-	})
+	setFontHandler := func(mode, label string) tele.HandlerFunc {
+		return func(c tele.Context) error {
+			userID := c.Sender().ID
+			_, _ = db.Exec("UPDATE users SET font_mode = ?, is_font_enabled = TRUE WHERE id = ?", mode, userID)
+			updateFontCache(userID, true, mode)
+			return c.Send(fmt.Sprintf("✅ <b>فونت خوشنویسی به «%s» تغییر یافت و روشن شد.</b>", label), guideFontMenu, tele.ModeHTML)
+		}
+	}
 
-	bot.Handle(&btnFontBold, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET font_mode = 'bold', is_font_enabled = TRUE WHERE id = ?", userID)
-		updateFontCache(userID, true, "bold")
-		return c.Send("✅ <b>فونت خوشنویسی به «بولد» تغییر یافت و روشن شد.</b>", guideFontMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnFontItalic, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET font_mode = 'italic', is_font_enabled = TRUE WHERE id = ?", userID)
-		updateFontCache(userID, true, "italic")
-		return c.Send("✅ <b>فونت خوشنویسی به «ایتالیک» تغییر یافت و روشن شد.</b>", guideFontMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnFontUnderline, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET font_mode = 'underline', is_font_enabled = TRUE WHERE id = ?", userID)
-		updateFontCache(userID, true, "underline")
-		return c.Send("✅ <b>فونت خوشنویسی به «زیر خط» تغییر یافت و روشن شد.</b>", guideFontMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnFontStrike, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET font_mode = 'strike', is_font_enabled = TRUE WHERE id = ?", userID)
-		updateFontCache(userID, true, "strike")
-		return c.Send("✅ <b>فونت خوشنویسی به «خط خورده» تغییر یافت و روشن شد.</b>", guideFontMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnFontMono, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET font_mode = 'mono', is_font_enabled = TRUE WHERE id = ?", userID)
-		updateFontCache(userID, true, "mono")
-		return c.Send("✅ <b>فونت خوشنویسی به «مونو» تغییر یافت و روشن شد.</b>", guideFontMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnFontSpoiler, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET font_mode = 'spoiler', is_font_enabled = TRUE WHERE id = ?", userID)
-		updateFontCache(userID, true, "spoiler")
-		return c.Send("✅ <b>فونت خوشنویسی به «اسپویل» تغییر یافت و روشن شد.</b>", guideFontMenu, tele.ModeHTML)
-	})
+	bot.Handle(&btnFontBoldItalic, setFontHandler("bold_italic", "بولد ایتالیک"))
+	bot.Handle(&btnFontBold, setFontHandler("bold", "بولد"))
+	bot.Handle(&btnFontItalic, setFontHandler("italic", "ایتالیک"))
+	bot.Handle(&btnFontUnderline, setFontHandler("underline", "زیر خط"))
+	bot.Handle(&btnFontStrike, setFontHandler("strike", "خط خورده"))
+	bot.Handle(&btnFontMono, setFontHandler("mono", "مونو"))
+	bot.Handle(&btnFontSpoiler, setFontHandler("spoiler", "اسپویل"))
 
 	// منوی اکشن‌ها
 	bot.Handle(&btnGAction, func(c tele.Context) error {
@@ -3358,7 +3326,7 @@ func main() {
 <code>اکشن بازی 20</code> یا <code>بازی 20</code>
 
 ▫️ 🛑 <b>لغو فوری وضعیت:</b>
-<code>لغو اکشن</code> یا <code>توقف اکشن‌</code>`
+<code>لغو اکشن</code> یا <code>توقف اکشن</code>`
 
 		return c.Send(text, guideActionMenu, tele.ModeHTML)
 	})
@@ -3379,9 +3347,7 @@ func main() {
 ▫️ <b>۲. حذف از یک نقطه خاص (با ریپلای):</b>
 روی پیام قدیمی خودت ریپلای کن و بفرست:
 <code>پاکشو</code>
-<i>(تمام پیام‌های ارسالی شما از آن پیام ریپلای‌شده تا پیام فعلی پاک خواهند شد)</i>
-
-⚡ <i>گزارش تعداد پیام‌های حذف‌شده پس از ۱.۵ ثانیه به طور خودکار ناپدید می‌شود.</i>`
+<i>(تمام پیام‌های ارسالی شما از آن پیام ریپلای‌شده تا پیام فعلی پاک خواهند شد)</i>`
 
 		return c.Send(text, guidePurgeMenu, tele.ModeHTML)
 	})

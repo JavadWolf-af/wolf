@@ -46,8 +46,8 @@ func TranslateText(text string) (string, error) {
 	apiURL := "https://api.groq.com/openai/v1/chat/completions"
 
 	reqBody := GroqRequest{
-		// استفاده از پایدارترین، سریع‌ترین و همیشگی‌ترین مدل شبکه گروک
-		Model: "llama-3.1-8b-instant", 
+		// 👈 دقیقاً مدلی که در لیست سرور شما فعال و برای ترجمه عالی است
+		Model: "qwen/qwen3.8-27b", 
 		Messages: []Message{
 			{Role: "system", Content: "You are a professional translator. Translate the following text to Persian (Farsi). Output ONLY the final translation. Do not include any extra text, comments, quotes, or conversational phrases."},
 			{Role: "user", Content: text},
@@ -127,7 +127,7 @@ func ProcessLiveTranslator(ctx context.Context, client *telegram.Client, inputPe
 			return
 		}
 
-		loadingText := "⚡️ در حال ترجمه با موتور Groq..."
+		loadingText := "⚡️ در حال ترجمه با هوش مصنوعی..."
 		_, _ = client.API().MessagesEditMessage(dCtx, &tg.MessagesEditMessageRequest{
 			Peer:    p,
 			ID:      mID,

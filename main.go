@@ -1379,8 +1379,8 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 		text := strings.TrimSpace(msg.Message)
 
-		// پردازش دستورات پاکسازی سریع پیام‌ها (Purge)
-		if text == "پاکسازی" || text == "حذف" || strings.HasPrefix(text, "پاکسازی ") || strings.HasPrefix(text, "حذف ") {
+		// پردازش دستورات پاکسازی سریع پیام‌ها با دستور «پاکشو»
+		if text == "پاکشو" || strings.HasPrefix(text, "پاکشو ") {
 			if msg.ReplyTo != nil {
 				header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
 				if ok && header.ReplyToMsgID != 0 {
@@ -1390,7 +1390,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				}
 			}
 
-			numStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, "پاکسازی"), "حذف"))
+			numStr := strings.TrimSpace(strings.TrimPrefix(text, "پاکشو"))
 			if numStr != "" {
 				count, err := strconv.Atoi(numStr)
 				if err == nil && count > 0 {
@@ -2020,14 +2020,14 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(gCtx, client, inputPeer, msg, true)
+				handleForwardToAllGroups(bCtx, client, inputPeer, msg, true)
 			}()
 			return
 		} else if text == "گروه همه" {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(gCtx, client, inputPeer, msg, false)
+				handleForwardToAllGroups(bCtx, client, inputPeer, msg, false)
 			}()
 			return
 		}
@@ -3333,7 +3333,7 @@ func main() {
 
 	// منوی پاکسازی هوشمند
 	bot.Handle(&btnGPurge, func(c tele.Context) error {
-		text := `🗑 <b>راهنمای پاکسازی سریع و هوشمند پیام‌ها (Purge)</b>
+		text := `🗑 <b>راهنمای پاکسازی سریع و هوشمند پیام‌ها (پاکشو)</b>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>عملکرد:</b>
 این قابلیت به شما امکان می‌دهد پیام‌های ارسالی خودتان را در هر گروه یا چت خصوصی با بیشترین سرعت و بدون باقی ماندن ردپا پاکسازی کنید.
@@ -3341,12 +3341,12 @@ func main() {
 💬 <b>دستورات چت:</b>
 
 ▫️ <b>۱. حذف بر اساس تعداد:</b>
-ارسال دستور <code>پاکسازی 20</code> یا <code>حذف 20</code>
+ارسال دستور <code>پاکشو 20</code>
 <i>(تعداد پیام‌های مشخص شده از آخرین پیام‌های خودتان را پاک می‌کند - حداکثر ۱۰۰ عدد در هر بار)</i>
 
 ▫️ <b>۲. حذف از یک نقطه خاص (با ریپلای):</b>
 روی پیام قدیمی خودت ریپلای کن و بفرست:
-<code>پاکسازی</code> یا <code>حذف</code>
+<code>پاکشو</code>
 <i>(تمام پیام‌های ارسالی شما از آن پیام ریپلای‌شده تا پیام فعلی پاک خواهند شد)</i>
 
 ⚡ <i>پیام دستور ظرف ۱۰۰ میلی‌ثانیه محو شده و گزارش تعداد پیام‌های حذف‌شده پس از ۱.۵ ثانیه به طور خودکار ناپدید می‌شود.</i>`

@@ -36,7 +36,7 @@ type GroqResponse struct {
 }
 
 func TranslateText(text string) (string, error) {
-	// لود کردن مستقیم فایل تنظیمات برای اطمینان صد در صدی
+	// لود کردن مستقیم فایل تنظیمات
 	_ = godotenv.Load("/opt/wolf/.env")
 	
 	apiKey := strings.TrimSpace(os.Getenv("GROQ_API_KEY"))
@@ -47,7 +47,7 @@ func TranslateText(text string) (string, error) {
 	apiURL := "https://api.groq.com/openai/v1/chat/completions"
 
 	reqBody := GroqRequest{
-		Model: "llama3-70b-8192", // مدل پایدار و قدرتمند
+		Model: "llama-3.3-70b-versatile", // تغییر به جدیدترین و پرسرعت‌ترین مدل فعال
 		Messages: []Message{
 			{Role: "system", Content: "You are a professional translator. Translate the following text to Persian (Farsi). Output ONLY the final translation. Do not include any extra text, comments, quotes, or conversational phrases."},
 			{Role: "user", Content: text},
@@ -136,7 +136,6 @@ func ProcessLiveTranslator(ctx context.Context, client *telegram.Client, inputPe
 
 		translated, err := TranslateText(origText)
 		if err != nil || translated == "" {
-			// در اینجا به جای پاک شدن پیام، ارور دقیق را برای شما چاپ می‌کنیم تا ببینید مشکل از کجاست
 			_, _ = client.API().MessagesEditMessage(dCtx, &tg.MessagesEditMessageRequest{
 				Peer:    p,
 				ID:      mID,

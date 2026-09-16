@@ -494,7 +494,6 @@ func PopulateChannelCache(chats []tg.ChatClass) {
 	}
 }
 
-// توقف هر اکشن فعال در چت
 func stopActiveAction(actionKey string) {
 	activeActionsMu.Lock()
 	if cancel, ok := activeActions[actionKey]; ok {
@@ -504,7 +503,6 @@ func stopActiveAction(actionKey string) {
 	activeActionsMu.Unlock()
 }
 
-// اجرای اکشن‌های جعلی با تمدید مداوم هر ۴ ثانیه تا پایان زمان
 func startFakeAction(ctx context.Context, client *telegram.Client, userID int64, inputPeer tg.InputPeerClass, peerKey string, action tg.SendMessageActionClass, durationSec int) {
 	actionKey := fmt.Sprintf("%d_%s", userID, peerKey)
 	stopActiveAction(actionKey)
@@ -560,7 +558,6 @@ func startFakeAction(ctx context.Context, client *telegram.Client, userID int64,
 	}()
 }
 
-// پاکسازی گروهی و دسته‌ای پیام‌ها
 func deleteMessageBatch(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, ids []int) {
 	if len(ids) == 0 {
 		return
@@ -584,7 +581,6 @@ func deleteMessageBatch(ctx context.Context, client *telegram.Client, inputPeer 
 	})
 }
 
-// ارسال پیام موقت و محوشونده در چت
 func sendTemporaryNotice(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, text string, duration time.Duration) {
 	sendReq := &tg.MessagesSendMessageRequest{
 		Peer:     inputPeer,
@@ -622,7 +618,6 @@ func sendTemporaryNotice(ctx context.Context, client *telegram.Client, inputPeer
 	}
 }
 
-// اجرای فرایند پاکسازی هوشمند
 func handlePurgeAction(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, cmdMsgID int, fromReplyID int, countLimit int) {
 	pCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -1847,7 +1842,6 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			}
 			return
 		} else if strings.HasPrefix(text, "خوشنویسی ") {
-			// تشخیص دقیق حالت‌های فونت بدون تداخل
 			cleanSub := strings.TrimSpace(strings.TrimPrefix(text, "خوشنویسی "))
 			mode := ""
 			switch cleanSub {
@@ -2026,14 +2020,14 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(bCtx, client, inputPeer, msg, true)
+				handleForwardToAllGroups(gCtx, client, inputPeer, msg, true)
 			}()
 			return
 		} else if text == "گروه همه" {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(bCtx, client, inputPeer, msg, false)
+				handleForwardToAllGroups(gCtx, client, inputPeer, msg, false)
 			}()
 			return
 		}
@@ -2538,9 +2532,9 @@ func main() {
 	btnGClock := guideMenu.Text("⏱ ساعت زنده")
 	btnGEmoji := guideMenu.Text("🎭 اموجی رندوم")
 	btnGBio := guideMenu.Text("📝 بیوگرافی هوشمند")
+	btnGFont := guideMenu.Text("✒️ خوشنویسی")
 	btnGFriend := guideMenu.Text("🌸 دوست")
 	btnGEnemy := guideMenu.Text("⚔️ دشمن")
-	btnGFont := guideMenu.Text("✒️ خوشنویسی")
 	btnGAction := guideMenu.Text("🎬 اکشن‌ها")
 	btnGPurge := guideMenu.Text("🗑 پاکسازی")
 	btnGPV := guideMenu.Text("📩 پیوی همه")

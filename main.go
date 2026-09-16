@@ -99,7 +99,7 @@ var randomBioPool = []string{
 	"💎 اصالت را هیچ بهایی نمی‌تواند بسنجد.",
 	"⏳ زمان می‌گذرد و حقیقت‌ها عریان‌تر می‌شوند.",
 	"🎯 متمرکز بر هدف؛ صداهای مزاحم را نشنیده بگیر.",
-	"🥀 از ریشه‌های خوید جوانه می‌نم؛ استوارتر از دیروز.",
+	"🥀 از ریشه‌های خویش جوانه می‌نم؛ استوارتر از دیروز.",
 	"🪐 در مدار سرنوشت خود، ستاره‌ای بی‌همتایم.",
 	"☕️ تلخ اما سرشار از آرامش، چون خلوت شبانه.",
 	"🌪️ طوفان‌ها برپا می‌شوند تا مسیر را هموار سازند.",
@@ -560,6 +560,160 @@ func startFakeAction(ctx context.Context, client *telegram.Client, userID int64,
 	}()
 }
 
+// پاکسازی گروهی و دسته‌ای پیام‌ها
+func deleteMessageBatch(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, ids []int) {
+	if len(ids) == 0 {
+		return
+	}
+	dCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if ch, ok := inputPeer.(*tg.InputPeerChannel); ok {
+		_, _ = client.API().ChannelsDeleteMessages(dCtx, &tg.ChannelsDeleteMessagesRequest{
+			Channel: &tg.InputChannel{
+				ChannelID:  ch.ChannelID,
+				AccessHash: ch.AccessHash,
+			},
+			ID: ids,
+		})
+		return
+	}
+	_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
+		Revoke: true,
+		ID:     ids,
+	})
+}
+
+// ارسال پیام موقت و محوشونده در چت
+func sendTemporaryNotice(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, text string, duration time.Duration) {
+	sendReq := &tg.MessagesSendMessageRequest{
+		Peer:     inputPeer,
+		Message:  text,
+		RandomID: rand.Int63(),
+		Entities: []tg.MessageEntityClass{
+			&tg.MessageEntityBold{Offset: 0, Length: len([]rune(text))},
+		},
+	}
+	res, err := client.API().MessagesSendMessage(ctx, sendReq)
+	if err != nil {
+		return
+	}
+
+	msgID := 0
+	if updates, ok := res.(*tg.Updates); ok {
+		for _, u := range updates.Updates {
+			if nu, ok := u.(*tg.UpdateNewMessage); ok {
+				if m, ok := nu.Message.(*tg.Message); ok {
+					msgID = m.ID
+					break
+				}
+			} else if ncu, ok := u.(*tg.UpdateNewChannelMessage); ok {
+				if m, ok := ncu.Message.(*tg.Message); ok {
+					msgID = m.ID
+					break
+				}
+			}
+		}
+	}
+
+	if msgID != 0 {
+		time.Sleep(duration)
+		deleteMsg(context.Background(), client, inputPeer, msgID)
+	}
+}
+
+// اجرای فرایند پاکسازی هوشمند
+func handlePurgeAction(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, cmdMsgID int, fromReplyID int, countLimit int) {
+	pCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	var toDelete []int
+	offsetID := cmdMsgID
+
+	for {
+		req := &tg.MessagesGetHistoryRequest{
+			Peer:     inputPeer,
+			OffsetID: offsetID,
+			Limit:    100,
+		}
+		res, err := client.API().MessagesGetHistory(pCtx, req)
+		if err != nil {
+			break
+		}
+
+		var messages []tg.MessageClass
+		switch h := res.(type) {
+		case *tg.MessagesMessages:
+			messages = h.Messages
+		case *tg.MessagesMessagesSlice:
+			messages = h.Messages
+		case *tg.MessagesChannelMessages:
+			messages = h.Messages
+		}
+
+		if len(messages) == 0 {
+			break
+		}
+
+		stopSearch := false
+		for _, mClass := range messages {
+			m, ok := mClass.(*tg.Message)
+			if !ok {
+				continue
+			}
+
+			if fromReplyID > 0 {
+				if m.ID < fromReplyID {
+					stopSearch = true
+					break
+				}
+				if m.Out {
+					toDelete = append(toDelete, m.ID)
+				}
+				if m.ID == fromReplyID {
+					stopSearch = true
+					break
+				}
+			} else {
+				if m.Out {
+					toDelete = append(toDelete, m.ID)
+					if len(toDelete) >= countLimit {
+						stopSearch = true
+						break
+					}
+				}
+			}
+		}
+
+		if stopSearch || len(messages) < 100 {
+			break
+		}
+
+		if lastMsg, ok := messages[len(messages)-1].(*tg.Message); ok {
+			offsetID = lastMsg.ID
+		} else {
+			break
+		}
+	}
+
+	chunkSize := 100
+	for i := 0; i < len(toDelete); i += chunkSize {
+		end := i + chunkSize
+		if end > len(toDelete) {
+			end = len(toDelete)
+		}
+		deleteMessageBatch(pCtx, client, inputPeer, toDelete[i:end])
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	totalDeleted := len(toDelete)
+	reportText := fmt.Sprintf("🗑 %d پیام شما با موفقیت پاکسازی شد", totalDeleted)
+	if totalDeleted == 0 {
+		reportText = "⚠️ پیامی برای پاکسازی یافت نشد"
+	}
+	sendTemporaryNotice(pCtx, client, inputPeer, reportText, 1500*time.Millisecond)
+}
+
 func GetSetting(key string) string {
 	var val string
 	err := db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = ?", key).Scan(&val)
@@ -894,7 +1048,6 @@ func deleteMsg(ctx context.Context, client *telegram.Client, inputPeer tg.InputP
 	})
 }
 
-// تغییر پیام به متن بولد دارای تیک، انتظار دقیق ۱۰۰ میلی‌ثانیه و سپس حذف قطعی
 func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int, text string) {
 	editReq := &tg.MessagesEditMessageRequest{
 		Peer:    inputPeer,
@@ -1230,6 +1383,31 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		}
 
 		text := strings.TrimSpace(msg.Message)
+
+		// پردازش دستورات پاکسازی سریع پیام‌ها (Purge)
+		if text == "پاکسازی" || text == "حذف" || strings.HasPrefix(text, "پاکسازی ") || strings.HasPrefix(text, "حذف ") {
+			if msg.ReplyTo != nil {
+				header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
+				if ok && header.ReplyToMsgID != 0 {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🗑 در حال پاکسازی پیام‌ها...")
+					go handlePurgeAction(ctx, client, inputPeer, msg.ID, header.ReplyToMsgID, 0)
+					return
+				}
+			}
+
+			numStr := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, "پاکسازی"), "حذف"))
+			if numStr != "" {
+				count, err := strconv.Atoi(numStr)
+				if err == nil && count > 0 {
+					if count > 100 {
+						count = 100
+					}
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, fmt.Sprintf("🗑 در حال حذف %d پیام اخیر...", count))
+					go handlePurgeAction(ctx, client, inputPeer, msg.ID, 0, count)
+					return
+				}
+			}
+		}
 
 		// پردازش دستورات اکشن‌های جعلی
 		if text == "لغو اکشن" || text == "توقف اکشن" {
@@ -1669,17 +1847,28 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			}
 			return
 		} else if strings.HasPrefix(text, "خوشنویسی ") {
-			fontMap := map[string]string{
-				"خوشنویسی بولد":         "bold",
-				"خوشنویسی ایتالیک":      "italic",
-				"خوشنویسی بولد ایتالیک": "bold_italic",
-				"خوشنویسی زیر خط":       "underline",
-				"خوشنویسی خط خورده":     "strike",
-				"خوشنویسی مونو":         "mono",
-				"خوشنویسی اسپویل":       "spoiler",
+			// تشخیص دقیق حالت‌های فونت بدون تداخل
+			cleanSub := strings.TrimSpace(strings.TrimPrefix(text, "خوشنویسی "))
+			mode := ""
+			switch cleanSub {
+			case "بولد":
+				mode = "bold"
+			case "ایتالیک":
+				mode = "italic"
+			case "بولد ایتالیک":
+				mode = "bold_italic"
+			case "زیر خط":
+				mode = "underline"
+			case "خط خورده":
+				mode = "strike"
+			case "مونو":
+				mode = "mono"
+			case "اسپویل":
+				mode = "spoiler"
 			}
-			if mode, found := fontMap[text]; found {
-				_, _ = db.Exec("UPDATE users SET font_mode = ? WHERE id = ?", mode, userID)
+
+			if mode != "" {
+				_, _ = db.Exec("UPDATE users SET font_mode = ?, is_font_enabled = TRUE WHERE id = ?", mode, userID)
 				en, _ := getFontSetting(userID)
 				updateFontCache(userID, en, mode)
 				if inputPeer != nil {
@@ -1837,14 +2026,14 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(gCtx, client, inputPeer, msg, true)
+				handleForwardToAllGroups(bCtx, client, inputPeer, msg, true)
 			}()
 			return
 		} else if text == "گروه همه" {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(gCtx, client, inputPeer, msg, false)
+				handleForwardToAllGroups(bCtx, client, inputPeer, msg, false)
 			}()
 			return
 		}
@@ -2342,6 +2531,7 @@ func main() {
 	guideEnemyMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideFontMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideActionMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guidePurgeMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guidePVMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideGroupMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
@@ -2352,16 +2542,17 @@ func main() {
 	btnGEnemy := guideMenu.Text("⚔️ دشمن")
 	btnGFont := guideMenu.Text("✒️ خوشنویسی")
 	btnGAction := guideMenu.Text("🎬 اکشن‌ها")
+	btnGPurge := guideMenu.Text("🗑 پاکسازی")
 	btnGPV := guideMenu.Text("📩 پیوی همه")
 	btnGGroup := guideMenu.Text("👥 گروه همه")
 	btnGBackMain := guideMenu.Text("🔙 بازگشت به منوی اصلی")
 
-	// چیدمان کیبورد راهنما
+	// چیدمان تمیز و متقارن کیبورد راهنما
 	guideMenu.Reply(
 		guideMenu.Row(btnGClock, btnGEmoji),
 		guideMenu.Row(btnGBio, btnGFont),
 		guideMenu.Row(btnGFriend, btnGEnemy),
-		guideMenu.Row(btnGAction),
+		guideMenu.Row(btnGAction, btnGPurge),
 		guideMenu.Row(btnGPV, btnGGroup),
 		guideMenu.Row(btnGBackMain),
 	)
@@ -2429,6 +2620,9 @@ func main() {
 	btnActionBack := guideActionMenu.Text("🔙 بازگشت به راهنما")
 	guideActionMenu.Reply(guideActionMenu.Row(btnActionBack))
 
+	btnPurgeBack := guidePurgeMenu.Text("🔙 بازگشت به راهنما")
+	guidePurgeMenu.Reply(guidePurgeMenu.Row(btnPurgeBack))
+
 	btnPVBack := guidePVMenu.Text("🔙 بازگشت به راهنما")
 	guidePVMenu.Reply(guidePVMenu.Row(btnPVBack))
 
@@ -2474,6 +2668,7 @@ func main() {
 ▫️ 🌸 <b>سیستم دوست:</b> <code>%d نفر</code> (همیشه فعال)
 ▫️ ⚔️ <b>سیستم دشمن:</b> <code>%d نفر</code> (همیشه فعال)
 ▫️ 🎬 <b>اکشن‌های جعلی:</b> فعال و آماده
+▫️ 🗑 <b>پاکسازی پیام‌ها:</b> فعال و آماده
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>جهت مطالعه راهنما و تنظیم هر قابلیت، از کیبورد ثابت زیر گزینه مورد نظر را انتخاب کنید:</i>`,
 			clockStatus, emojiStatus, bioStatus, fontStatus, friendCount, enemyCount,
@@ -3142,6 +3337,29 @@ func main() {
 		return c.Send(text, guideActionMenu, tele.ModeHTML)
 	})
 
+	// منوی پاکسازی هوشمند
+	bot.Handle(&btnGPurge, func(c tele.Context) error {
+		text := `🗑 <b>راهنمای پاکسازی سریع و هوشمند پیام‌ها (Purge)</b>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>عملکرد:</b>
+این قابلیت به شما امکان می‌دهد پیام‌های ارسالی خودتان را در هر گروه یا چت خصوصی با بیشترین سرعت و بدون باقی ماندن ردپا پاکسازی کنید.
+
+💬 <b>دستورات چت:</b>
+
+▫️ <b>۱. حذف بر اساس تعداد:</b>
+ارسال دستور <code>پاکسازی 20</code> یا <code>حذف 20</code>
+<i>(تعداد پیام‌های مشخص شده از آخرین پیام‌های خودتان را پاک می‌کند - حداکثر ۱۰۰ عدد در هر بار)</i>
+
+▫️ <b>۲. حذف از یک نقطه خاص (با ریپلای):</b>
+روی پیام قدیمی خودت ریپلای کن و بفرست:
+<code>پاکسازی</code> یا <code>حذف</code>
+<i>(تمام پیام‌های ارسالی شما از آن پیام ریپلای‌شده تا پیام فعلی پاک خواهند شد)</i>
+
+⚡ <i>پیام دستور ظرف ۱۰۰ میلی‌ثانیه محو شده و گزارش تعداد پیام‌های حذف‌شده پس از ۱.۵ ثانیه به طور خودکار ناپدید می‌شود.</i>`
+
+		return c.Send(text, guidePurgeMenu, tele.ModeHTML)
+	})
+
 	bot.Handle(&btnGPV, func(c tele.Context) error {
 		text := `📩 <b>راهنمای فوروارد همگانی به پیوی‌ها (Broadcast PV)</b>
 ➖➖➖➖➖➖➖➖➖➖
@@ -3182,6 +3400,7 @@ func main() {
 	bot.Handle(&btnEnemyBack, backToGuideHandler)
 	bot.Handle(&btnFontBack, backToGuideHandler)
 	bot.Handle(&btnActionBack, backToGuideHandler)
+	bot.Handle(&btnPurgeBack, backToGuideHandler)
 	bot.Handle(&btnPVBack, backToGuideHandler)
 	bot.Handle(&btnGroupBack, backToGuideHandler)
 

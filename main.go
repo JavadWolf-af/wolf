@@ -2823,6 +2823,7 @@ func main() {
 	guidePurgeMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideTimerMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideAutoReactMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guideTranslatorMenu := &tele.ReplyMarkup{ResizeKeyboard: true} // منوی جدید مترجم
 	guidePVMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideGroupMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
@@ -2836,6 +2837,7 @@ func main() {
 	btnGPurge := guideMenu.Text("🗑 پاکسازی")
 	btnGTimer := guideMenu.Text("⏳ تایمر")
 	btnGAutoReact := guideMenu.Text("🔥 ری‌اکشن خودکار")
+	btnGTranslator := guideMenu.Text("🌍 مترجم در لحظه") // دکمه جدید مترجم
 	btnGPV := guideMenu.Text("📩 پیوی همه")
 	btnGGroup := guideMenu.Text("👥 گروه همه")
 	btnGBackMain := guideMenu.Text("🔙 بازگشت به منوی اصلی")
@@ -2847,8 +2849,8 @@ func main() {
 		guideMenu.Row(btnGFriend, btnGEnemy),
 		guideMenu.Row(btnGAction, btnGPurge),
 		guideMenu.Row(btnGTimer, btnGAutoReact),
-		guideMenu.Row(btnGPV, btnGGroup),
-		guideMenu.Row(btnGBackMain),
+		guideMenu.Row(btnGTranslator, btnGPV),
+		guideMenu.Row(btnGGroup, btnGBackMain),
 	)
 
 	btnClockOn := guideClockMenu.Text("🟢 روشن کردن ساعت")
@@ -2923,6 +2925,9 @@ func main() {
 	btnAutoReactBack := guideAutoReactMenu.Text("🔙 بازگشت به راهنما")
 	guideAutoReactMenu.Reply(guideAutoReactMenu.Row(btnAutoReactBack))
 
+	btnTranslatorBack := guideTranslatorMenu.Text("🔙 بازگشت به راهنما")
+	guideTranslatorMenu.Reply(guideTranslatorMenu.Row(btnTranslatorBack))
+
 	btnPVBack := guidePVMenu.Text("🔙 بازگشت به راهنما")
 	guidePVMenu.Reply(guidePVMenu.Row(btnPVBack))
 
@@ -2971,11 +2976,27 @@ func main() {
 ▫️ 🗑 <b>پاکسازی پیام‌ها:</b> فعال و آماده
 ▫️ ⏳ <b>تایمر زنده:</b> فعال و آماده
 ▫️ 🔥 <b>ری‌اکشن خودکار:</b> فعال و آماده
+▫️ 🌍 <b>مترجم زنده:</b> فعال و آماده
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>جهت مطالعه راهنما و تنظیم هر قابلیت، از کیبورد ثابت زیر گزینه مورد نظر را انتخاب کنید:</i>`,
 			clockStatus, emojiStatus, bioStatus, fontStatus, friendCount, enemyCount,
 		)
 	}
+
+	bot.Handle(&btnGTranslator, func(c tele.Context) error {
+		text := `🌍 <b>راهنمای مترجم در لحظه (Live Translator)</b>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>عملکرد:</b>
+این قابلیت متن‌های خارجی را در کسری از ثانیه مستقیماً به فارسی روان ترجمه کرده و داخل چت قرار می‌دهد.
+
+💬 <b>نحوه استفاده:</b>
+روی هر پیامی که به زبان دیگری است (انگلیسی، آلمانی، ترکی و...) <b>ریپلای (Reply)</b> کنید و بفرستید:
+▫️ <code>ترجمه</code>
+▫️ <code>ترجمه کن</code>
+
+⚡ <i>سلف‌بات بلافاصله پیام شما را ویرایش کرده و ترجمه آن را به شکلی زیبا جایگزین می‌کند.</i>`
+		return c.Send(text, guideTranslatorMenu, tele.ModeHTML)
+	})
 
 	btnConfigAccount := adminPanelMenu.Text("🛠 تنظیم حساب بانکی")
 	btnConfigSupport := adminPanelMenu.Text("📞 تنظیم پشتیبانی")
@@ -3748,6 +3769,7 @@ func main() {
 	bot.Handle(&btnPurgeBack, backToGuideHandler)
 	bot.Handle(&btnTimerBack, backToGuideHandler)
 	bot.Handle(&btnAutoReactBack, backToGuideHandler)
+	bot.Handle(&btnTranslatorBack, backToGuideHandler) // دکمه بازگشت مترجم
 	bot.Handle(&btnPVBack, backToGuideHandler)
 	bot.Handle(&btnGroupBack, backToGuideHandler)
 

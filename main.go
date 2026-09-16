@@ -57,6 +57,10 @@ var (
 	// کش حافظه برای دوستان هر سلف‌بات
 	friendsCacheMu sync.RWMutex
 	friendsCache   = make(map[int64]map[int64]bool)
+
+	// کش هش دسترسی کانال‌ها و سوپرگروه‌ها
+	channelAccessHashesMu sync.RWMutex
+	channelAccessHashes   = make(map[int64]int64)
 )
 
 var randomEmojiPool = []string{
@@ -232,8 +236,7 @@ func InitDB(cfg Config) {
 		is_bio_enabled BOOLEAN DEFAULT FALSE,
 		bio_mode VARCHAR(20) DEFAULT 'random',
 		custom_bio VARCHAR(255) DEFAULT '',
-		original_bio VARCHAR(255) DEFAULT '',
-		is_friend_enabled BOOLEAN DEFAULT FALSE
+		original_bio VARCHAR(255) DEFAULT ''
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN last_billed_at DATETIME DEFAULT CURRENT_TIMESTAMP")
@@ -246,7 +249,6 @@ func InitDB(cfg Config) {
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN bio_mode VARCHAR(20) DEFAULT 'random'")
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN custom_bio VARCHAR(255) DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN original_bio VARCHAR(255) DEFAULT ''")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_friend_enabled BOOLEAN DEFAULT FALSE")
 
 	// جدول دوستان
 	_, _ = db.Exec(`
@@ -601,20 +603,73 @@ func getInputPeer(peer tg.PeerClass, e tg.Entities, selfID int64) tg.InputPeerCl
 	case *tg.PeerChat:
 		return &tg.InputPeerChat{ChatID: p.ChatID}
 	case *tg.PeerChannel:
+		var aHash int64
 		if ch, ok := e.Channels[p.ChannelID]; ok {
-			return &tg.InputPeerChannel{
-				ChannelID:  ch.ID,
-				AccessHash: ch.AccessHash,
-			}
+			aHash = ch.AccessHash
+			channelAccessHashesMu.Lock()
+			channelAccessHashes[ch.ID] = ch.AccessHash
+			channelAccessHashesMu.Unlock()
+		} else {
+			channelAccessHashesMu.RLock()
+			aHash = channelAccessHashes[p.ChannelID]
+			channelAccessHashesMu.RUnlock()
 		}
-		return &tg.InputPeerChannel{ChannelID: p.ChannelID}
+		return &tg.InputPeerChannel{
+			ChannelID:  p.ChannelID,
+			AccessHash: aHash,
+		}
 	}
 	return nil
 }
 
-func deleteMsg(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int) {
+// دریافت پیام ریپلای‌شده به همراه اطلاعات کاربران در چت‌های خصوصی، گروه‌ها و سوپرگروه‌ها
+func getRepliedMessageAndUsers(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int) (*tg.Message, []tg.UserClass, error) {
+	var res tg.MessagesMessagesClass
+	var err error
+
 	if ch, ok := inputPeer.(*tg.InputPeerChannel); ok {
-		_, _ = client.API().ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
+		res, err = client.API().ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}},
+		})
+	} else {
+		res, err = client.API().MessagesGetMessages(ctx, []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}})
+	}
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	switch m := res.(type) {
+	case *tg.MessagesChannelMessages:
+		if len(m.Messages) > 0 {
+			if msg, ok := m.Messages[0].(*tg.Message); ok {
+				return msg, m.Users, nil
+			}
+		}
+	case *tg.MessagesMessages:
+		if len(m.Messages) > 0 {
+			if msg, ok := m.Messages[0].(*tg.Message); ok {
+				return msg, m.Users, nil
+			}
+		}
+	case *tg.MessagesMessagesSlice:
+		if len(m.Messages) > 0 {
+			if msg, ok := m.Messages[0].(*tg.Message); ok {
+				return msg, m.Users, nil
+			}
+		}
+	}
+	return nil, nil, errors.New("message not found")
+}
+
+// حذف آنی و زیر ۱۰۰ میلی‌ثانیه پیام
+func deleteMsg(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int) {
+	dCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	if ch, ok := inputPeer.(*tg.InputPeerChannel); ok {
+		_, _ = client.API().ChannelsDeleteMessages(dCtx, &tg.ChannelsDeleteMessagesRequest{
 			Channel: &tg.InputChannel{
 				ChannelID:  ch.ChannelID,
 				AccessHash: ch.AccessHash,
@@ -623,7 +678,7 @@ func deleteMsg(ctx context.Context, client *telegram.Client, inputPeer tg.InputP
 		})
 		return
 	}
-	_, _ = client.API().MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
+	_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
 		Revoke: true,
 		ID:     []int{msgID},
 	})
@@ -900,7 +955,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		}
 		inputPeer = getInputPeer(msg.PeerID, e, selfID)
 
-		// ۲. واکنش سلف‌بات به پیام‌های دوستان در گروه‌ها و چت‌ها
+		// ۲. واکنش سلف‌بات به پیام‌های دوستان در تمام چت‌ها و گروه‌ها (همیشه فعال)
 		if !msg.Out {
 			senderID := int64(0)
 			if fromUser, ok := msg.FromID.(*tg.PeerUser); ok {
@@ -910,173 +965,169 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			}
 
 			if senderID != 0 && isUserFriend(userID, senderID) {
-				var isFriendEnabled bool
-				_ = db.QueryRow("SELECT is_friend_enabled FROM users WHERE id = ?", userID).Scan(&isFriendEnabled)
-				if isFriendEnabled {
-					go func(msgID int, p tg.InputPeerClass) {
-						replyText := GetRandomFriendMessage()
-						rCtx, rCancel := context.WithTimeout(context.Background(), 10*time.Second)
-						defer rCancel()
+				go func(msgID int, p tg.InputPeerClass) {
+					time.Sleep(150 * time.Millisecond)
+					replyText := GetRandomFriendMessage()
+					rCtx, rCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer rCancel()
 
-						req := &tg.MessagesSendMessageRequest{
-							Peer:     p,
-							Message:  replyText,
-							RandomID: rand.Int63(),
-						}
-						req.SetReplyTo(&tg.InputReplyToMessage{
-							ReplyToMsgID: msgID,
-						})
-						_, _ = client.API().MessagesSendMessage(rCtx, req)
-					}(msg.ID, inputPeer)
-				}
+					req := &tg.MessagesSendMessageRequest{
+						Peer:     p,
+						Message:  replyText,
+						RandomID: rand.Int63(),
+					}
+					req.SetReplyTo(&tg.InputReplyToMessage{
+						ReplyToMsgID: msgID,
+					})
+					_, _ = client.API().MessagesSendMessage(rCtx, req)
+				}(msg.ID, inputPeer)
 			}
 			return
 		}
 
 		text := strings.TrimSpace(msg.Message)
 
-		// دستورات چت سیستم دوست
+		// دستورات چت سیستم دوست با حذف آنی زیر ۱۰۰ میلی‌ثانیه
 		if text == "تنظیم دوست" {
+			// ۱. حذف درجا و زیر ۱۰۰ میلی‌ثانیه از گروه/چت
+			go deleteMsg(context.Background(), client, inputPeer, msg.ID)
+
 			if msg.ReplyTo == nil {
-				if inputPeer != nil {
-					notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد مورد نظر ریپلای کنید!")
-				}
 				return
 			}
 			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
 			if !ok || header.ReplyToMsgID == 0 {
 				return
 			}
+			replyMsgID := header.ReplyToMsgID
 
-			go func(replyID int) {
+			go func(repID int, p tg.InputPeerClass) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer dCancel()
 
-				res, err := client.API().MessagesGetMessages(dCtx, []tg.InputMessageClass{&tg.InputMessageID{ID: replyID}})
-				if err != nil {
+				repMsg, usersList, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
+				if err != nil || repMsg == nil {
 					return
 				}
 
 				var targetUID int64
-				var targetUName string
-				var usersList []tg.UserClass
-
-				switch mSlice := res.(type) {
-				case *tg.MessagesMessages:
-					usersList = mSlice.Users
-					if len(mSlice.Messages) > 0 {
-						if m, ok := mSlice.Messages[0].(*tg.Message); ok {
-							if f, ok := m.FromID.(*tg.PeerUser); ok {
-								targetUID = f.UserID
-							}
-						}
-					}
-				case *tg.MessagesMessagesSlice:
-					usersList = mSlice.Users
-					if len(mSlice.Messages) > 0 {
-						if m, ok := mSlice.Messages[0].(*tg.Message); ok {
-							if f, ok := m.FromID.(*tg.PeerUser); ok {
-								targetUID = f.UserID
-							}
-						}
-					}
-				case *tg.MessagesChannelMessages:
-					usersList = mSlice.Users
-					if len(mSlice.Messages) > 0 {
-						if m, ok := mSlice.Messages[0].(*tg.Message); ok {
-							if f, ok := m.FromID.(*tg.PeerUser); ok {
-								targetUID = f.UserID
-							}
-						}
-					}
+				if f, ok := repMsg.FromID.(*tg.PeerUser); ok {
+					targetUID = f.UserID
+				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok {
+					targetUID = peerU.UserID
 				}
 
+				if targetUID == 0 || targetUID == selfID {
+					return
+				}
+
+				targetUName := ""
 				for _, uClass := range usersList {
 					if u, ok := uClass.(*tg.User); ok && u.ID == targetUID {
 						targetUName = formatTelegramUser(u)
 						break
 					}
 				}
-
-				if targetUID != 0 {
-					_, _ = db.Exec(`
-						INSERT INTO wolf_friends (owner_id, friend_id, friend_name)
-						VALUES (?, ?, ?)
-						ON DUPLICATE KEY UPDATE friend_name = VALUES(friend_name)
-					`, userID, targetUID, targetUName)
-
-					addFriendToCache(userID, targetUID)
-
-					if inputPeer != nil {
-						notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, fmt.Sprintf("✅ کاربر %s به لیست دوستان اضافه شد 🌸", targetUName))
-					}
+				if targetUName == "" {
+					targetUName = fmt.Sprintf("کاربر (%d)", targetUID)
 				}
-			}(header.ReplyToMsgID)
+
+				// ثبت در دیتابیس و فعال‌سازی فوری در کش
+				_, _ = db.Exec(`
+					INSERT INTO wolf_friends (owner_id, friend_id, friend_name)
+					VALUES (?, ?, ?)
+					ON DUPLICATE KEY UPDATE friend_name = VALUES(friend_name)
+				`, userID, targetUID, targetUName)
+
+				addFriendToCache(userID, targetUID)
+
+				// ۲. پاسخ فوری و دوستانه به پیامی که روی آن ریپلای شده بود!
+				replyText := GetRandomFriendMessage()
+				sendReq := &tg.MessagesSendMessageRequest{
+					Peer:     p,
+					Message:  replyText,
+					RandomID: rand.Int63(),
+				}
+				sendReq.SetReplyTo(&tg.InputReplyToMessage{
+					ReplyToMsgID: repID,
+				})
+				_, _ = client.API().MessagesSendMessage(dCtx, sendReq)
+
+				// ۳. اطلاع‌رسانی مطمئن در پیام‌های ذخیره‌شده سلف
+				saveReport := fmt.Sprintf("🌸 <b>کاربر %s به عنوان دوست تنظیم شد.</b>\nاز این پس به تمام پیام‌های این کاربر در گروه‌ها پاسخ داده می‌شود.", targetUName)
+				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
+					Peer:     &tg.InputPeerSelf{},
+					Message:  saveReport,
+					RandomID: rand.Int63(),
+				})
+			}(replyMsgID, inputPeer)
 			return
 
 		} else if text == "حذف دوست" {
+			// ۱. حذف آنی دستور زیر ۱۰۰ میلی‌ثانیه
+			go deleteMsg(context.Background(), client, inputPeer, msg.ID)
+
 			if msg.ReplyTo == nil {
-				if inputPeer != nil {
-					notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام دوست مورد نظر ریپلای کنید!")
-				}
 				return
 			}
 			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
 			if !ok || header.ReplyToMsgID == 0 {
 				return
 			}
+			replyMsgID := header.ReplyToMsgID
 
-			go func(replyID int) {
+			go func(repID int, p tg.InputPeerClass) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer dCancel()
 
-				res, err := client.API().MessagesGetMessages(dCtx, []tg.InputMessageClass{&tg.InputMessageID{ID: replyID}})
-				if err != nil {
+				repMsg, usersList, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
+				if err != nil || repMsg == nil {
 					return
 				}
 
 				var targetUID int64
-				switch mSlice := res.(type) {
-				case *tg.MessagesMessages:
-					if len(mSlice.Messages) > 0 {
-						if m, ok := mSlice.Messages[0].(*tg.Message); ok {
-							if f, ok := m.FromID.(*tg.PeerUser); ok {
-								targetUID = f.UserID
-							}
-						}
-					}
-				case *tg.MessagesMessagesSlice:
-					if len(mSlice.Messages) > 0 {
-						if m, ok := mSlice.Messages[0].(*tg.Message); ok {
-							if f, ok := m.FromID.(*tg.PeerUser); ok {
-								targetUID = f.UserID
-							}
-						}
-					}
-				case *tg.MessagesChannelMessages:
-					if len(mSlice.Messages) > 0 {
-						if m, ok := mSlice.Messages[0].(*tg.Message); ok {
-							if f, ok := m.FromID.(*tg.PeerUser); ok {
-								targetUID = f.UserID
-							}
-						}
-					}
+				if f, ok := repMsg.FromID.(*tg.PeerUser); ok {
+					targetUID = f.UserID
+				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok {
+					targetUID = peerU.UserID
 				}
 
-				if targetUID != 0 {
-					_, _ = db.Exec("DELETE FROM wolf_friends WHERE owner_id = ? AND friend_id = ?", userID, targetUID)
-					removeFriendFromCache(userID, targetUID)
+				if targetUID == 0 {
+					return
+				}
 
-					if inputPeer != nil {
-						notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "❌ کاربر از لیست دوستان حذف شد 🌸")
+				targetUName := ""
+				for _, uClass := range usersList {
+					if u, ok := uClass.(*tg.User); ok && u.ID == targetUID {
+						targetUName = formatTelegramUser(u)
+						break
 					}
 				}
-			}(header.ReplyToMsgID)
+				if targetUName == "" {
+					targetUName = fmt.Sprintf("کاربر (%d)", targetUID)
+				}
+
+				_, _ = db.Exec("DELETE FROM wolf_friends WHERE owner_id = ? AND friend_id = ?", userID, targetUID)
+				removeFriendFromCache(userID, targetUID)
+
+				saveReport := fmt.Sprintf("❌ <b>کاربر %s از لیست دوستان حذف شد.</b>", targetUName)
+				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
+					Peer:     &tg.InputPeerSelf{},
+					Message:  saveReport,
+					RandomID: rand.Int63(),
+				})
+			}(replyMsgID, inputPeer)
 			return
 
 		} else if text == "لیست دوست" {
-			rows, err := db.Query("SELECT friend_id, friend_name FROM wolf_friends WHERE owner_id = ?", userID)
-			if err == nil {
+			go deleteMsg(context.Background(), client, inputPeer, msg.ID)
+			go func() {
+				rows, err := db.Query("SELECT friend_id, friend_name FROM wolf_friends WHERE owner_id = ?", userID)
+				if err != nil {
+					return
+				}
+				defer rows.Close()
+
 				var list []string
 				idx := 1
 				for rows.Next() {
@@ -1087,39 +1138,35 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						idx++
 					}
 				}
-				rows.Close()
 
 				msgText := "📋 <b>لیست دوستان شما:</b>\n\n" + strings.Join(list, "\n")
 				if len(list) == 0 {
-					msgText = "⚠️ <i>لیست دوستان شما خالی است!</i>"
+					msgText = "⚠️ <i>لیست دوستان شما در حال حاضر خالی است!</i>"
 				}
 
-				if inputPeer != nil {
-					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, msgText)
-				}
-			}
+				dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer dCancel()
+				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
+					Peer:     &tg.InputPeerSelf{},
+					Message:  msgText,
+					RandomID: rand.Int63(),
+				})
+			}()
 			return
 
 		} else if text == "پاکسازی دوست" {
+			go deleteMsg(context.Background(), client, inputPeer, msg.ID)
 			_, _ = db.Exec("DELETE FROM wolf_friends WHERE owner_id = ?", userID)
 			clearFriendsCache(userID)
-			if inputPeer != nil {
-				notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🗑 تمام دوستان از لیست حذف شدند 🌸")
-			}
-			return
-
-		} else if text == "دوست روشن" {
-			_, _ = db.Exec("UPDATE users SET is_friend_enabled = TRUE WHERE id = ?", userID)
-			if inputPeer != nil {
-				notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🟢 سیستم پاسخ‌دهی به دوستان روشن شد 🌸")
-			}
-			return
-
-		} else if text == "دوست خاموش" {
-			_, _ = db.Exec("UPDATE users SET is_friend_enabled = FALSE WHERE id = ?", userID)
-			if inputPeer != nil {
-				notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔴 سیستم پاسخ‌دهی به دوستان خاموش شد 🌸")
-			}
+			go func() {
+				dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer dCancel()
+				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
+					Peer:     &tg.InputPeerSelf{},
+					Message:  "🗑 <b>لیست دوستان شما به طور کامل پاکسازی شد 🌸</b>",
+					RandomID: rand.Int63(),
+				})
+			}()
 			return
 		}
 
@@ -1824,13 +1871,10 @@ func main() {
 		guideBioMenu.Row(btnBioBack),
 	)
 
-	btnFriendOn := guideFriendMenu.Text("🟢 روشن کردن دوست")
-	btnFriendOff := guideFriendMenu.Text("🔴 خاموش کردن دوست")
 	btnFriendList := guideFriendMenu.Text("📋 لیست دوستان")
 	btnFriendClear := guideFriendMenu.Text("🗑 پاکسازی دوستان")
 	btnFriendBack := guideFriendMenu.Text("🔙 بازگشت به راهنما")
 	guideFriendMenu.Reply(
-		guideFriendMenu.Row(btnFriendOn, btnFriendOff),
 		guideFriendMenu.Row(btnFriendList, btnFriendClear),
 		guideFriendMenu.Row(btnFriendBack),
 	)
@@ -1842,9 +1886,11 @@ func main() {
 	guideGroupMenu.Reply(guideGroupMenu.Row(btnGroupBack))
 
 	buildGuideDashboardText := func(userID int64) string {
-		var isClock, isEmoji, isBio, isFriend bool
+		var isClock, isEmoji, isBio bool
 		var bioMode string
-		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_friend_enabled FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFriend)
+		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode)
+		var friendCount int
+		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_friends WHERE owner_id = ?", userID).Scan(&friendCount)
 
 		clockStatus := "🔴 خاموش"
 		if isClock {
@@ -1862,10 +1908,6 @@ func main() {
 				bioStatus = "🟢 روشن (رندوم)"
 			}
 		}
-		friendStatus := "🔴 خاموش"
-		if isFriend {
-			friendStatus = "🟢 روشن"
-		}
 
 		return fmt.Sprintf(`📚 <b>بخش راهنما و امکانات سلف ولف 🐺</b>
 ➖➖➖➖➖➖➖➖➖➖
@@ -1873,10 +1915,10 @@ func main() {
 ▫️ ⏱ <b>ساعت زنده:</b> %s
 ▫️ 🎭 <b>اموجی رندوم:</b> %s
 ▫️ 📝 <b>بیوگرافی هوشمند:</b> %s
-▫️ 🌸 <b>سیستم دوست:</b> %s
+▫️ 🌸 <b>سیستم هوشمند دوست:</b> <code>%d نفر</code> (همیشه فعال)
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>جهت مطالعه راهنما و تنظیم هر قابلیت، از کیبورد ثابت زیر گزینه مورد نظر را انتخاب کنید:</i>`,
-			clockStatus, emojiStatus, bioStatus, friendStatus,
+			clockStatus, emojiStatus, bioStatus, friendCount,
 		)
 	}
 
@@ -2308,45 +2350,27 @@ func main() {
 		return c.Send("🔴 <b>بیوگرافی خاموش شد و بیوی اولیه شما بازگردانده شد.</b>", guideBioMenu, tele.ModeHTML)
 	})
 
-	// بخش اختصاصی دکمه دوست در راهنما
+	// بخش اختصاصی دکمه دوست در راهنما (بدون کلید خاموش/روشن)
 	bot.Handle(&btnGFriend, func(c tele.Context) error {
 		userID := c.Sender().ID
-		var isFriend bool
-		_ = db.QueryRow("SELECT is_friend_enabled FROM users WHERE id = ?", userID).Scan(&isFriend)
 		var friendCount int
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_friends WHERE owner_id = ?", userID).Scan(&friendCount)
 
-		statusStr := "🔴 خاموش"
-		if isFriend {
-			statusStr = "🟢 روشن"
-		}
-
 		text := fmt.Sprintf(`🌸 <b>مدیریت سیستم هوشمند دوست</b>
 ➖➖➖➖➖➖➖➖➖➖
-📌 <b>وضعیت فعلی:</b> %s
-👥 <b>تعداد دوستان فعال:</b> <code>%d نفر</code>
+📊 <b>تعداد دوستان فعال:</b> <code>%d نفر</code> (همیشه فعال)
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
-هنگامی که این قابلیت روشن باشد، هر زمان مخاطبان لیست دوستان شما در هر گروه مشترکی با سلف پیامی بفرستند، سلف‌بات بلافاصله به پیام آن‌ها ریپلای زده و یک جمله زیبا به همراه گل ارسال می‌کند.
+این قابلیت همیشه فعال است. به محض اینکه مخاطبی را با دستور <code>تنظیم دوست</code> ثبت کنید، هر پیامی در گروه‌ها بفرستد سلف‌بات شما بلافاصله روی پیامش ریپلای زده و یک متن دوستانه همراه با گل برایش ارسال می‌کند.
 
 💬 <b>دستورات چت (با ریپلای روی پیام فرد):</b>
-▫️ افزودن دوست: <code>تنظیم دوست</code>
-▫️ حذف دوست: <code>حذف دوست</code>
+▫️ <b>افزودن دوست:</b> ریپلای روی پیام و ارسال <code>تنظیم دوست</code>
+▫️ <b>حذف دوست:</b> ریپلای روی پیام دوست و ارسال <code>حذف دوست</code>
+▫️ <b>لیست دوستان:</b> ارسال <code>لیست دوست</code>
+▫️ <b>پاکسازی همه:</b> ارسال <code>پاکسازی دوست</code>
 
-👇 جهت تغییر وضعیت یا مشاهده لیست دوستان از کلیدهای زیر استفاده کنید:`, statusStr, friendCount)
+⚡ <i>دستورات سلف زیر ۱۰۰ میلی‌ثانیه پاک می‌شوند تا هیچ ردی در گروه‌ها نماند.</i>`, friendCount)
 		return c.Send(text, guideFriendMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnFriendOn, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET is_friend_enabled = TRUE WHERE id = ?", userID)
-		return c.Send("🟢 <b>سیستم پاسخ‌دهی به دوستان روشن شد 🌸</b>", guideFriendMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnFriendOff, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET is_friend_enabled = FALSE WHERE id = ?", userID)
-		return c.Send("🔴 <b>سیستم پاسخ‌دهی به دوستان خاموش شد.</b>", guideFriendMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnFriendList, func(c tele.Context) error {
@@ -2778,7 +2802,7 @@ func main() {
 		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
 		_ = os.Remove(sessionPath)
 
-		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE, is_bio_enabled = FALSE, is_anti_delete_enabled = FALSE, is_edit_logger_enabled = FALSE, is_protected_saver_enabled = FALSE, is_ghost_mode_enabled = FALSE, is_friend_enabled = FALSE WHERE id = ?", userID)
+		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE, is_bio_enabled = FALSE, is_anti_delete_enabled = FALSE, is_edit_logger_enabled = FALSE, is_protected_saver_enabled = FALSE, is_ghost_mode_enabled = FALSE WHERE id = ?", userID)
 
 		if c.Message() != nil {
 			_ = bot.Delete(c.Message())

@@ -54,11 +54,9 @@ var (
 	activeUserbotsMu sync.RWMutex
 	activeUserbots   = make(map[int64]*UserbotSession)
 
-	// کش حافظه برای دوستان هر سلف‌بات
 	friendsCacheMu sync.RWMutex
 	friendsCache   = make(map[int64]map[int64]bool)
 
-	// کش هش دسترسی کانال‌ها و سوپرگروه‌ها
 	channelAccessHashesMu sync.RWMutex
 	channelAccessHashes   = make(map[int64]int64)
 )
@@ -250,7 +248,6 @@ func InitDB(cfg Config) {
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN custom_bio VARCHAR(255) DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN original_bio VARCHAR(255) DEFAULT ''")
 
-	// جدول دوستان
 	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wolf_friends (
 		owner_id BIGINT,
@@ -346,6 +343,16 @@ func clearFriendsCache(ownerID int64) {
 	friendsCacheMu.Lock()
 	defer friendsCacheMu.Unlock()
 	delete(friendsCache, ownerID)
+}
+
+func PopulateChannelCache(chats []tg.ChatClass) {
+	channelAccessHashesMu.Lock()
+	defer channelAccessHashesMu.Unlock()
+	for _, cClass := range chats {
+		if ch, ok := cClass.(*tg.Channel); ok {
+			channelAccessHashes[ch.ID] = ch.AccessHash
+		}
+	}
 }
 
 func GetSetting(key string) string {
@@ -622,7 +629,6 @@ func getInputPeer(peer tg.PeerClass, e tg.Entities, selfID int64) tg.InputPeerCl
 	return nil
 }
 
-// دریافت پیام ریپلای‌شده به همراه اطلاعات کاربران در چت‌های خصوصی، گروه‌ها و سوپرگروه‌ها
 func getRepliedMessageAndUsers(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int) (*tg.Message, []tg.UserClass, error) {
 	var res tg.MessagesMessagesClass
 	var err error
@@ -663,9 +669,8 @@ func getRepliedMessageAndUsers(ctx context.Context, client *telegram.Client, inp
 	return nil, nil, errors.New("message not found")
 }
 
-// حذف آنی و زیر ۱۰۰ میلی‌ثانیه پیام
 func deleteMsg(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int) {
-	dCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	dCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 
 	if ch, ok := inputPeer.(*tg.InputPeerChannel); ok {
@@ -684,6 +689,7 @@ func deleteMsg(ctx context.Context, client *telegram.Client, inputPeer tg.InputP
 	})
 }
 
+// تغییر به متن بولد، تاخیر دقیق ۱۰۰ میلی‌ثانیه و سپس حذف پیام
 func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int, text string) {
 	editReq := &tg.MessagesEditMessageRequest{
 		Peer:    inputPeer,
@@ -711,7 +717,7 @@ func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPe
 		}
 		res, sendErr := client.API().MessagesSendMessage(ctx, sendReq)
 		if sendErr == nil {
-			time.Sleep(1 * time.Second)
+			time.Sleep(100 * time.Millisecond)
 			if updates, ok := res.(*tg.Updates); ok {
 				for _, u := range updates.Updates {
 					if nu, ok := u.(*tg.UpdateNewMessage); ok {
@@ -730,7 +736,7 @@ func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPe
 		}
 	}
 
-	time.Sleep(1 * time.Second)
+	time.Sleep(100 * time.Millisecond)
 	deleteMsg(ctx, client, inputPeer, msgID)
 }
 
@@ -945,6 +951,13 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			return
 		}
 
+		// ثبت دسترسی کانال‌ها در کش
+		for cid, ch := range e.Channels {
+			channelAccessHashesMu.Lock()
+			channelAccessHashes[cid] = ch.AccessHash
+			channelAccessHashesMu.Unlock()
+		}
+
 		WolfPlusHandleIncoming(ctx, client, bot, userID, msg, e)
 
 		var inputPeer tg.InputPeerClass
@@ -955,7 +968,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		}
 		inputPeer = getInputPeer(msg.PeerID, e, selfID)
 
-		// ۲. واکنش سلف‌بات به پیام‌های دوستان در تمام چت‌ها و گروه‌ها (همیشه فعال)
+		// پاسخ خودکار سلف به پیام‌های دوستان در تمام گروه‌ها (همیشه فعال)
 		if !msg.Out {
 			senderID := int64(0)
 			if fromUser, ok := msg.FromID.(*tg.PeerUser); ok {
@@ -987,12 +1000,11 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 		text := strings.TrimSpace(msg.Message)
 
-		// دستورات چت سیستم دوست با حذف آنی زیر ۱۰۰ میلی‌ثانیه
 		if text == "تنظیم دوست" {
-			// ۱. حذف درجا و زیر ۱۰۰ میلی‌ثانیه از گروه/چت
-			go deleteMsg(context.Background(), client, inputPeer, msg.ID)
-
 			if msg.ReplyTo == nil {
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
+				}
 				return
 			}
 			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
@@ -1001,9 +1013,12 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			}
 			replyMsgID := header.ReplyToMsgID
 
-			go func(repID int, p tg.InputPeerClass) {
+			go func(repID int, p tg.InputPeerClass, mID int) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer dCancel()
+
+				// اول بولد شود، تیک فعال بخورد و ۱۰۰ میلی‌ثانیه بعد حذف شود
+				go notifyAndSelfDestruct(dCtx, client, p, mID, "✅ تنظیم دوست شد")
 
 				repMsg, usersList, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
 				if err != nil || repMsg == nil {
@@ -1032,7 +1047,6 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					targetUName = fmt.Sprintf("کاربر (%d)", targetUID)
 				}
 
-				// ثبت در دیتابیس و فعال‌سازی فوری در کش
 				_, _ = db.Exec(`
 					INSERT INTO wolf_friends (owner_id, friend_id, friend_name)
 					VALUES (?, ?, ?)
@@ -1041,7 +1055,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 				addFriendToCache(userID, targetUID)
 
-				// ۲. پاسخ فوری و دوستانه به پیامی که روی آن ریپلای شده بود!
+				// ارسال درجا پیام دوستانه روی پیام مخاطب در گروه
 				replyText := GetRandomFriendMessage()
 				sendReq := &tg.MessagesSendMessageRequest{
 					Peer:     p,
@@ -1052,22 +1066,14 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					ReplyToMsgID: repID,
 				})
 				_, _ = client.API().MessagesSendMessage(dCtx, sendReq)
-
-				// ۳. اطلاع‌رسانی مطمئن در پیام‌های ذخیره‌شده سلف
-				saveReport := fmt.Sprintf("🌸 <b>کاربر %s به عنوان دوست تنظیم شد.</b>\nاز این پس به تمام پیام‌های این کاربر در گروه‌ها پاسخ داده می‌شود.", targetUName)
-				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
-					Peer:     &tg.InputPeerSelf{},
-					Message:  saveReport,
-					RandomID: rand.Int63(),
-				})
-			}(replyMsgID, inputPeer)
+			}(replyMsgID, inputPeer, msg.ID)
 			return
 
 		} else if text == "حذف دوست" {
-			// ۱. حذف آنی دستور زیر ۱۰۰ میلی‌ثانیه
-			go deleteMsg(context.Background(), client, inputPeer, msg.ID)
-
 			if msg.ReplyTo == nil {
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
+				}
 				return
 			}
 			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
@@ -1076,11 +1082,13 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			}
 			replyMsgID := header.ReplyToMsgID
 
-			go func(repID int, p tg.InputPeerClass) {
+			go func(repID int, p tg.InputPeerClass, mID int) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer dCancel()
 
-				repMsg, usersList, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
+				go notifyAndSelfDestruct(dCtx, client, p, mID, "❌ حذف دوست شد")
+
+				repMsg, _, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
 				if err != nil || repMsg == nil {
 					return
 				}
@@ -1096,32 +1104,18 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					return
 				}
 
-				targetUName := ""
-				for _, uClass := range usersList {
-					if u, ok := uClass.(*tg.User); ok && u.ID == targetUID {
-						targetUName = formatTelegramUser(u)
-						break
-					}
-				}
-				if targetUName == "" {
-					targetUName = fmt.Sprintf("کاربر (%d)", targetUID)
-				}
-
 				_, _ = db.Exec("DELETE FROM wolf_friends WHERE owner_id = ? AND friend_id = ?", userID, targetUID)
 				removeFriendFromCache(userID, targetUID)
-
-				saveReport := fmt.Sprintf("❌ <b>کاربر %s از لیست دوستان حذف شد.</b>", targetUName)
-				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
-					Peer:     &tg.InputPeerSelf{},
-					Message:  saveReport,
-					RandomID: rand.Int63(),
-				})
-			}(replyMsgID, inputPeer)
+			}(replyMsgID, inputPeer, msg.ID)
 			return
 
 		} else if text == "لیست دوست" {
-			go deleteMsg(context.Background(), client, inputPeer, msg.ID)
-			go func() {
+			go func(mID int, p tg.InputPeerClass) {
+				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer dCancel()
+
+				go notifyAndSelfDestruct(dCtx, client, p, mID, "📋 لیست دوست ارسال شد")
+
 				rows, err := db.Query("SELECT friend_id, friend_name FROM wolf_friends WHERE owner_id = ?", userID)
 				if err != nil {
 					return
@@ -1144,29 +1138,30 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					msgText = "⚠️ <i>لیست دوستان شما در حال حاضر خالی است!</i>"
 				}
 
-				dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer dCancel()
 				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
 					Peer:     &tg.InputPeerSelf{},
 					Message:  msgText,
 					RandomID: rand.Int63(),
 				})
-			}()
+			}(msg.ID, inputPeer)
 			return
 
 		} else if text == "پاکسازی دوست" {
-			go deleteMsg(context.Background(), client, inputPeer, msg.ID)
-			_, _ = db.Exec("DELETE FROM wolf_friends WHERE owner_id = ?", userID)
-			clearFriendsCache(userID)
-			go func() {
-				dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			go func(mID int, p tg.InputPeerClass) {
+				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer dCancel()
+
+				go notifyAndSelfDestruct(dCtx, client, p, mID, "🗑 پاکسازی دوست شد")
+
+				_, _ = db.Exec("DELETE FROM wolf_friends WHERE owner_id = ?", userID)
+				clearFriendsCache(userID)
+
 				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
 					Peer:     &tg.InputPeerSelf{},
 					Message:  "🗑 <b>لیست دوستان شما به طور کامل پاکسازی شد 🌸</b>",
 					RandomID: rand.Int63(),
 				})
-			}()
+			}(msg.ID, inputPeer)
 			return
 		}
 
@@ -1823,7 +1818,6 @@ func main() {
 		adminMenu.Row(btnAdminPanel),
 	)
 
-	// منوهای بخش راهنما
 	guideMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideClockMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideEmojiMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
@@ -2175,7 +2169,6 @@ func main() {
 
 	RegisterWolfPlusHandlers(bot)
 
-	// ثبت هندلرهای بخش راهنما
 	bot.Handle(&btnGuide, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -2369,7 +2362,7 @@ func main() {
 ▫️ <b>لیست دوستان:</b> ارسال <code>لیست دوست</code>
 ▫️ <b>پاکسازی همه:</b> ارسال <code>پاکسازی دوست</code>
 
-⚡ <i>دستورات سلف زیر ۱۰۰ میلی‌ثانیه پاک می‌شوند تا هیچ ردی در گروه‌ها نماند.</i>`, friendCount)
+⚡ <i>دستورات سلف به پیام تأیید ادیت شده، تیک فعال خورده و پس از ۱۰۰ میلی‌ثانیه پاک می‌شوند.</i>`, friendCount)
 		return c.Send(text, guideFriendMenu, tele.ModeHTML)
 	})
 

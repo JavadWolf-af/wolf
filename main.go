@@ -62,6 +62,10 @@ var (
 	enemiesCacheMu sync.RWMutex
 	enemiesCache   = make(map[int64]map[int64]bool)
 
+	// کش حافظه برای ری‌اکشن خودکار
+	autoReactsCacheMu sync.RWMutex
+	autoReactsCache   = make(map[int64]map[int64]string)
+
 	// کش خوشنویسی (Font Styler)
 	fontSettingsMu sync.RWMutex
 	fontSettings   = make(map[int64]struct {
@@ -288,6 +292,17 @@ func InitDB(cfg Config) {
 		PRIMARY KEY (owner_id, enemy_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
+	// جدول ری‌اکشن‌های خودکار
+	_, _ = db.Exec(`
+	CREATE TABLE IF NOT EXISTS wolf_auto_reacts (
+		owner_id BIGINT,
+		target_id BIGINT,
+		target_name VARCHAR(255) DEFAULT '',
+		emoji VARCHAR(50) DEFAULT '❤️',
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (owner_id, target_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
+
 	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wallets (
 		user_id BIGINT PRIMARY KEY,
@@ -319,7 +334,66 @@ func InitDB(cfg Config) {
 
 	loadAllFriendsToCache()
 	loadAllEnemiesToCache()
+	loadAllAutoReactsToCache()
 	loadAllFontSettingsToCache()
+}
+
+func loadAllAutoReactsToCache() {
+	if db == nil {
+		return
+	}
+	rows, err := db.Query("SELECT owner_id, target_id, emoji FROM wolf_auto_reacts")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	autoReactsCacheMu.Lock()
+	autoReactsCache = make(map[int64]map[int64]string)
+	for rows.Next() {
+		var oID, tID int64
+		var emoji string
+		if err := rows.Scan(&oID, &tID, &emoji); err == nil {
+			if _, exists := autoReactsCache[oID]; !exists {
+				autoReactsCache[oID] = make(map[int64]string)
+			}
+			autoReactsCache[oID][tID] = emoji
+		}
+	}
+	autoReactsCacheMu.Unlock()
+}
+
+func getAutoReact(ownerID, targetID int64) (string, bool) {
+	autoReactsCacheMu.RLock()
+	defer autoReactsCacheMu.RUnlock()
+	if userSet, exists := autoReactsCache[ownerID]; exists {
+		emoji, found := userSet[targetID]
+		return emoji, found
+	}
+	return "", false
+}
+
+func setAutoReactToCache(ownerID, targetID int64, emoji string) {
+	autoReactsCacheMu.Lock()
+	defer autoReactsCacheMu.Unlock()
+	if _, exists := autoReactsCache[ownerID]; !exists {
+		autoReactsCache[ownerID] = make(map[int64]string)
+	}
+	autoReactsCache[ownerID][targetID] = emoji
+}
+
+func removeAutoReactFromCache(ownerID, targetID int64) {
+	autoReactsCacheMu.Lock()
+	defer autoReactsCacheMu.Unlock()
+	if userSet, exists := autoReactsCache[ownerID]; exists {
+		delete(userSet, targetID)
+	}
+}
+
+func clearAutoReactsCache(ownerID int64) {
+	autoReactsCacheMu.Lock()
+	defer autoReactsCacheMu.Unlock()
+	delete(autoReactsCache, ownerID)
 }
 
 func loadAllFriendsToCache() {
@@ -1326,7 +1400,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			peerKey = fmt.Sprintf("channel_%d", p.ChannelID)
 		}
 
-		// واکنش به پیام‌های دوستان و دشمنان در تمام گروه‌ها
+		// واکنش به پیام‌های دیگران
 		if !msg.Out {
 			senderID := int64(0)
 			if fromUser, ok := msg.FromID.(*tg.PeerUser); ok {
@@ -1336,6 +1410,24 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			}
 
 			if senderID != 0 {
+				// 1. سیستم ری‌اکشن خودکار
+				if emoji, exists := getAutoReact(userID, senderID); exists && inputPeer != nil {
+					go func(msgID int, p tg.InputPeerClass, em string) {
+						time.Sleep(200 * time.Millisecond) // تاخیر طبیعی
+						rCtx, rCancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer rCancel()
+
+						_, _ = client.API().MessagesSendReaction(rCtx, &tg.MessagesSendReactionRequest{
+							Peer:  p,
+							MsgID: msgID,
+							Reaction: []tg.ReactionClass{
+								&tg.ReactionEmoji{Emoticon: em},
+							},
+						})
+					}(msg.ID, inputPeer, emoji)
+				}
+
+				// 2. سیستم دوست
 				if isUserFriend(userID, senderID) {
 					go func(msgID int, p tg.InputPeerClass) {
 						time.Sleep(150 * time.Millisecond)
@@ -1355,6 +1447,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					}(msg.ID, inputPeer)
 				}
 
+				// 3. سیستم دشمن
 				if isUserEnemy(userID, senderID) {
 					go func(msgID int, p tg.InputPeerClass) {
 						time.Sleep(150 * time.Millisecond)
@@ -1378,6 +1471,164 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		}
 
 		text := strings.TrimSpace(msg.Message)
+
+		// پردازش دستورات ری‌اکشن خودکار
+		if text == "ری‌اکشن" || strings.HasPrefix(text, "ری‌اکشن ") {
+			if msg.ReplyTo == nil {
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
+				}
+				return
+			}
+			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
+			if !ok || header.ReplyToMsgID == 0 {
+				return
+			}
+
+			emoji := "❤️"
+			if strings.HasPrefix(text, "ری‌اکشن ") {
+				em := strings.TrimSpace(strings.TrimPrefix(text, "ری‌اکشن "))
+				if em != "" {
+					emoji = em
+				}
+			}
+
+			go func(repID int, p tg.InputPeerClass, mID int, selectedEmoji string) {
+				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer dCancel()
+
+				repMsg, usersList, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
+				if err != nil || repMsg == nil {
+					go notifyAndSelfDestruct(dCtx, client, p, mID, "❌ پیام یافت نشد!")
+					return
+				}
+
+				var targetUID int64
+				if f, ok := repMsg.FromID.(*tg.PeerUser); ok {
+					targetUID = f.UserID
+				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok {
+					targetUID = peerU.UserID
+				}
+
+				if targetUID == 0 || targetUID == selfID {
+					return
+				}
+
+				targetUName := ""
+				for _, uClass := range usersList {
+					if u, ok := uClass.(*tg.User); ok && u.ID == targetUID {
+						targetUName = formatTelegramUser(u)
+						break
+					}
+				}
+				if targetUName == "" {
+					targetUName = fmt.Sprintf("کاربر (%d)", targetUID)
+				}
+
+				_, _ = db.Exec(`
+					INSERT INTO wolf_auto_reacts (owner_id, target_id, target_name, emoji)
+					VALUES (?, ?, ?, ?)
+					ON DUPLICATE KEY UPDATE target_name = VALUES(target_name), emoji = VALUES(emoji)
+				`, userID, targetUID, targetUName, selectedEmoji)
+
+				setAutoReactToCache(userID, targetUID, selectedEmoji)
+				go notifyAndSelfDestruct(dCtx, client, p, mID, fmt.Sprintf("✅ ری‌اکشن %s فعال شد", selectedEmoji))
+			}(header.ReplyToMsgID, inputPeer, msg.ID, emoji)
+			return
+
+		} else if text == "حذف ری‌اکشن" {
+			if msg.ReplyTo == nil {
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
+				}
+				return
+			}
+			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
+			if !ok || header.ReplyToMsgID == 0 {
+				return
+			}
+
+			go func(repID int, p tg.InputPeerClass, mID int) {
+				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer dCancel()
+
+				repMsg, _, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
+				if err != nil || repMsg == nil {
+					return
+				}
+
+				var targetUID int64
+				if f, ok := repMsg.FromID.(*tg.PeerUser); ok {
+					targetUID = f.UserID
+				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok {
+					targetUID = peerU.UserID
+				}
+
+				if targetUID == 0 {
+					return
+				}
+
+				_, _ = db.Exec("DELETE FROM wolf_auto_reacts WHERE owner_id = ? AND target_id = ?", userID, targetUID)
+				removeAutoReactFromCache(userID, targetUID)
+				go notifyAndSelfDestruct(dCtx, client, p, mID, "✅ ری‌اکشن این فرد لغو شد")
+			}(header.ReplyToMsgID, inputPeer, msg.ID)
+			return
+
+		} else if text == "لیست ری‌اکشن" {
+			go func(mID int, p tg.InputPeerClass) {
+				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer dCancel()
+
+				go notifyAndSelfDestruct(dCtx, client, p, mID, "📋 لیست ری‌اکشن‌ها ارسال شد")
+
+				rows, err := db.Query("SELECT target_id, target_name, emoji FROM wolf_auto_reacts WHERE owner_id = ?", userID)
+				if err != nil {
+					return
+				}
+				defer rows.Close()
+
+				var list []string
+				idx := 1
+				for rows.Next() {
+					var tid int64
+					var tname, emoji string
+					if err := rows.Scan(&tid, &tname, &emoji); err == nil {
+						list = append(list, fmt.Sprintf("%d. %s (<code>%d</code>) - اموجی: %s", idx, tname, tid, emoji))
+						idx++
+					}
+				}
+
+				msgText := "🔥 <b>لیست ری‌اکشن‌های خودکار شما:</b>\n\n" + strings.Join(list, "\n")
+				if len(list) == 0 {
+					msgText = "⚠️ <i>لیست ری‌اکشن‌های خودکار شما خالی است!</i>"
+				}
+
+				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
+					Peer:     &tg.InputPeerSelf{},
+					Message:  msgText,
+					RandomID: rand.Int63(),
+				})
+			}(msg.ID, inputPeer)
+			return
+
+		} else if text == "پاکسازی ری‌اکشن" {
+			go func(mID int, p tg.InputPeerClass) {
+				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer dCancel()
+
+				go notifyAndSelfDestruct(dCtx, client, p, mID, "🗑 لیست ری‌اکشن پاکسازی شد")
+
+				_, _ = db.Exec("DELETE FROM wolf_auto_reacts WHERE owner_id = ?", userID)
+				clearAutoReactsCache(userID)
+
+				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
+					Peer:     &tg.InputPeerSelf{},
+					Message:  "🗑 <b>لیست ری‌اکشن‌های خودکار شما به طور کامل پاکسازی شد 🔥</b>",
+					RandomID: rand.Int63(),
+				})
+			}(msg.ID, inputPeer)
+			return
+		}
 
 		// پردازش دستور شمارش معکوس (تایمر زنده)
 		if strings.HasPrefix(text, "تایمر ") || strings.HasPrefix(text, "شمارش ") {
@@ -2566,6 +2817,7 @@ func main() {
 	guideActionMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guidePurgeMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideTimerMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guideAutoReactMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guidePVMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideGroupMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
@@ -2578,6 +2830,7 @@ func main() {
 	btnGAction := guideMenu.Text("🎬 اکشن‌ها")
 	btnGPurge := guideMenu.Text("🗑 پاکسازی")
 	btnGTimer := guideMenu.Text("⏳ تایمر")
+	btnGAutoReact := guideMenu.Text("🔥 ری‌اکشن خودکار")
 	btnGPV := guideMenu.Text("📩 پیوی همه")
 	btnGGroup := guideMenu.Text("👥 گروه همه")
 	btnGBackMain := guideMenu.Text("🔙 بازگشت به منوی اصلی")
@@ -2588,8 +2841,9 @@ func main() {
 		guideMenu.Row(btnGBio, btnGFont),
 		guideMenu.Row(btnGFriend, btnGEnemy),
 		guideMenu.Row(btnGAction, btnGPurge),
-		guideMenu.Row(btnGTimer, btnGPV),
-		guideMenu.Row(btnGGroup, btnGBackMain),
+		guideMenu.Row(btnGTimer, btnGAutoReact),
+		guideMenu.Row(btnGPV, btnGGroup),
+		guideMenu.Row(btnGBackMain),
 	)
 
 	btnClockOn := guideClockMenu.Text("🟢 روشن کردن ساعت")
@@ -2661,6 +2915,9 @@ func main() {
 	btnTimerBack := guideTimerMenu.Text("🔙 بازگشت به راهنما")
 	guideTimerMenu.Reply(guideTimerMenu.Row(btnTimerBack))
 
+	btnAutoReactBack := guideAutoReactMenu.Text("🔙 بازگشت به راهنما")
+	guideAutoReactMenu.Reply(guideAutoReactMenu.Row(btnAutoReactBack))
+
 	btnPVBack := guidePVMenu.Text("🔙 بازگشت به راهنما")
 	guidePVMenu.Reply(guidePVMenu.Row(btnPVBack))
 
@@ -2670,7 +2927,7 @@ func main() {
 	buildGuideDashboardText := func(userID int64) string {
 		var isClock, isEmoji, isBio, isFont bool
 		var bioMode string
-		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
+		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bioMode, is_font_enabled FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
 		var friendCount, enemyCount int
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_friends WHERE owner_id = ?", userID).Scan(&friendCount)
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_enemies WHERE owner_id = ?", userID).Scan(&enemyCount)
@@ -2707,7 +2964,8 @@ func main() {
 ▫️ ⚔️ <b>سیستم دشمن:</b> <code>%d نفر</code> (همیشه فعال)
 ▫️ 🎬 <b>اکشن‌های جعلی:</b> فعال و آماده
 ▫️ 🗑 <b>پاکسازی پیام‌ها:</b> فعال و آماده
-▫️ ⏳ <b>تایمر شمارش معکوس:</b> فعال و آماده
+▫️ ⏳ <b>تایمر زنده:</b> فعال و آماده
+▫️ 🔥 <b>ری‌اکشن خودکار:</b> فعال و آماده
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>جهت مطالعه راهنما و تنظیم هر قابلیت، از کیبورد ثابت زیر گزینه مورد نظر را انتخاب کنید:</i>`,
 			clockStatus, emojiStatus, bioStatus, fontStatus, friendCount, enemyCount,
@@ -2829,7 +3087,7 @@ func main() {
 
 		currentKeyPrice := getKeyPrice()
 
-		return fmt.Sprintf(`👑 <b>مدیریت کل سیستم به دستাস্ট شماست!</b>
+		return fmt.Sprintf(`👑 <b>مدیریت کل سیستم به دست شماست!</b>
 
 🖥 <b>مشخصات سرور به شرح زیر است:</b>
 ⚙️ <b>CPU :</b> <code>%.1f%%</code>
@@ -3415,7 +3673,34 @@ func main() {
 		return c.Send(text, guideTimerMenu, tele.ModeHTML)
 	})
 
-	bot.Handle(&btnGPV, func(c tele.Context) error {
+	// منوی ری‌اکشن خودکار
+	bot.Handle(&btnGAutoReact, func(c tele.Context) error {
+		text := `🔥 <b>راهنمای ری‌اکشن خودکار (Auto-React)</b>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>عملکرد:</b>
+با این قابلیت بسیار جذاب، می‌توانید کاری کنید که به محض اینکه فرد خاصی پیامی ارسال کرد، سلف‌بات شما در کمتر از کسر ثانیه (سریع‌تر از هر انسانی) دقیقاً روی پیام او ری‌اکشن دلخواهتان (مانند ❤️ یا 🔥) را بزند!
+
+💬 <b>دستورات چت (با ریپلای روی پیام فرد):</b>
+
+▫️ <b>ثبت ری‌اکشن:</b>
+روی پیام شخص ریپلای کنید و بفرستید:
+<code>ری‌اکشن 🔥</code> یا <code>ری‌اکشن 👎</code>
+<i>(اگر فقط کلمه «ری‌اکشن» را بفرستید، به طور پیش‌فرض ❤️ تنظیم می‌شود)</i>
+
+▫️ <b>لغو برای یک فرد:</b>
+روی پیام شخص ریپلای کنید و بفرستید:
+<code>حذف ری‌اکشن</code>
+
+▫️ <b>مشاهده لیست افراد:</b>
+ارسال دستور <code>لیست ری‌اکشن</code>
+
+▫️ <b>پاکسازی همه:</b>
+ارسال دستور <code>پاکسازی ری‌اکشن</code>`
+
+		return c.Send(text, guideAutoReactMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnPVBack, func(c tele.Context) error {
 		text := `📩 <b>راهنمای فوروارد همگانی به پیوی‌ها (Broadcast PV)</b>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>نحوه ارسال:</b>
@@ -3457,6 +3742,7 @@ func main() {
 	bot.Handle(&btnActionBack, backToGuideHandler)
 	bot.Handle(&btnPurgeBack, backToGuideHandler)
 	bot.Handle(&btnTimerBack, backToGuideHandler)
+	bot.Handle(&btnAutoReactBack, backToGuideHandler)
 	bot.Handle(&btnPVBack, backToGuideHandler)
 	bot.Handle(&btnGroupBack, backToGuideHandler)
 

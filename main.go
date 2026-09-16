@@ -62,6 +62,13 @@ var (
 	enemiesCacheMu sync.RWMutex
 	enemiesCache   = make(map[int64]map[int64]bool)
 
+	// کش خوشنویسی (Font Styler)
+	fontSettingsMu sync.RWMutex
+	fontSettings   = make(map[int64]struct {
+		Enabled bool
+		Mode    string
+	})
+
 	channelAccessHashesMu sync.RWMutex
 	channelAccessHashes   = make(map[int64]int64)
 )
@@ -239,7 +246,9 @@ func InitDB(cfg Config) {
 		is_bio_enabled BOOLEAN DEFAULT FALSE,
 		bio_mode VARCHAR(20) DEFAULT 'random',
 		custom_bio VARCHAR(255) DEFAULT '',
-		original_bio VARCHAR(255) DEFAULT ''
+		original_bio VARCHAR(255) DEFAULT '',
+		is_font_enabled BOOLEAN DEFAULT FALSE,
+		font_mode VARCHAR(30) DEFAULT 'bold_italic'
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN last_billed_at DATETIME DEFAULT CURRENT_TIMESTAMP")
@@ -252,6 +261,8 @@ func InitDB(cfg Config) {
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN bio_mode VARCHAR(20) DEFAULT 'random'")
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN custom_bio VARCHAR(255) DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN original_bio VARCHAR(255) DEFAULT ''")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_font_enabled BOOLEAN DEFAULT FALSE")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN font_mode VARCHAR(30) DEFAULT 'bold_italic'")
 
 	// جدول دوستان
 	_, _ = db.Exec(`
@@ -304,6 +315,7 @@ func InitDB(cfg Config) {
 
 	loadAllFriendsToCache()
 	loadAllEnemiesToCache()
+	loadAllFontSettingsToCache()
 }
 
 func loadAllFriendsToCache() {
@@ -416,6 +428,56 @@ func clearEnemiesCache(ownerID int64) {
 	enemiesCacheMu.Lock()
 	defer enemiesCacheMu.Unlock()
 	delete(enemiesCache, ownerID)
+}
+
+func loadAllFontSettingsToCache() {
+	if db == nil {
+		return
+	}
+	rows, err := db.Query("SELECT id, is_font_enabled, font_mode FROM users")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	fontSettingsMu.Lock()
+	fontSettings = make(map[int64]struct {
+		Enabled bool
+		Mode    string
+	})
+	for rows.Next() {
+		var uid int64
+		var en bool
+		var mode string
+		if err := rows.Scan(&uid, &en, &mode); err == nil {
+			if mode == "" {
+				mode = "bold_italic"
+			}
+			fontSettings[uid] = struct {
+				Enabled bool
+				Mode    string
+			}{Enabled: en, Mode: mode}
+		}
+	}
+	fontSettingsMu.Unlock()
+}
+
+func updateFontCache(uid int64, en bool, mode string) {
+	fontSettingsMu.Lock()
+	defer fontSettingsMu.Unlock()
+	fontSettings[uid] = struct {
+		Enabled bool
+		Mode    string
+	}{Enabled: en, Mode: mode}
+}
+
+func getFontSetting(uid int64) (bool, string) {
+	fontSettingsMu.RLock()
+	defer fontSettingsMu.RUnlock()
+	if s, ok := fontSettings[uid]; ok {
+		return s.Enabled, s.Mode
+	}
+	return false, "bold_italic"
 }
 
 func PopulateChannelCache(chats []tg.ChatClass) {
@@ -762,7 +824,7 @@ func deleteMsg(ctx context.Context, client *telegram.Client, inputPeer tg.InputP
 	})
 }
 
-// تغییر به متن بولد، تاخیر دقیق ۱۰۰ میلی‌ثانیه و سپس حذف پیام
+// تغییر پیام به متن بولد دارای تیک، انتظار دقیق ۱۰۰ میلی‌ثانیه و سپس حذف قطعی
 func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int, text string) {
 	editReq := &tg.MessagesEditMessageRequest{
 		Peer:    inputPeer,
@@ -775,42 +837,38 @@ func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPe
 			},
 		},
 	}
-	_, err := client.API().MessagesEditMessage(ctx, editReq)
-	if err != nil {
-		sendReq := &tg.MessagesSendMessageRequest{
-			Peer:     inputPeer,
-			Message:  text,
-			RandomID: time.Now().UnixNano(),
-			Entities: []tg.MessageEntityClass{
-				&tg.MessageEntityBold{
-					Offset: 0,
-					Length: len([]rune(text)),
-				},
-			},
-		}
-		res, sendErr := client.API().MessagesSendMessage(ctx, sendReq)
-		if sendErr == nil {
-			time.Sleep(100 * time.Millisecond)
-			if updates, ok := res.(*tg.Updates); ok {
-				for _, u := range updates.Updates {
-					if nu, ok := u.(*tg.UpdateNewMessage); ok {
-						if m, ok := nu.Message.(*tg.Message); ok {
-							deleteMsg(ctx, client, inputPeer, m.ID)
-						}
-					} else if ncu, ok := u.(*tg.UpdateNewChannelMessage); ok {
-						if m, ok := ncu.Message.(*tg.Message); ok {
-							deleteMsg(ctx, client, inputPeer, m.ID)
-						}
-					}
-				}
-			}
-			deleteMsg(ctx, client, inputPeer, msgID)
-			return
-		}
-	}
+	_, _ = client.API().MessagesEditMessage(ctx, editReq)
 
 	time.Sleep(100 * time.Millisecond)
-	deleteMsg(ctx, client, inputPeer, msgID)
+	deleteMsg(context.Background(), client, inputPeer, msgID)
+}
+
+func getEntitiesForFont(text string, mode string) []tg.MessageEntityClass {
+	length := len([]rune(text))
+	switch mode {
+	case "bold":
+		return []tg.MessageEntityClass{&tg.MessageEntityBold{Offset: 0, Length: length}}
+	case "italic":
+		return []tg.MessageEntityClass{&tg.MessageEntityItalic{Offset: 0, Length: length}}
+	case "bold_italic":
+		return []tg.MessageEntityClass{
+			&tg.MessageEntityBold{Offset: 0, Length: length},
+			&tg.MessageEntityItalic{Offset: 0, Length: length},
+		}
+	case "underline":
+		return []tg.MessageEntityClass{&tg.MessageEntityUnderline{Offset: 0, Length: length}}
+	case "strike":
+		return []tg.MessageEntityClass{&tg.MessageEntityStrike{Offset: 0, Length: length}}
+	case "mono":
+		return []tg.MessageEntityClass{&tg.MessageEntityCode{Offset: 0, Length: length}}
+	case "spoiler":
+		return []tg.MessageEntityClass{&tg.MessageEntitySpoiler{Offset: 0, Length: length}}
+	default:
+		return []tg.MessageEntityClass{
+			&tg.MessageEntityBold{Offset: 0, Length: length},
+			&tg.MessageEntityItalic{Offset: 0, Length: length},
+		}
+	}
 }
 
 func handleForwardToAllPV(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, dropAuthor bool) {
@@ -1050,7 +1108,6 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			}
 
 			if senderID != 0 {
-				// واکنش به دوست
 				if isUserFriend(userID, senderID) {
 					go func(msgID int, p tg.InputPeerClass) {
 						time.Sleep(150 * time.Millisecond)
@@ -1070,7 +1127,6 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					}(msg.ID, inputPeer)
 				}
 
-				// واکنش به دشمن
 				if isUserEnemy(userID, senderID) {
 					go func(msgID int, p tg.InputPeerClass) {
 						time.Sleep(150 * time.Millisecond)
@@ -1180,7 +1236,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer dCancel()
 
-				go notifyAndSelfDestruct(dCtx, client, p, mID, "❌ حذف دوست شد")
+				go notifyAndSelfDestruct(dCtx, client, p, mID, "✅ حذف دوست شد")
 
 				repMsg, _, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
 				if err != nil || repMsg == nil {
@@ -1423,6 +1479,44 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			return
 		}
 
+		// دستورات چت سیستم خوشنویسی
+		if text == "خوشنویسی روشن" {
+			_, _ = db.Exec("UPDATE users SET is_font_enabled = TRUE WHERE id = ?", userID)
+			_, mode := getFontSetting(userID)
+			updateFontCache(userID, true, mode)
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🟢 خوشنویسی روشن شد")
+			}
+			return
+		} else if text == "خوشنویسی خاموش" {
+			_, _ = db.Exec("UPDATE users SET is_font_enabled = FALSE WHERE id = ?", userID)
+			_, mode := getFontSetting(userID)
+			updateFontCache(userID, false, mode)
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔴 خوشنویسی خاموش شد")
+			}
+			return
+		} else if strings.HasPrefix(text, "خوشنویسی ") {
+			fontMap := map[string]string{
+				"خوشنویسی بولد":         "bold",
+				"خوشنویسی ایتالیک":      "italic",
+				"خوشنویسی بولد ایتالیک": "bold_italic",
+				"خوشنویسی زیر خط":       "underline",
+				"خوشنویسی خط خورده":     "strike",
+				"خوشنویسی مونو":         "mono",
+				"خوشنویسی اسپویل":       "spoiler",
+			}
+			if mode, found := fontMap[text]; found {
+				_, _ = db.Exec("UPDATE users SET font_mode = ? WHERE id = ?", mode, userID)
+				en, _ := getFontSetting(userID)
+				updateFontCache(userID, en, mode)
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, fmt.Sprintf("✅ فونت به %s تغییر یافت", text))
+				}
+				return
+			}
+		}
+
 		if text == "دانلود" || text == "سیو" {
 			if msg.ReplyTo != nil {
 				if header, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok && header.ReplyToMsgID != 0 {
@@ -1450,85 +1544,56 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		if text == "ساعت روشن شو" || text == "ساعت روشن" {
 			handleClockOn(ctx, userID, client)
 			if inputPeer != nil {
-				go func() {
-					dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer dCancel()
-					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "ساعت روشن شد")
-				}()
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "ساعت روشن شد")
 			}
+			return
 		} else if text == "ساعت خاموش شو" || text == "ساعت خاموش" {
 			handleClockOff(ctx, userID, client)
 			if inputPeer != nil {
-				go func() {
-					dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer dCancel()
-					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "ساعت خاموش شد")
-				}()
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "ساعت خاموش شد")
 			}
+			return
 		} else if text == "اموجی روشن شو" || text == "اموجی روشن" {
 			handleEmojiOn(ctx, userID, client)
 			if inputPeer != nil {
-				go func() {
-					dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer dCancel()
-					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "اموجی روشن شد")
-				}()
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "اموجی روشن شد")
 			}
+			return
 		} else if text == "اموجی خاموش شو" || text == "اموجی خاموش" {
 			handleEmojiOff(ctx, userID, client)
 			if inputPeer != nil {
-				go func() {
-					dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer dCancel()
-					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "اموجی خاموش شد")
-				}()
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "اموجی خاموش شد")
 			}
+			return
 		} else if text == "بیو روشن شو" || text == "بیو روشن" {
 			handleBioOn(ctx, userID, client)
 			if inputPeer != nil {
-				go func() {
-					dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer dCancel()
-					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "بیو روشن شد")
-				}()
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "بیو روشن شد")
 			}
+			return
 		} else if text == "بیو خاموش شو" || text == "بیو خاموش" {
 			handleBioOff(ctx, userID, client)
 			if inputPeer != nil {
-				go func() {
-					dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer dCancel()
-					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "بیو خاموش شد")
-				}()
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "بیو خاموش شد")
 			}
+			return
 		} else if text == "رندوم شو" {
 			handleBioRandom(ctx, userID, client)
 			if inputPeer != nil {
-				go func() {
-					dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer dCancel()
-					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "بیو به حالت رندوم تغییر یافت")
-				}()
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "بیو به حالت رندوم تغییر یافت")
 			}
+			return
 		} else if text == "بیو شو" {
 			if msg.ReplyTo == nil {
 				if inputPeer != nil {
-					go func() {
-						dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
-						defer dCancel()
-						notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "⚠️ لطفاً روی یک پیام ریپلای کنید!")
-					}()
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی یک پیام ریپلای کنید!")
 				}
 				return
 			}
 			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
 			if !ok || header.ReplyToMsgID == 0 {
 				if inputPeer != nil {
-					go func() {
-						dCtx, dCancel := context.WithTimeout(context.Background(), 10*time.Second)
-						defer dCancel()
-						notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "⚠️ پیام معتبر نیست!")
-					}()
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ پیام معتبر نیست!")
 				}
 				return
 			}
@@ -1580,6 +1645,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "بیو با موفقیت تنظیم شد")
 				}
 			}(header.ReplyToMsgID)
+			return
 
 		} else if text == "بفرست پیوی همه" {
 			go func() {
@@ -1587,24 +1653,44 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				defer bCancel()
 				handleForwardToAllPV(bCtx, client, inputPeer, msg, true)
 			}()
+			return
 		} else if text == "پیوی همه" {
 			go func() {
 				bCtx, bCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer bCancel()
 				handleForwardToAllPV(bCtx, client, inputPeer, msg, false)
 			}()
+			return
 		} else if text == "بفرست گروه همه" {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
 				handleForwardToAllGroups(gCtx, client, inputPeer, msg, true)
 			}()
+			return
 		} else if text == "گروه همه" {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
 				handleForwardToAllGroups(gCtx, client, inputPeer, msg, false)
 			}()
+			return
+		}
+
+		// اعمال بلادرنگ فونت و خوشنویسی روی تمامی پیام‌های ارسالی کاربر
+		fontEnabled, fontMode := getFontSetting(userID)
+		if fontEnabled && text != "" && msg.Media == nil {
+			go func(p tg.InputPeerClass, mID int, origText string, fMode string) {
+				eCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				entities := getEntitiesForFont(origText, fMode)
+				_, _ = client.API().MessagesEditMessage(eCtx, &tg.MessagesEditMessageRequest{
+					Peer:     p,
+					ID:      mID,
+					Message:  origText,
+					Entities: entities,
+				})
+			}(inputPeer, msg.ID, text, fontMode)
 		}
 	}
 
@@ -2082,6 +2168,7 @@ func main() {
 	guideBioMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideFriendMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideEnemyMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guideFontMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guidePVMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideGroupMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
@@ -2090,14 +2177,15 @@ func main() {
 	btnGBio := guideMenu.Text("📝 بیوگرافی هوشمند")
 	btnGFriend := guideMenu.Text("🌸 دوست")
 	btnGEnemy := guideMenu.Text("⚔️ دشمن")
+	btnGFont := guideMenu.Text("✒️ خوشنویسی")
 	btnGPV := guideMenu.Text("📩 پیوی همه")
 	btnGGroup := guideMenu.Text("👥 گروه همه")
 	btnGBackMain := guideMenu.Text("🔙 بازگشت به منوی اصلی")
 
-	// دکمه‌های دوست و دشمن کنار هم قرار گرفتند
+	// چیدمان تمیز دکمه‌های راهنما (دوست و دشمن در یک ردیف)
 	guideMenu.Reply(
 		guideMenu.Row(btnGClock, btnGEmoji),
-		guideMenu.Row(btnGBio),
+		guideMenu.Row(btnGBio, btnGFont),
 		guideMenu.Row(btnGFriend, btnGEnemy),
 		guideMenu.Row(btnGPV, btnGGroup),
 		guideMenu.Row(btnGBackMain),
@@ -2143,6 +2231,27 @@ func main() {
 		guideEnemyMenu.Row(btnEnemyBack),
 	)
 
+	// منوی خوشنویسی
+	btnFontOn := guideFontMenu.Text("🟢 روشن کردن خوشنویسی")
+	btnFontOff := guideFontMenu.Text("🔴 خاموش کردن خوشنویسی")
+	btnFontBoldItalic := guideFontMenu.Text("✨ بولد ایتالیک (پیش‌فرض)")
+	btnFontBold := guideFontMenu.Text("🖋 بولد")
+	btnFontItalic := guideFontMenu.Text("🖊 ایتالیک")
+	btnFontUnderline := guideFontMenu.Text("📜 زیر خط")
+	btnFontStrike := guideFontMenu.Text("❌ خط خورده")
+	btnFontMono := guideFontMenu.Text("💻 مونو")
+	btnFontSpoiler := guideFontMenu.Text("🕵️ اسپویل")
+	btnFontBack := guideFontMenu.Text("🔙 بازگشت به راهنما")
+
+	guideFontMenu.Reply(
+		guideFontMenu.Row(btnFontOn, btnFontOff),
+		guideFontMenu.Row(btnFontBoldItalic),
+		guideFontMenu.Row(btnFontBold, btnFontItalic),
+		guideFontMenu.Row(btnFontUnderline, btnFontStrike),
+		guideFontMenu.Row(btnFontMono, btnFontSpoiler),
+		guideFontMenu.Row(btnFontBack),
+	)
+
 	btnPVBack := guidePVMenu.Text("🔙 بازگشت به راهنما")
 	guidePVMenu.Reply(guidePVMenu.Row(btnPVBack))
 
@@ -2150,9 +2259,9 @@ func main() {
 	guideGroupMenu.Reply(guideGroupMenu.Row(btnGroupBack))
 
 	buildGuideDashboardText := func(userID int64) string {
-		var isClock, isEmoji, isBio bool
-		var bioMode string
-		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode)
+		var isClock, isEmoji, isBio, isFont bool
+		var bioMode, fontMode string
+		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled, font_mode FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont, &fontMode)
 		var friendCount, enemyCount int
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_friends WHERE owner_id = ?", userID).Scan(&friendCount)
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_enemies WHERE owner_id = ?", userID).Scan(&enemyCount)
@@ -2173,6 +2282,10 @@ func main() {
 				bioStatus = "🟢 روشن (رندوم)"
 			}
 		}
+		fontStatus := "🔴 خاموش"
+		if isFont {
+			fontStatus = "🟢 روشن"
+		}
 
 		return fmt.Sprintf(`📚 <b>بخش راهنما و امکانات سلف ولف 🐺</b>
 ➖➖➖➖➖➖➖➖➖➖
@@ -2180,11 +2293,12 @@ func main() {
 ▫️ ⏱ <b>ساعت زنده:</b> %s
 ▫️ 🎭 <b>اموجی رندوم:</b> %s
 ▫️ 📝 <b>بیوگرافی هوشمند:</b> %s
+▫️ ✒️ <b>خوشنویسی پیام‌ها:</b> %s
 ▫️ 🌸 <b>سیستم دوست:</b> <code>%d نفر</code> (همیشه فعال)
 ▫️ ⚔️ <b>سیستم دشمن:</b> <code>%d نفر</code> (همیشه فعال)
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>جهت مطالعه راهنما و تنظیم هر قابلیت، از کیبورد ثابت زیر گزینه مورد نظر را انتخاب کنید:</i>`,
-			clockStatus, emojiStatus, bioStatus, friendCount, enemyCount,
+			clockStatus, emojiStatus, bioStatus, fontStatus, friendCount, enemyCount,
 		)
 	}
 
@@ -2616,7 +2730,7 @@ func main() {
 		return c.Send("🔴 <b>بیوگرافی خاموش شد و بیوی اولیه شما بازگردانده شد.</b>", guideBioMenu, tele.ModeHTML)
 	})
 
-	// منوی اختصاصی دوست
+	// منوی دوست
 	bot.Handle(&btnGFriend, func(c tele.Context) error {
 		userID := c.Sender().ID
 		var friendCount int
@@ -2670,7 +2784,7 @@ func main() {
 		return c.Send("🗑 <b>لیست دوستان شما به طور کامل پاکسازی شد 🌸</b>", guideFriendMenu, tele.ModeHTML)
 	})
 
-	// منوی اختصاصی دشمن
+	// منوی دشمن
 	bot.Handle(&btnGEnemy, func(c tele.Context) error {
 		userID := c.Sender().ID
 		var enemyCount int
@@ -2724,6 +2838,94 @@ func main() {
 		return c.Send("🗑 <b>لیست دشمنان شما به طور کامل پاکسازی شد ⚔️</b>", guideEnemyMenu, tele.ModeHTML)
 	})
 
+	// منوی خوشنویسی
+	formatFontModeName := func(mode string) string {
+		switch mode {
+		case "bold":
+			return "بولد"
+		case "italic":
+			return "ایتالیک"
+		case "bold_italic":
+			return "بولد ایتالیک"
+		case "underline":
+			return "زیر خط"
+		case "strike":
+			return "خط خورده"
+		case "mono":
+			return "مونو"
+		case "spoiler":
+			return "اسپویل"
+		default:
+			return "بولد ایتالیک"
+		}
+	}
+
+	bot.Handle(&btnGFont, func(c tele.Context) error {
+		userID := c.Sender().ID
+		en, mode := getFontSetting(userID)
+		statusStr := "🔴 خاموش"
+		if en {
+			statusStr = "🟢 روشن"
+		}
+
+		text := fmt.Sprintf(`✒️ <b>مدیریت سیستم خوشنویسی و استایل پیام‌ها</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت:</b> %s
+🔤 <b>فونت انتخابی فعلی:</b> <b>%s</b>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+با روشن بودن این قابلیت، هر پیامی که در گروه‌ها یا پیوی ارسال کنید بلافاصله به فونت و استایل انتخابی شما تبدیل (Edit) می‌شود.
+
+💬 <b>دستورات چت:</b>
+▫️ روشن کردن: <code>خوشنویسی روشن</code>
+▫️ خاموش کردن: <code>خوشنویسی خاموش</code>
+
+▫️ <code>خوشنویسی بولد</code>
+▫️ <code>خوشنویسی ایتالیک</code>
+▫️ <code>خوشنویسی بولد ایتالیک</code> (پیش‌فرض)
+▫️ <code>خوشنویسی زیر خط</code>
+▫️ <code>خوشنویسی خط خورده</code>
+▫️ <code>خوشنویسی مونو</code>
+▫️ <code>خوشنویسی اسپویل</code>
+
+👇 <i>همچنین می‌توانید مستقیماً از کلیدهای کیبورد زیر فونت دلخواه را تنظیم کنید:</i>`, statusStr, formatFontModeName(mode))
+
+		return c.Send(text, guideFontMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnFontOn, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_font_enabled = TRUE WHERE id = ?", userID)
+		_, mode := getFontSetting(userID)
+		updateFontCache(userID, true, mode)
+		return c.Send("🟢 <b>سیستم خوشنویسی روشن شد.</b>", guideFontMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnFontOff, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_font_enabled = FALSE WHERE id = ?", userID)
+		_, mode := getFontSetting(userID)
+		updateFontCache(userID, false, mode)
+		return c.Send("🔴 <b>سیستم خوشنویسی خاموش شد.</b>", guideFontMenu, tele.ModeHTML)
+	})
+
+	setFontHandler := func(mode, label string) tele.HandlerFunc {
+		return func(c tele.Context) error {
+			userID := c.Sender().ID
+			_, _ = db.Exec("UPDATE users SET font_mode = ?, is_font_enabled = TRUE WHERE id = ?", mode, userID)
+			updateFontCache(userID, true, mode)
+			return c.Send(fmt.Sprintf("✅ <b>فونت خوشنویسی به «%s» تغییر یافت و روشن شد.</b>", label), guideFontMenu, tele.ModeHTML)
+		}
+	}
+
+	bot.Handle(&btnFontBoldItalic, setFontHandler("bold_italic", "بولد ایتالیک"))
+	bot.Handle(&btnFontBold, setFontHandler("bold", "بولد"))
+	bot.Handle(&btnFontItalic, setFontHandler("italic", "ایتالیک"))
+	bot.Handle(&btnFontUnderline, setFontHandler("underline", "زیر خط"))
+	bot.Handle(&btnFontStrike, setFontHandler("strike", "خط خورده"))
+	bot.Handle(&btnFontMono, setFontHandler("mono", "مونو"))
+	bot.Handle(&btnFontSpoiler, setFontHandler("spoiler", "اسپویل"))
+
 	bot.Handle(&btnGPV, func(c tele.Context) error {
 		text := `📩 <b>راهنمای فوروارد همگانی به پیوی‌ها (Broadcast PV)</b>
 ➖➖➖➖➖➖➖➖➖➖
@@ -2762,6 +2964,7 @@ func main() {
 	bot.Handle(&btnBioBack, backToGuideHandler)
 	bot.Handle(&btnFriendBack, backToGuideHandler)
 	bot.Handle(&btnEnemyBack, backToGuideHandler)
+	bot.Handle(&btnFontBack, backToGuideHandler)
 	bot.Handle(&btnPVBack, backToGuideHandler)
 	bot.Handle(&btnGroupBack, backToGuideHandler)
 
@@ -3121,7 +3324,7 @@ func main() {
 		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
 		_ = os.Remove(sessionPath)
 
-		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE, is_bio_enabled = FALSE, is_anti_delete_enabled = FALSE, is_edit_logger_enabled = FALSE, is_protected_saver_enabled = FALSE, is_ghost_mode_enabled = FALSE WHERE id = ?", userID)
+		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE, is_bio_enabled = FALSE, is_anti_delete_enabled = FALSE, is_edit_logger_enabled = FALSE, is_protected_saver_enabled = FALSE, is_ghost_mode_enabled = FALSE, is_font_enabled = FALSE WHERE id = ?", userID)
 
 		if c.Message() != nil {
 			_ = bot.Delete(c.Message())

@@ -69,6 +69,10 @@ var (
 		Mode    string
 	})
 
+	// مدیریت اکشن‌های زنده چت
+	activeActionsMu sync.Mutex
+	activeActions   = make(map[string]context.CancelFunc)
+
 	channelAccessHashesMu sync.RWMutex
 	channelAccessHashes   = make(map[int64]int64)
 )
@@ -95,7 +99,7 @@ var randomBioPool = []string{
 	"💎 اصالت را هیچ بهایی نمی‌تواند بسنجد.",
 	"⏳ زمان می‌گذرد و حقیقت‌ها عریان‌تر می‌شوند.",
 	"🎯 متمرکز بر هدف؛ صداهای مزاحم را نشنیده بگیر.",
-	"🥀 از ریشه‌های خویش جوانه می‌نم؛ استوارتر از دیروز.",
+	"🥀 از ریشه‌های خوید جوانه می‌نم؛ استوارتر از دیروز.",
 	"🪐 در مدار سرنوشت خود، ستاره‌ای بی‌همتایم.",
 	"☕️ تلخ اما سرشار از آرامش، چون خلوت شبانه.",
 	"🌪️ طوفان‌ها برپا می‌شوند تا مسیر را هموار سازند.",
@@ -488,6 +492,72 @@ func PopulateChannelCache(chats []tg.ChatClass) {
 			channelAccessHashes[ch.ID] = ch.AccessHash
 		}
 	}
+}
+
+// توقف هر اکشن فعال در چت
+func stopActiveAction(actionKey string) {
+	activeActionsMu.Lock()
+	if cancel, ok := activeActions[actionKey]; ok {
+		cancel()
+		delete(activeActions, actionKey)
+	}
+	activeActionsMu.Unlock()
+}
+
+// اجرای اکشن‌های جعلی با تمدید مداوم هر ۴ ثانیه تا پایان زمان
+func startFakeAction(ctx context.Context, client *telegram.Client, userID int64, inputPeer tg.InputPeerClass, peerKey string, action tg.SendMessageActionClass, durationSec int) {
+	actionKey := fmt.Sprintf("%d_%s", userID, peerKey)
+	stopActiveAction(actionKey)
+
+	if durationSec <= 0 {
+		durationSec = 20
+	}
+	if durationSec > 300 {
+		durationSec = 300
+	}
+
+	actCtx, cancel := context.WithTimeout(context.Background(), time.Duration(durationSec)*time.Second)
+	activeActionsMu.Lock()
+	activeActions[actionKey] = cancel
+	activeActionsMu.Unlock()
+
+	go func() {
+		defer func() {
+			activeActionsMu.Lock()
+			delete(activeActions, actionKey)
+			activeActionsMu.Unlock()
+			cancel()
+		}()
+
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+
+		_, _ = client.API().MessagesSetTyping(actCtx, &tg.MessagesSetTypingRequest{
+			Peer:   inputPeer,
+			Action: action,
+		})
+
+		for {
+			select {
+			case <-actCtx.Done():
+				cCtx, cCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				_, _ = client.API().MessagesSetTyping(cCtx, &tg.MessagesSetTypingRequest{
+					Peer:   inputPeer,
+					Action: &tg.SendMessageCancelAction{},
+				})
+				cCancel()
+				return
+			case <-ticker.C:
+				_, err := client.API().MessagesSetTyping(actCtx, &tg.MessagesSetTypingRequest{
+					Peer:   inputPeer,
+					Action: action,
+				})
+				if err != nil {
+					return
+				}
+			}
+		}
+	}()
 }
 
 func GetSetting(key string) string {
@@ -1098,6 +1168,16 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		}
 		inputPeer = getInputPeer(msg.PeerID, e, selfID)
 
+		peerKey := "chat"
+		switch p := msg.PeerID.(type) {
+		case *tg.PeerUser:
+			peerKey = fmt.Sprintf("user_%d", p.UserID)
+		case *tg.PeerChat:
+			peerKey = fmt.Sprintf("chat_%d", p.ChatID)
+		case *tg.PeerChannel:
+			peerKey = fmt.Sprintf("channel_%d", p.ChannelID)
+		}
+
 		// واکنش به پیام‌های دوستان و دشمنان در تمام گروه‌ها
 		if !msg.Out {
 			senderID := int64(0)
@@ -1150,6 +1230,98 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		}
 
 		text := strings.TrimSpace(msg.Message)
+
+		// پردازش دستورات اکشن‌های جعلی
+		if text == "لغو اکشن" || text == "توقف اکشن" {
+			actionKey := fmt.Sprintf("%d_%s", userID, peerKey)
+			stopActiveAction(actionKey)
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🛑 اکشن متوقف شد")
+			}
+			return
+		}
+
+		parseActionDuration := func(cmdText, prefix string) int {
+			rem := strings.TrimSpace(strings.TrimPrefix(cmdText, prefix))
+			if rem == "" {
+				return 20
+			}
+			d, err := strconv.Atoi(rem)
+			if err != nil || d <= 0 {
+				return 20
+			}
+			return d
+		}
+
+		var actionToRun tg.SendMessageActionClass
+		actionDuration := 20
+		isActionCmd := false
+
+		if strings.HasPrefix(text, "اکشن تایپ") || strings.HasPrefix(text, "تایپینگ") {
+			isActionCmd = true
+			actionToRun = &tg.SendMessageTypingAction{}
+			if strings.HasPrefix(text, "اکشن تایپ") {
+				actionDuration = parseActionDuration(text, "اکشن تایپ")
+			} else {
+				actionDuration = parseActionDuration(text, "تایپینگ")
+			}
+		} else if strings.HasPrefix(text, "اکشن وویس") || strings.HasPrefix(text, "ضبط صدا") {
+			isActionCmd = true
+			actionToRun = &tg.SendMessageRecordAudioAction{}
+			if strings.HasPrefix(text, "اکشن وویس") {
+				actionDuration = parseActionDuration(text, "اکشن وویس")
+			} else {
+				actionDuration = parseActionDuration(text, "ضبط صدا")
+			}
+		} else if strings.HasPrefix(text, "اکشن ویدیوگرد") || strings.HasPrefix(text, "ویدیو گرد") {
+			isActionCmd = true
+			actionToRun = &tg.SendMessageRecordRoundAction{}
+			if strings.HasPrefix(text, "اکشن ویدیوگرد") {
+				actionDuration = parseActionDuration(text, "اکشن ویدیوگرد")
+			} else {
+				actionDuration = parseActionDuration(text, "ویدیو گرد")
+			}
+		} else if strings.HasPrefix(text, "اکشن ویدیو") || strings.HasPrefix(text, "ضبط ویدیو") {
+			isActionCmd = true
+			actionToRun = &tg.SendMessageRecordVideoAction{}
+			if strings.HasPrefix(text, "اکشن ویدیو") {
+				actionDuration = parseActionDuration(text, "اکشن ویدیو")
+			} else {
+				actionDuration = parseActionDuration(text, "ضبط ویدیو")
+			}
+		} else if strings.HasPrefix(text, "اکشن عکس") || strings.HasPrefix(text, "ارسال عکس") {
+			isActionCmd = true
+			actionToRun = &tg.SendMessageUploadPhotoAction{}
+			if strings.HasPrefix(text, "اکشن عکس") {
+				actionDuration = parseActionDuration(text, "اکشن عکس")
+			} else {
+				actionDuration = parseActionDuration(text, "ارسال عکس")
+			}
+		} else if strings.HasPrefix(text, "اکشن فایل") || strings.HasPrefix(text, "ارسال فایل") {
+			isActionCmd = true
+			actionToRun = &tg.SendMessageUploadDocumentAction{}
+			if strings.HasPrefix(text, "اکشن فایل") {
+				actionDuration = parseActionDuration(text, "اکشن فایل")
+			} else {
+				actionDuration = parseActionDuration(text, "ارسال فایل")
+			}
+		} else if strings.HasPrefix(text, "اکشن بازی") || strings.HasPrefix(text, "بازی") {
+			isActionCmd = true
+			actionToRun = &tg.SendMessageGamePlayAction{}
+			if strings.HasPrefix(text, "اکشن بازی") {
+				actionDuration = parseActionDuration(text, "اکشن بازی")
+			} else {
+				actionDuration = parseActionDuration(text, "بازی")
+			}
+		}
+
+		if isActionCmd && actionToRun != nil {
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, fmt.Sprintf("✅ اکشن به مدت %d ثانیه فعال شد", actionDuration))
+				go startFakeAction(ctx, client, userID, inputPeer, peerKey, actionToRun, actionDuration)
+			}
+			return
+		}
 
 		// دستورات چت سیستم دوست
 		if text == "تنظیم دوست" {
@@ -2169,6 +2341,7 @@ func main() {
 	guideFriendMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideEnemyMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideFontMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guideActionMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guidePVMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideGroupMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
@@ -2178,15 +2351,17 @@ func main() {
 	btnGFriend := guideMenu.Text("🌸 دوست")
 	btnGEnemy := guideMenu.Text("⚔️ دشمن")
 	btnGFont := guideMenu.Text("✒️ خوشنویسی")
+	btnGAction := guideMenu.Text("🎬 اکشن‌ها")
 	btnGPV := guideMenu.Text("📩 پیوی همه")
 	btnGGroup := guideMenu.Text("👥 گروه همه")
 	btnGBackMain := guideMenu.Text("🔙 بازگشت به منوی اصلی")
 
-	// چیدمان تمیز دکمه‌های راهنما (دوست و دشمن در یک ردیف)
+	// چیدمان کیبورد راهنما
 	guideMenu.Reply(
 		guideMenu.Row(btnGClock, btnGEmoji),
 		guideMenu.Row(btnGBio, btnGFont),
 		guideMenu.Row(btnGFriend, btnGEnemy),
+		guideMenu.Row(btnGAction),
 		guideMenu.Row(btnGPV, btnGGroup),
 		guideMenu.Row(btnGBackMain),
 	)
@@ -2231,7 +2406,6 @@ func main() {
 		guideEnemyMenu.Row(btnEnemyBack),
 	)
 
-	// منوی خوشنویسی
 	btnFontOn := guideFontMenu.Text("🟢 روشن کردن خوشنویسی")
 	btnFontOff := guideFontMenu.Text("🔴 خاموش کردن خوشنویسی")
 	btnFontBoldItalic := guideFontMenu.Text("✨ بولد ایتالیک (پیش‌فرض)")
@@ -2252,6 +2426,9 @@ func main() {
 		guideFontMenu.Row(btnFontBack),
 	)
 
+	btnActionBack := guideActionMenu.Text("🔙 بازگشت به راهنما")
+	guideActionMenu.Reply(guideActionMenu.Row(btnActionBack))
+
 	btnPVBack := guidePVMenu.Text("🔙 بازگشت به راهنما")
 	guidePVMenu.Reply(guidePVMenu.Row(btnPVBack))
 
@@ -2260,8 +2437,8 @@ func main() {
 
 	buildGuideDashboardText := func(userID int64) string {
 		var isClock, isEmoji, isBio, isFont bool
-		var bioMode, fontMode string
-		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled, font_mode FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont, &fontMode)
+		var bioMode string
+		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
 		var friendCount, enemyCount int
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_friends WHERE owner_id = ?", userID).Scan(&friendCount)
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_enemies WHERE owner_id = ?", userID).Scan(&enemyCount)
@@ -2296,6 +2473,7 @@ func main() {
 ▫️ ✒️ <b>خوشنویسی پیام‌ها:</b> %s
 ▫️ 🌸 <b>سیستم دوست:</b> <code>%d نفر</code> (همیشه فعال)
 ▫️ ⚔️ <b>سیستم دشمن:</b> <code>%d نفر</code> (همیشه فعال)
+▫️ 🎬 <b>اکشن‌های جعلی:</b> فعال و آماده
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>جهت مطالعه راهنما و تنظیم هر قابلیت، از کیبورد ثابت زیر گزینه مورد نظر را انتخاب کنید:</i>`,
 			clockStatus, emojiStatus, bioStatus, fontStatus, friendCount, enemyCount,
@@ -2926,6 +3104,44 @@ func main() {
 	bot.Handle(&btnFontMono, setFontHandler("mono", "مونو"))
 	bot.Handle(&btnFontSpoiler, setFontHandler("spoiler", "اسپویل"))
 
+	// منوی اکشن‌ها
+	bot.Handle(&btnGAction, func(c tele.Context) error {
+		text := `🎬 <b>راهنمای اکشن‌های جعلی چت (Fake Actions)</b>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>عملکرد:</b>
+با ارسال هر دستور، سلف‌بات وضعیت مورد نظر را در بالای صفحه چت (برای طرف مقابل یا گروه) شبیه‌سازی می‌کند.
+هر دستور به طور خودکار هر ۴ ثانیه تمدید می‌شود تا قبل از پایان زمان قطع نشود.
+
+💬 <b>دستورات چت (همراه با زمان دلخواه به ثانیه):</b>
+<i>اگر زمان را وارد نکنید، به طور خودکار ۲۰ ثانیه در نظر گرفته می‌شود.</i>
+
+▫️ ✍️ <b>در حال نوشتن:</b>
+<code>تایپینگ 30</code> یا <code>اکشن تایپ 30</code>
+
+▫️ 🎙 <b>در حال ضبط صدا (وویس):</b>
+<code>اکشن وویس 20</code> یا <code>ضبط صدا 20</code>
+
+▫️ 🔘 <b>در حال ضبط ویدیو دایره‌ای:</b>
+<code>اکشن ویدیوگرد 20</code> یا <code>ویدیو گرد 20</code>
+
+▫️ 🎥 <b>در حال ضبط ویدیو:</b>
+<code>اکشن ویدیو 20</code> یا <code>ضبط ویدیو 20</code>
+
+▫️ 📸 <b>در حال ارسال عکس:</b>
+<code>اکشن عکس 20</code> یا <code>ارسال عکس 20</code>
+
+▫️ 📁 <b>در حال ارسال فایل:</b>
+<code>اکشن فایل 20</code> یا <code>ارسال فایل 20</code>
+
+▫️ 🎮 <b>در حال بازی:</b>
+<code>اکشن بازی 20</code> یا <code>بازی 20</code>
+
+▫️ 🛑 <b>لغو فوری وضعیت:</b>
+<code>لغو اکشن</code> یا <code>توقف اکشن</code>`
+
+		return c.Send(text, guideActionMenu, tele.ModeHTML)
+	})
+
 	bot.Handle(&btnGPV, func(c tele.Context) error {
 		text := `📩 <b>راهنمای فوروارد همگانی به پیوی‌ها (Broadcast PV)</b>
 ➖➖➖➖➖➖➖➖➖➖
@@ -2965,6 +3181,7 @@ func main() {
 	bot.Handle(&btnFriendBack, backToGuideHandler)
 	bot.Handle(&btnEnemyBack, backToGuideHandler)
 	bot.Handle(&btnFontBack, backToGuideHandler)
+	bot.Handle(&btnActionBack, backToGuideHandler)
 	bot.Handle(&btnPVBack, backToGuideHandler)
 	bot.Handle(&btnGroupBack, backToGuideHandler)
 

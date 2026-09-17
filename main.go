@@ -23,6 +23,7 @@ import (
 	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/net"
+	gpc "github.com/yaa110/go-persian-calendar"
 	tele "gopkg.in/telebot.v3"
 
 	"github.com/gotd/td/session"
@@ -46,8 +47,14 @@ var (
 	controllerBotID int64
 	cfg             Config
 
-	userMenu      = &tele.ReplyMarkup{ResizeKeyboard: true}
-	adminMenu     = &tele.ReplyMarkup{ResizeKeyboard: true}
+	userMenu       = &tele.ReplyMarkup{ResizeKeyboard: true}
+	adminMenu      = &tele.ReplyMarkup{ResizeKeyboard: true}
+	adminPanelMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
+	profileMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
+
+	accountConfigMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
+	supportConfigMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
+
 	btnBuy        = userMenu.Text("🛍️ خرید سلف")
 	btnProfile    = userMenu.Text("👤 حساب کاربری")
 	btnWallet     = userMenu.Text("👛 کیف پول 💳")
@@ -56,6 +63,23 @@ var (
 	btnGuide      = userMenu.Text("📚 راهنما")
 	btnAdminPanel = adminMenu.Text("⚙️ مدیریت")
 	btnBack       = adminMenu.Text("🔙 بازگشت")
+
+	btnTurnOnSelf  = profileMenu.Text("🟢 روشن کردن سلف")
+	btnTurnOffSelf = profileMenu.Text("🔴 خاموش کردن سلف")
+	btnExitSelf    = profileMenu.Text("🛑 خروج سلف")
+
+	btnConfigAccount  = adminPanelMenu.Text("🛠 تنظیم حساب بانکی")
+	btnConfigSupport  = adminPanelMenu.Text("📞 تنظیم پشتیبانی")
+	btnConfigKeyPrice = adminPanelMenu.Text("🔑 تنظیم نرخ کلید")
+
+	btnConfigCardNum  = accountConfigMenu.Text("💳 شماره کارت")
+	btnConfigCardName = accountConfigMenu.Text("👤 نام صاحب حساب")
+	btnConfigCardBank = accountConfigMenu.Text("🏦 نام بانک")
+	btnBackToAdminAcc = accountConfigMenu.Text("🔙 بازگشت به مدیریت")
+
+	btnConfigSupportText = supportConfigMenu.Text("📝 تنظیم متن پشتیبانی")
+	btnConfigSupportID   = supportConfigMenu.Text("🆔 تنظیم آیدی پشتیبانی")
+	btnBackToAdminSup    = supportConfigMenu.Text("🔙 بازگشت به مدیریت")
 
 	stateMu        sync.RWMutex
 	adminStates    = make(map[int64]AdminAction)
@@ -1009,6 +1033,91 @@ func SafeAddUserBalance(userID int64, amount int) error {
 	return tx.Commit()
 }
 
+func formatBytes(b uint64) string {
+	const unit = 1024
+	if b < unit { return fmt.Sprintf("%d B", b) }
+	div, exp := uint64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func getAdminDashboard() string {
+	var totalUsers, activeUsers, blockedUsers int
+	_ = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
+	_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE is_blocked = TRUE").Scan(&blockedUsers)
+	_ = db.QueryRow("SELECT COUNT(*) FROM users WHERE self_status = 'روشن'").Scan(&activeUsers)
+	inactiveUsers := totalUsers - activeUsers
+	adminCount := len(cfg.AdminIDs)
+
+	var cpuUsage float64
+	if c, err := cpu.Percent(0, false); err == nil && len(c) > 0 {
+		cpuUsage = c[0]
+	}
+
+	var ramUsed, ramTotal uint64
+	var ramPercent float64
+	if v, err := mem.VirtualMemory(); err == nil {
+		ramUsed = v.Used
+		ramTotal = v.Total
+		ramPercent = v.UsedPercent
+	}
+
+	var swapUsed, swapTotal uint64
+	var swapPercent float64
+	if s, err := mem.SwapMemory(); err == nil {
+		swapUsed = s.Used
+		swapTotal = s.Total
+		swapPercent = s.UsedPercent
+	}
+
+	var diskUsed, diskTotal uint64
+	var diskPercent float64
+	if d, err := disk.Usage("/"); err == nil {
+		diskUsed = d.Used
+		diskTotal = d.Total
+		diskPercent = d.UsedPercent
+	}
+
+	var totalUp, totalDown uint64
+	if nv, err := net.IOCounters(false); err == nil && len(nv) > 0 {
+		totalUp = nv[0].BytesSent
+		totalDown = nv[0].BytesRecv
+	}
+
+	currentKeyPrice := getKeyPrice()
+
+	return fmt.Sprintf(`👑 <b>مدیریت کل سیستم به دست شماست!</b>
+
+🖥 <b>مشخصات سرور به شرح زیر است:</b>
+⚙️ <b>CPU :</b> <code>%.1f%%</code>
+🧮 <b>RAM :</b> <code>%s / %s (%.1f%%)</code>
+🔄 <b>Swap :</b> <code>%s / %s (%.1f%%)</code>
+💾 <b>Storage :</b> <code>%s / %s (%.1f%%)</code>
+🌐 <b>Traffic :</b> 🔺 Up: <code>%s</code> | 🔻 Down: <code>%s</code>
+
+👥 <b>مشخصات سلف به شرح زیر است:</b>
+🔹 <b>تعداد کل کاربران :</b> <code>%d نفر</code>
+🟢 <b>کاربران فعال :</b> <code>%d نفر</code>
+🔴 <b>کاربران غیر فعال :</b> <code>%d نفر</code>
+🚫 <b>کاربران مسدود شده :</b> <code>%d نفر</code>
+👨‍💻 <b>تعداد ادمین :</b> <code>%d نفر</code>
+
+🔑 <b>قیمت فعلی کلید :</b> <code>%s تومان</code>
+
+✨ <i>بخش مورد نظر خود را از منوی زیر انتخاب کنید:</i>`,
+		cpuUsage,
+		formatBytes(ramUsed), formatBytes(ramTotal), ramPercent,
+		formatBytes(swapUsed), formatBytes(swapTotal), swapPercent,
+		formatBytes(diskUsed), formatBytes(diskTotal), diskPercent,
+		formatBytes(totalUp), formatBytes(totalDown),
+		totalUsers, activeUsers, inactiveUsers, blockedUsers, adminCount,
+		formatMoney(currentKeyPrice),
+	)
+}
+
 func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 	activeUserbotsMu.Lock()
 	if _, exists := activeUserbots[userID]; exists {
@@ -1058,7 +1167,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		case *tg.PeerChannel: peerKey = fmt.Sprintf("channel_%d", p.ChannelID)
 		}
 
-		// پردازش قفل پیوی (از main2.go)
+		// پردازش قفل پیوی (از guide.go)
 		if ProcessPVLockIncoming(ctx, client, userID, msg, e) { return }
 
 		// واکنش به پیام‌های دیگران
@@ -1100,7 +1209,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 		text := strings.TrimSpace(msg.Message)
 
-		// پردازش مترجم و قفل پیوی (از main2.go)
+		// پردازش مترجم و قفل پیوی (از guide.go)
 		if ProcessLiveTranslator(ctx, client, inputPeer, msg, text) { return }
 		if ProcessPVLockCommand(ctx, client, inputPeer, msg, text, userID) { return }
 
@@ -1519,7 +1628,30 @@ func main() {
 		adminMenu.Row(btnAdminPanel),
 	)
 
-	// ثبت ماژول‌ها
+	profileMenu.Reply(
+		profileMenu.Row(btnTurnOnSelf, btnTurnOffSelf),
+		profileMenu.Row(btnExitSelf),
+		profileMenu.Row(btnBack),
+	)
+
+	adminPanelMenu.Reply(
+		adminPanelMenu.Row(btnConfigAccount, btnConfigSupport),
+		adminPanelMenu.Row(btnConfigKeyPrice),
+		adminPanelMenu.Row(btnBack),
+	)
+
+	accountConfigMenu.Reply(
+		accountConfigMenu.Row(btnConfigCardNum, btnConfigCardName),
+		accountConfigMenu.Row(btnConfigCardBank),
+		accountConfigMenu.Row(btnBackToAdminAcc),
+	)
+
+	supportConfigMenu.Reply(
+		supportConfigMenu.Row(btnConfigSupportText, btnConfigSupportID),
+		supportConfigMenu.Row(btnBackToAdminSup),
+	)
+
+	// اتصال ماژول‌ها
 	RegisterWalletHandlers(bot)
 	RegisterGuideHandlers(bot)
 	RegisterWolfPlusHandlers(bot)
@@ -1535,9 +1667,36 @@ func main() {
 	})
 
 	bot.Handle(&btnProfile, func(c tele.Context) error {
-		b := GetUserBalance(c.Sender().ID)
-		st := GetUserSelfStatus(c.Sender().ID)
-		return c.Send(fmt.Sprintf("👤 <b>حساب کاربری</b>\n\n🆔 <code>%d</code>\n💰 موجودی: %s تومان\n🔥 وضعیت: %s", c.Sender().ID, formatMoney(b), st), tele.ModeHTML)
+		user := c.Sender()
+		if IsUserBlocked(user.ID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
+
+		var joinedAt time.Time
+		var selfStatus string
+		err := db.QueryRow("SELECT joined_at, self_status FROM users WHERE id = ?", user.ID).Scan(&joinedAt, &selfStatus)
+		if err != nil || joinedAt.IsZero() {
+			joinedAt = time.Now()
+		}
+
+		loc := getTehranLocation()
+		now := time.Now().In(loc)
+		tNow := gpc.New(now)
+		tJoined := gpc.New(joinedAt.In(loc))
+		daysActive := int(now.Sub(joinedAt.In(loc)).Hours() / 24)
+		if daysActive < 1 { daysActive = 1 }
+
+		statusIcon := "❌"
+		if selfStatus == "روشن" {
+			statusIcon = "✅"
+		} else if selfStatus == "خاموش" {
+			statusIcon = "⏸️"
+		}
+
+		text := fmt.Sprintf("💙 تاریخ امروز: %s\n\n⏰ ساعت: %s\n\n🔒 اطلاعات حساب کاربری\n\n⭐ آیدی عددی: <code>%d</code>\n📅 تاریخ عضویت در ربات: %s\n👀 فعالیت در ربات: %d روز\n💰 موجودی: %s تومان\n🔥 وضعیت سلف: %s %s",
+			toPersianDigits(tNow.Format("yyyy/MM/dd")), toPersianDigits(tNow.Format("HH:mm:ss")), user.ID, toPersianDigits(tJoined.Format("yyyy/MM/dd")), daysActive, formatMoney(GetUserBalance(user.ID)), statusIcon, selfStatus)
+
+		return c.Send(text, profileMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnWolfPlus, func(c tele.Context) error {
@@ -1549,6 +1708,135 @@ func main() {
 
 	bot.Handle(&btnSupport, func(c tele.Context) error {
 		return c.Send(fmt.Sprintf("%s\n\n🆔 %s", GetSetting("support_text"), GetSetting("support_id")), tele.ModeHTML)
+	})
+
+	// بخش مدیریت و تنظیمات ادمین
+	bot.Handle(&btnAdminPanel, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return c.Send("❌ شما دسترسی ندارید.")
+		}
+		return c.Send(getAdminDashboard(), adminPanelMenu, tele.ModeHTML)
+	})
+
+	backToAdminHandler := func(c tele.Context) error {
+		stateMu.Lock()
+		delete(adminStates, c.Sender().ID)
+		stateMu.Unlock()
+		return c.Send(getAdminDashboard(), adminPanelMenu, tele.ModeHTML)
+	}
+	bot.Handle(&btnBackToAdminAcc, backToAdminHandler)
+	bot.Handle(&btnBackToAdminSup, backToAdminHandler)
+
+	bot.Handle(&btnConfigAccount, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		return c.Send("💳 تنظیمات اطلاعات بانکی:", accountConfigMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnConfigCardNum, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		stateMu.Lock()
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_num"}
+		stateMu.Unlock()
+		return c.Send("✏️ شماره کارت جدید را ارسال کنید:", tele.ModeHTML)
+	})
+
+	bot.Handle(&btnConfigCardName, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		stateMu.Lock()
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_name"}
+		stateMu.Unlock()
+		return c.Send("✏️ نام دارنده حساب جدید را ارسال کنید:", tele.ModeHTML)
+	})
+
+	bot.Handle(&btnConfigCardBank, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		stateMu.Lock()
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_card_bank"}
+		stateMu.Unlock()
+		return c.Send("✏️ نام بانک جدید را ارسال کنید:", tele.ModeHTML)
+	})
+
+	bot.Handle(&btnConfigSupport, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		return c.Send("📞 تنظیمات پشتیبانی:", supportConfigMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnConfigSupportText, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		stateMu.Lock()
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_support_text"}
+		stateMu.Unlock()
+		return c.Send("✏️ متن جدید پشتیبانی را ارسال کنید:", tele.ModeHTML)
+	})
+
+	bot.Handle(&btnConfigSupportID, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		stateMu.Lock()
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_support_id"}
+		stateMu.Unlock()
+		return c.Send("✏️ آیدی جدید پشتیبانی (مثال: @YourID) را ارسال کنید:", tele.ModeHTML)
+	})
+
+	bot.Handle(&btnConfigKeyPrice, func(c tele.Context) error {
+		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		stateMu.Lock()
+		adminStates[c.Sender().ID] = AdminAction{Action: "set_key_price"}
+		stateMu.Unlock()
+		return c.Send("✏️ مبلغ جدید هر کلید را به تومان ارسال کنید:", tele.ModeHTML)
+	})
+
+	// کنترل وضعیت روشن/خاموش سلف
+	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {
+		userID := c.Sender().ID
+		selfStatus := GetUserSelfStatus(userID)
+		if selfStatus == "روشن" {
+			return c.Send("⚠️ سلف در حال حاضر روشن است.", getKeyboard(userID), tele.ModeHTML)
+		}
+		_, statErr := os.Stat(fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID))
+		if statErr == nil {
+			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
+			startUserbot(userID, cfg, bot)
+			return c.Send("🟢 سلف شما روشن شد.", getKeyboard(userID), tele.ModeHTML)
+		}
+		return c.Send("❌ سلف فعالی یافت نشد. از بخش خرید سلف اقدام کنید.", getKeyboard(userID), tele.ModeHTML)
+	})
+
+	bot.Handle(&btnTurnOffSelf, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET self_status = 'خاموش' WHERE id = ?", userID)
+		stopUserbot(userID)
+		return c.Send("🔴 سلف خاموش شد.", getKeyboard(userID), tele.ModeHTML)
+	})
+
+	bot.Handle(&btnExitSelf, func(c tele.Context) error {
+		exitMenu := &tele.ReplyMarkup{}
+		exitMenu.Inline(exitMenu.Row(exitMenu.Data("🛑 تایید خروج", "exit_confirm"), exitMenu.Data("❌ لغو", "exit_cancel")))
+		return c.Send("⚠️ از خروج اطمینان دارید؟ نشست حذف خواهد شد.", exitMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&tele.Btn{Unique: "exit_confirm"}, func(c tele.Context) error {
+		userID := c.Sender().ID
+		stopUserbot(userID)
+		_ = os.Remove(fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID))
+		_, _ = db.Exec("UPDATE users SET self_status = 'خروج' WHERE id = ?", userID)
+		if c.Message() != nil { _ = bot.Delete(c.Message()) }
+		return c.Send("🛑 سلف شما حذف شد.", getKeyboard(userID), tele.ModeHTML)
+	})
+
+	bot.Handle(&tele.Btn{Unique: "exit_cancel"}, func(c tele.Context) error {
+		if c.Message() != nil { _ = bot.Delete(c.Message()) }
+		return c.Send("✅ خروج لغو شد.", getKeyboard(c.Sender().ID), tele.ModeHTML)
+	})
+
+	bot.Handle(&btnConfirmSelfAction, func(c tele.Context) error {
+		userID := c.Sender().ID
+		stateMu.Lock()
+		userStates[userID] = &UserState{Action: "waiting_for_contact"}
+		stateMu.Unlock()
+
+		shareMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+		shareMenu.Reply(shareMenu.Row(shareMenu.Contact("📱 ارسال شماره اکانت (Share Contact)"), shareMenu.Text("🔙 بازگشت")))
+		return c.Send("📞 شماره خود را از دکمه زیر ارسال کنید:", shareMenu, tele.ModeHTML)
 	})
 
 	// لاگین تلگرام
@@ -1582,8 +1870,12 @@ func main() {
 
 		if hasState && uState != nil {
 			if uState.Action == "waiting_for_code" {
+				cleanCode := extractDigits(text)
+				if len(cleanCode) < 5 {
+					return c.Send("❌ کد ۵ رقمی را با فاصله بفرستید:")
+				}
 				select {
-				case uState.CodeChan <- extractDigits(text):
+				case uState.CodeChan <- cleanCode:
 					select {
 					case res := <-uState.ResultChan:
 						if res.Type == AuthResultNeeds2FA {
@@ -1598,6 +1890,12 @@ func main() {
 							stateMu.Unlock()
 							startUserbot(userID, cfg, bot)
 							return c.Send("🎉 سلف شما روشن شد!", getKeyboard(userID))
+						} else {
+							stateMu.Lock()
+							if uState.Cancel != nil { uState.Cancel() }
+							delete(userStates, userID)
+							stateMu.Unlock()
+							return c.Send(fmt.Sprintf("❌ خطا: %v", res.Error), getKeyboard(userID))
 						}
 					case <-time.After(35 * time.Second):
 						return c.Send("⏱ زمان تایید گذشت.")
@@ -1616,6 +1914,12 @@ func main() {
 							stateMu.Unlock()
 							startUserbot(userID, cfg, bot)
 							return c.Send("🎉 سلف با موفقیت روشن شد!", getKeyboard(userID))
+						} else {
+							stateMu.Lock()
+							if uState.Cancel != nil { uState.Cancel() }
+							delete(userStates, userID)
+							stateMu.Unlock()
+							return c.Send(fmt.Sprintf("❌ رمز اشتباه: %v", res.Error), getKeyboard(userID))
 						}
 					case <-time.After(35 * time.Second):
 						return c.Send("⏱ زمان تایید رمز گذشت.")
@@ -1623,6 +1927,56 @@ func main() {
 				default:
 				}
 			}
+		}
+
+		if !cfg.IsAdmin(userID) { return nil }
+
+		stateMu.RLock()
+		state, adminHasState := adminStates[userID]
+		stateMu.RUnlock()
+
+		if !adminHasState { return nil }
+
+		switch state.Action {
+		case "set_card_num":
+			SetSetting("card_number", text)
+			_ = c.Send("✅ شماره کارت ذخیره شد.")
+			stateMu.Lock()
+			delete(adminStates, userID)
+			stateMu.Unlock()
+		case "set_card_name":
+			SetSetting("card_name", text)
+			_ = c.Send("✅ نام دارنده حساب ذخیره شد.")
+			stateMu.Lock()
+			delete(adminStates, userID)
+			stateMu.Unlock()
+		case "set_card_bank":
+			SetSetting("card_bank", text)
+			_ = c.Send("✅ نام بانک ذخیره شد.")
+			stateMu.Lock()
+			delete(adminStates, userID)
+			stateMu.Unlock()
+		case "set_support_text":
+			SetSetting("support_text", text)
+			_ = c.Send("✅ متن پشتیبانی ذخیره شد.")
+			stateMu.Lock()
+			delete(adminStates, userID)
+			stateMu.Unlock()
+		case "set_support_id":
+			SetSetting("support_id", text)
+			_ = c.Send("✅ آیدی پشتیبانی ذخیره شد.")
+			stateMu.Lock()
+			delete(adminStates, userID)
+			stateMu.Unlock()
+		case "set_key_price":
+			price, _ := strconv.Atoi(text)
+			if price > 0 {
+				SetSetting("key_price", strconv.Itoa(price))
+				_ = c.Send(fmt.Sprintf("✅ نرخ کلید به %s تومان تغییر کرد.", formatMoney(price)))
+			}
+			stateMu.Lock()
+			delete(adminStates, userID)
+			stateMu.Unlock()
 		}
 		return nil
 	})
@@ -1639,6 +1993,6 @@ func main() {
 		rows.Close()
 	}
 
-	log.Println("⚡ ربات ولف سلف به صورت ماژولار و بهینه آماده به کار شد!")
+	log.Println("⚡ ربات ولف سلف آماده به کار شد!")
 	bot.Start()
 }

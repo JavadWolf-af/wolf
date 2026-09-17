@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -22,28 +21,6 @@ var (
 	pvWhitelistCache = make(map[int64]map[int64]bool)
 )
 
-var friendMessages = []string{
-	"سلام گل من 🌸 روزت بخیر و پر از انرژی!",
-	"به به داداش گلم، چه خبر؟ 🌹",
-	"سلام عزیز دلم، همیشه باشی برامون ❤️",
-	"سلام رفیق قدیمی و بامعرفت 🌺",
-}
-
-var enemyMessages = []string{
-	"زیاد حرف می‌زنی، یکم سکوت کن ببینیم دنیا دست کیه! 🤫",
-	"جواب ابلهان خاموشیست ولی حیف که نمیشه از خنده رد شد 😂",
-	"رو آب بنویس ادعاهاتو، شاید کسی باور کرد! 🌊",
-	"در حدی نیستی که باهات بحث کنم، وقتم باارزشه ⏱",
-}
-
-func GetRandomFriendMessage() string {
-	return friendMessages[rand.Intn(len(friendMessages))]
-}
-
-func GetRandomEnemyMessage() string {
-	return enemyMessages[rand.Intn(len(enemyMessages))]
-}
-
 func formatTelegramUser(u *tg.User) string {
 	name := strings.TrimSpace(u.FirstName + " " + u.LastName)
 	if name == "" {
@@ -55,8 +32,8 @@ func formatTelegramUser(u *tg.User) string {
 	return name
 }
 
-// InitWolfPlusDB راه‌اندازی دیتابیس و کش قفل پیوی
-func InitWolfPlusDB() {
+// InitPVLockDB راه‌اندازی دیتابیس و کش قفل پیوی
+func InitPVLockDB() {
 	if db == nil {
 		return
 	}
@@ -99,13 +76,17 @@ func InitWolfPlusDB() {
 	}
 }
 
+func InitWolfPlusDB() {
+	InitPVLockDB()
+}
+
 func IsPVLockEnabled(uid int64) bool {
 	pvLockMu.RLock()
 	defer pvLockMu.RUnlock()
 	if enabled, ok := pvLockSettings[uid]; ok {
 		return enabled
 	}
-	return false // پیش‌فرض کاملاً خاموش
+	return false
 }
 
 func SetPVLockEnabled(uid int64, enabled bool) {
@@ -149,13 +130,12 @@ func RemovePVWhitelist(ownerID, targetID int64) {
 	}
 }
 
-// ProcessPVLockIncoming فیلتر سخت‌گیرانه: فقط چت خصوصی اشخاص
+// ProcessPVLockIncoming فیلتر سخت‌گیرانه فقط چت خصوصی اشخاص
 func ProcessPVLockIncoming(ctx context.Context, client *telegram.Client, userID int64, msg *tg.Message, e tg.Entities) bool {
 	if msg.Out {
 		return false
 	}
 
-	// ۱. حتماً و صرفاً چت دونفره خصوصی (رد کردن گروه‌ها، سوپرگروه‌ها و کانال‌ها)
 	peerUser, isPV := msg.PeerID.(*tg.PeerUser)
 	if !isPV {
 		return false
@@ -166,24 +146,20 @@ func ProcessPVLockIncoming(ctx context.Context, client *telegram.Client, userID 
 		return false
 	}
 
-	// ۲. رد کردن ربات‌ها، اکانت‌های رسمی، پشتیبانی و وریفای‌شده
 	if u, ok := e.Users[senderID]; ok {
 		if u.Bot || u.Verified || u.Support {
 			return false
 		}
 	}
 
-	// ۳. اگر خاموش باشد رد می‌شود
 	if !IsPVLockEnabled(userID) {
 		return false
 	}
 
-	// ۴. اگر دوست یا در لیست سفید باشد رد می‌شود
 	if isUserFriend(userID, senderID) || IsPVWhitelisted(userID, senderID) {
 		return false
 	}
 
-	// ۵. پاکسازی دوطرفه چت مزاحم غریبه
 	inputPeer := getInputPeer(msg.PeerID, e, userID)
 	if inputPeer != nil {
 		go func(p tg.InputPeerClass) {
@@ -192,14 +168,13 @@ func ProcessPVLockIncoming(ctx context.Context, client *telegram.Client, userID 
 			_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
 				Peer:   p,
 				MaxID:  0,
-				Revoke: true, // حذف برای هر دو طرف
+				Revoke: true,
 			})
 		}(inputPeer)
 	}
 	return true
 }
 
-// ProcessPVLockCommand دستورات چتی قفل پیوی
 func ProcessPVLockCommand(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, text string, userID int64) bool {
 	if text == "قفل پیوی روشن" {
 		SetPVLockEnabled(userID, true)
@@ -239,7 +214,6 @@ func ProcessPVLockCommand(ctx context.Context, client *telegram.Client, inputPee
 	return false
 }
 
-// ساخت داشبورد ولف پلاس به همراه وضعیت قفل پیوی
 func buildWolfPlusDashboardText(userID int64) string {
 	pvStatus := "🔴 خاموش"
 	if IsPVLockEnabled(userID) {
@@ -256,7 +230,6 @@ func buildWolfPlusDashboardText(userID int64) string {
 💡 <i>برای روشن یا خاموش کردن قفل پیوی، از دکمه زیر استفاده کنید:</i>`, pvStatus)
 }
 
-// ساخت کیبورد شیشه‌ای ولف پلاس دارای دکمه روشن/خاموش
 func getWolfPlusKeyboard(userID int64) *tele.ReplyMarkup {
 	menu := &tele.ReplyMarkup{}
 	pvText := "🔐 قفل پیوی: 🔴 خاموش (کلیک برای روشن)"
@@ -272,7 +245,6 @@ func getWolfPlusKeyboard(userID int64) *tele.ReplyMarkup {
 }
 
 func RegisterWolfPlusHandlers(bot *tele.Bot) {
-	// هندلر دکمه روشن/خاموش قفل پیوی در پنل
 	bot.Handle(&tele.Btn{Unique: "toggle_wp_pvlock"}, func(c tele.Context) error {
 		userID := c.Sender().ID
 		newStatus := !IsPVLockEnabled(userID)
@@ -288,13 +260,9 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 	})
 }
 
-func RegisterWolfPlusDispatcher(dispatcher *tg.UpdateDispatcher, client *telegram.Client, userID int64) {
-	// دیسپچر ولف پلاس
-}
+func RegisterWolfPlusDispatcher(dispatcher *tg.UpdateDispatcher, client *telegram.Client, userID int64) {}
 
-func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *tele.Bot, userID int64, msg *tg.Message, e tg.Entities) {
-	// پردازش اولیه پیام‌های ولف پلاس
-}
+func WolfPlusHandleIncoming(ctx context.Context, client *telegram.Client, bot *tele.Bot, userID int64, msg *tg.Message, e tg.Entities) {}
 
 func HandleWolfPlusText(c tele.Context) bool {
 	return false

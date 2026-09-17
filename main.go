@@ -724,12 +724,70 @@ func deleteMsg(ctx context.Context, client *telegram.Client, inputPeer tg.InputP
 	})
 }
 
-// تابع کمکی برای محاسبه طول کاراکترها در استایل‌های تلگرام (حل باگ اموجی در خوشنویسی)
+func deleteMessageBatch(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, ids []int) {
+	if len(ids) == 0 {
+		return
+	}
+	dCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if ch, ok := inputPeer.(*tg.InputPeerChannel); ok {
+		_, _ = client.API().ChannelsDeleteMessages(dCtx, &tg.ChannelsDeleteMessagesRequest{
+			Channel: &tg.InputChannel{
+				ChannelID:  ch.ChannelID,
+				AccessHash: ch.AccessHash,
+			},
+			ID: ids,
+		})
+		return
+	}
+	_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
+		Revoke: true,
+		ID:     ids,
+	})
+}
+
 func getUTF16Length(text string) int {
 	return len(utf16.Encode([]rune(text)))
 }
 
-// تابع حیاتی که باعث ارور کامپایل شده بود
+func sendTemporaryNotice(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, text string, duration time.Duration) {
+	sendReq := &tg.MessagesSendMessageRequest{
+		Peer:     inputPeer,
+		Message:  text,
+		RandomID: rand.Int63(),
+		Entities: []tg.MessageEntityClass{
+			&tg.MessageEntityBold{Offset: 0, Length: getUTF16Length(text)},
+		},
+	}
+	res, err := client.API().MessagesSendMessage(ctx, sendReq)
+	if err != nil {
+		return
+	}
+
+	msgID := 0
+	if updates, ok := res.(*tg.Updates); ok {
+		for _, u := range updates.Updates {
+			if nu, ok := u.(*tg.UpdateNewMessage); ok {
+				if m, ok := nu.Message.(*tg.Message); ok {
+					msgID = m.ID
+					break
+				}
+			} else if ncu, ok := u.(*tg.UpdateNewChannelMessage); ok {
+				if m, ok := ncu.Message.(*tg.Message); ok {
+					msgID = m.ID
+					break
+				}
+			}
+		}
+	}
+
+	if msgID != 0 {
+		time.Sleep(duration)
+		deleteMsg(context.Background(), client, inputPeer, msgID)
+	}
+}
+
 func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int, text string) {
 	editReq := &tg.MessagesEditMessageRequest{
 		Peer:    inputPeer,
@@ -748,8 +806,245 @@ func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPe
 	deleteMsg(context.Background(), client, inputPeer, msgID)
 }
 
+func toBoldDigits(t string) string {
+	boldDigits := map[rune]string{
+		'0': "𝟎", '1': "𝟏", '2': "𝟐", '3': "𝟑", '4': "𝟒",
+		'5': "𝟓", '6': "𝟔", '7': "𝟕", '8': "𝟖", '9': "𝟗",
+		':': ":",
+	}
+	var sb strings.Builder
+	for _, r := range t {
+		if b, ok := boldDigits[r]; ok {
+			sb.WriteString(b)
+		} else {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+func getTehranBoldTime() string {
+	loc := getTehranLocation()
+	now := time.Now().In(loc)
+	return toBoldDigits(now.Format("15:04"))
+}
+
+func handleClockOn(ctx context.Context, userID int64, client *telegram.Client) {
+	var isEnabled bool
+	var origLast string
+	_ = db.QueryRow("SELECT is_clock_enabled, original_last_name FROM users WHERE id = ?", userID).Scan(&isEnabled, &origLast)
+
+	if !isEnabled || origLast == "" {
+		self, err := client.Self(ctx)
+		if err == nil {
+			origLast = self.LastName
+			_, _ = db.Exec("UPDATE users SET original_last_name = ? WHERE id = ?", origLast, userID)
+		}
+	}
+
+	boldTime := getTehranBoldTime()
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetLastName(boldTime)
+	_, err := client.API().AccountUpdateProfile(ctx, req)
+	if err == nil {
+		_, _ = db.Exec("UPDATE users SET is_clock_enabled = TRUE WHERE id = ?", userID)
+	}
+}
+
+func handleClockOff(ctx context.Context, userID int64, client *telegram.Client) {
+	var origLastName string
+	_ = db.QueryRow("SELECT original_last_name FROM users WHERE id = ?", userID).Scan(&origLastName)
+
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetLastName(origLastName)
+	_, _ = client.API().AccountUpdateProfile(ctx, req)
+
+	_, _ = db.Exec("UPDATE users SET is_clock_enabled = FALSE WHERE id = ?", userID)
+}
+
+func handleEmojiOn(ctx context.Context, userID int64, client *telegram.Client) {
+	var isEnabled bool
+	var origFirst string
+	_ = db.QueryRow("SELECT is_emoji_enabled, original_first_name FROM users WHERE id = ?", userID).Scan(&isEnabled, &origFirst)
+
+	if !isEnabled || origFirst == "" {
+		self, err := client.Self(ctx)
+		if err == nil {
+			origFirst = cleanName(self.FirstName)
+			_, _ = db.Exec("UPDATE users SET original_first_name = ? WHERE id = ?", origFirst, userID)
+		}
+	}
+
+	emoji := getRandomEmoji()
+	newName := fmt.Sprintf("%s %s", origFirst, emoji)
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetFirstName(newName)
+	_, err := client.API().AccountUpdateProfile(ctx, req)
+	if err == nil {
+		_, _ = db.Exec("UPDATE users SET is_emoji_enabled = TRUE WHERE id = ?", userID)
+	}
+}
+
+func handleEmojiOff(ctx context.Context, userID int64, client *telegram.Client) {
+	var origFirst string
+	_ = db.QueryRow("SELECT original_first_name FROM users WHERE id = ?", userID).Scan(&origFirst)
+
+	if origFirst != "" {
+		req := &tg.AccountUpdateProfileRequest{}
+		req.SetFirstName(origFirst)
+		_, _ = client.API().AccountUpdateProfile(ctx, req)
+	}
+
+	_, _ = db.Exec("UPDATE users SET is_emoji_enabled = FALSE WHERE id = ?", userID)
+}
+
+func handleBioOn(ctx context.Context, userID int64, client *telegram.Client) {
+	var isBioEnabled bool
+	var origBio string
+	_ = db.QueryRow("SELECT is_bio_enabled, original_bio FROM users WHERE id = ?", userID).Scan(&isBioEnabled, &origBio)
+
+	if !isBioEnabled || origBio == "" {
+		full, err := client.API().UsersGetFullUser(ctx, &tg.InputUserSelf{})
+		if err == nil {
+			origBio = full.FullUser.About
+			_, _ = db.Exec("UPDATE users SET original_bio = ? WHERE id = ?", origBio, userID)
+		}
+	}
+
+	bio := getRandomBio()
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetAbout(bio)
+	_, err := client.API().AccountUpdateProfile(ctx, req)
+	if err == nil {
+		_, _ = db.Exec("UPDATE users SET is_bio_enabled = TRUE, bio_mode = 'random' WHERE id = ?", userID)
+	}
+}
+
+func handleBioOff(ctx context.Context, userID int64, client *telegram.Client) {
+	var origBio string
+	_ = db.QueryRow("SELECT original_bio FROM users WHERE id = ?", userID).Scan(&origBio)
+
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetAbout(origBio)
+	_, _ = client.API().AccountUpdateProfile(ctx, req)
+
+	_, _ = db.Exec("UPDATE users SET is_bio_enabled = FALSE WHERE id = ?", userID)
+}
+
+func handleBioRandom(ctx context.Context, userID int64, client *telegram.Client) {
+	bio := getRandomBio()
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetAbout(bio)
+	_, err := client.API().AccountUpdateProfile(ctx, req)
+	if err == nil {
+		_, _ = db.Exec("UPDATE users SET is_bio_enabled = TRUE, bio_mode = 'random' WHERE id = ?", userID)
+	}
+}
+
+func handleBioCustom(ctx context.Context, userID int64, client *telegram.Client, customBio string) {
+	var origBio string
+	_ = db.QueryRow("SELECT original_bio FROM users WHERE id = ?", userID).Scan(&origBio)
+	if origBio == "" {
+		full, err := client.API().UsersGetFullUser(ctx, &tg.InputUserSelf{})
+		if err == nil {
+			origBio = full.FullUser.About
+			_, _ = db.Exec("UPDATE users SET original_bio = ? WHERE id = ?", origBio, userID)
+		}
+	}
+
+	runes := []rune(customBio)
+	if len(runes) > 70 {
+		customBio = string(runes[:70])
+	}
+
+	req := &tg.AccountUpdateProfileRequest{}
+	req.SetAbout(customBio)
+	_, err := client.API().AccountUpdateProfile(ctx, req)
+	if err == nil {
+		_, _ = db.Exec("UPDATE users SET is_bio_enabled = TRUE, bio_mode = 'custom', custom_bio = ? WHERE id = ?", customBio, userID)
+	}
+}
+
+func getInputPeer(peer tg.PeerClass, e tg.Entities, selfID int64) tg.InputPeerClass {
+	if peer == nil {
+		return nil
+	}
+	switch p := peer.(type) {
+	case *tg.PeerUser:
+		if p.UserID == selfID {
+			return &tg.InputPeerSelf{}
+		}
+		if u, ok := e.Users[p.UserID]; ok {
+			return &tg.InputPeerUser{
+				UserID:     u.ID,
+				AccessHash: u.AccessHash,
+			}
+		}
+		return &tg.InputPeerUser{UserID: p.UserID}
+	case *tg.PeerChat:
+		return &tg.InputPeerChat{ChatID: p.ChatID}
+	case *tg.PeerChannel:
+		var aHash int64
+		if ch, ok := e.Channels[p.ChannelID]; ok {
+			aHash = ch.AccessHash
+			channelAccessHashesMu.Lock()
+			channelAccessHashes[ch.ID] = ch.AccessHash
+			channelAccessHashesMu.Unlock()
+		} else {
+			channelAccessHashesMu.RLock()
+			aHash = channelAccessHashes[p.ChannelID]
+			channelAccessHashesMu.RUnlock()
+		}
+		return &tg.InputPeerChannel{
+			ChannelID:  p.ChannelID,
+			AccessHash: aHash,
+		}
+	}
+	return nil
+}
+
+func getRepliedMessageAndUsers(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int) (*tg.Message, []tg.UserClass, error) {
+	var res tg.MessagesMessagesClass
+	var err error
+
+	if ch, ok := inputPeer.(*tg.InputPeerChannel); ok {
+		res, err = client.API().ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
+			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}},
+		})
+	} else {
+		res, err = client.API().MessagesGetMessages(ctx, []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}})
+	}
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	switch m := res.(type) {
+	case *tg.MessagesChannelMessages:
+		if len(m.Messages) > 0 {
+			if msg, ok := m.Messages[0].(*tg.Message); ok {
+				return msg, m.Users, nil
+			}
+		}
+	case *tg.MessagesMessages:
+		if len(m.Messages) > 0 {
+			if msg, ok := m.Messages[0].(*tg.Message); ok {
+				return msg, m.Users, nil
+			}
+		}
+	case *tg.MessagesMessagesSlice:
+		if len(m.Messages) > 0 {
+			if msg, ok := m.Messages[0].(*tg.Message); ok {
+				return msg, m.Users, nil
+			}
+		}
+	}
+	return nil, nil, errors.New("message not found")
+}
+
 func getEntitiesForFont(text string, mode string) []tg.MessageEntityClass {
-	length := getUTF16Length(text) // حل باگ طول استایل تلگرام
+	length := getUTF16Length(text)
 	switch mode {
 	case "bold":
 		return []tg.MessageEntityClass{&tg.MessageEntityBold{Offset: 0, Length: length}}
@@ -1031,6 +1326,83 @@ func handlePurgeAction(ctx context.Context, client *telegram.Client, inputPeer t
 	sendTemporaryNotice(pCtx, client, inputPeer, reportText, 1500*time.Millisecond)
 }
 
+func GetSetting(key string) string {
+	var val string
+	err := db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = ?", key).Scan(&val)
+	if err != nil {
+		return ""
+	}
+	return val
+}
+
+func SetSetting(key, val string) {
+	_, _ = db.Exec("INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?", key, val, val)
+}
+
+func SaveUser(userID int64, firstName, username string) {
+	if db == nil {
+		return
+	}
+	_, _ = db.Exec(`INSERT INTO users (id, first_name, username) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE first_name=?, username=?`, userID, firstName, username, firstName, username)
+	_, _ = db.Exec(`INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0)`, userID)
+}
+
+func GetUserBalance(userID int64) int {
+	var balance int
+	err := db.QueryRow("SELECT balance FROM wallets WHERE user_id = ?", userID).Scan(&balance)
+	if err != nil {
+		return 0
+	}
+	return balance
+}
+
+func IsUserBlocked(userID int64) bool {
+	var blocked bool
+	err := db.QueryRow("SELECT is_blocked FROM users WHERE id = ?", userID).Scan(&blocked)
+	if err != nil {
+		return false
+	}
+	return blocked
+}
+
+func GetUserSelfStatus(userID int64) string {
+	var status string
+	err := db.QueryRow("SELECT self_status FROM users WHERE id = ?", userID).Scan(&status)
+	if err != nil {
+		return "خرید نداشته"
+	}
+	return status
+}
+
+func SafeAddUserBalance(userID int64, amount int) error {
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("❌ DB Begin Error: %v", err)
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`INSERT IGNORE INTO users (id, first_name, username) VALUES (?, 'کاربر', 'ثبت_نشده')`, userID)
+	if err != nil {
+		log.Printf("❌ DB Insert User Error: %v", err)
+		return err
+	}
+
+	_, err = tx.Exec(`INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON DUPLICATE KEY UPDATE balance = balance + ?`, userID, amount, amount)
+	if err != nil {
+		log.Printf("❌ DB Wallet Update Error: %v", err)
+		return err
+	}
+
+	_, err = tx.Exec(`UPDATE users SET purchases_count = purchases_count + 1 WHERE id = ?`, userID)
+	if err != nil {
+		log.Printf("❌ DB Purchases Count Error: %v", err)
+		return err
+	}
+
+	return tx.Commit()
+}
+
 func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 	activeUserbotsMu.Lock()
 	if _, exists := activeUserbots[userID]; exists {
@@ -1118,21 +1490,20 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						go func(peer tg.InputPeerClass) {
 							dCtx, dCancel := context.WithTimeout(context.Background(), 5*time.Second)
 							defer dCancel()
-							// پاکسازی کل هیستوری این چت به صورت دوطرفه!
 							_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
 								Peer:   peer,
 								MaxID:  0,
-								Revoke: true, // اعمال حذف برای طرف مقابل
+								Revoke: true,
 							})
 						}(inputPeer)
-						return // جلوگیری از هر پردازش دیگری برای این مزاحم
+						return
 					}
 				}
 
 				// 1. سیستم ری‌اکشن خودکار
 				if emoji, exists := getAutoReact(userID, senderID); exists && inputPeer != nil {
 					go func(msgID int, p tg.InputPeerClass, em string) {
-						time.Sleep(200 * time.Millisecond) // تاخیر طبیعی
+						time.Sleep(200 * time.Millisecond)
 						rCtx, rCancel := context.WithTimeout(context.Background(), 10*time.Second)
 						defer rCancel()
 
@@ -1292,7 +1663,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 				_, _ = db.Exec(`
 					INSERT INTO wolf_auto_reacts (owner_id, target_id, target_name, emoji)
-					VALUES (?, ?, ?, ?)
+					VALUES (?, ?, ?)
 					ON DUPLICATE KEY UPDATE target_name = VALUES(target_name), emoji = VALUES(emoji)
 				`, userID, targetUID, targetUName, selectedEmoji)
 
@@ -2094,7 +2465,6 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			return
 		}
 
-		// اعمال بلادرنگ فونت و خوشنویسی روی تمامی پیام‌های ارسالی کاربر (با حل باگ محاسبه طول اموجی‌ها)
 		fontEnabled, fontMode := getFontSetting(userID)
 		if fontEnabled && text != "" && msg.Media == nil {
 			go func(p tg.InputPeerClass, mID int, origText string, fMode string) {

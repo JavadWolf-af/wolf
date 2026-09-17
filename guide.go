@@ -1,13 +1,26 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/tg"
+	"github.com/joho/godotenv"
 	tele "gopkg.in/telebot.v3"
 )
+
+// ==========================================
+// 1. کیبوردها و دکمه‌های بخش راهنما
+// ==========================================
 
 var (
 	guideMenu           = &tele.ReplyMarkup{ResizeKeyboard: true}
@@ -208,7 +221,7 @@ func RegisterGuideHandlers(bot *tele.Bot) {
 		return c.Send(buildGuideDashboardText(userID), guideMenu, tele.ModeHTML)
 	})
 
-	// ساعت
+	// ساعت زنده
 	bot.Handle(&btnGClock, func(c tele.Context) error {
 		userID := c.Sender().ID
 		var isClock bool
@@ -253,7 +266,7 @@ func RegisterGuideHandlers(bot *tele.Bot) {
 		return c.Send("🔴 <b>ساعت زنده خاموش شد.</b>", guideClockMenu, tele.ModeHTML)
 	})
 
-	// اموجی
+	// اموجی رندوم
 	bot.Handle(&btnGEmoji, func(c tele.Context) error {
 		userID := c.Sender().ID
 		var isEmoji bool
@@ -293,7 +306,7 @@ func RegisterGuideHandlers(bot *tele.Bot) {
 		return c.Send("🔴 اموجی خاموش شد.", guideEmojiMenu, tele.ModeHTML)
 	})
 
-	// بیو
+	// بیوگرافی هوشمند
 	bot.Handle(&btnGBio, func(c tele.Context) error {
 		userID := c.Sender().ID
 		var isBio bool
@@ -443,7 +456,7 @@ func RegisterGuideHandlers(bot *tele.Bot) {
 	bot.Handle(&btnFontMono, setFont("mono", "مونو"))
 	bot.Handle(&btnFontSpoiler, setFont("spoiler", "اسپویل"))
 
-	// سایر راهنماها
+	// اکشن‌ها، پاکسازی، تایمر، ری اکشن
 	bot.Handle(&btnGAction, func(c tele.Context) error {
 		return c.Send("🎬 <b>اکشن‌ها:</b>\nدستورات: تایپینگ 20، ضبط صدا 20 و...", guideActionMenu, tele.ModeHTML)
 	})
@@ -463,7 +476,7 @@ func RegisterGuideHandlers(bot *tele.Bot) {
 		return c.Send("🔐 <b>قفل پیوی:</b>\nپیش‌فرض خاموش است. روشن کردن: <code>قفل پیوی روشن</code>", guidePVLockMenu, tele.ModeHTML)
 	})
 
-	// برگشت‌ها
+	// دکمه‌های بازگشت
 	backHandler := func(c tele.Context) error {
 		return c.Send(buildGuideDashboardText(c.Sender().ID), guideMenu, tele.ModeHTML)
 	}
@@ -484,4 +497,394 @@ func RegisterGuideHandlers(bot *tele.Bot) {
 	bot.Handle(&btnGBackMain, func(c tele.Context) error {
 		return c.Send("🔙 <b>منوی اصلی:</b>", getMainKeyboard(c.Sender().ID), tele.ModeHTML)
 	})
+}
+
+// ==========================================
+// 2. سیستم مترجم زنده هوشمند (Groq Qwen)
+// ==========================================
+
+type GroqRequest struct {
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	Temperature float32   `json:"temperature"`
+}
+
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type GroqResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
+func getLanguageSettings(cmd string) (string, string, bool) {
+	if cmd == "ترجمه" || cmd == "ترجمه کن" {
+		return "Persian (Farsi)", "فارسی", true
+	}
+	if strings.HasSuffix(cmd, " شو") {
+		langPart := strings.TrimSpace(strings.TrimSuffix(cmd, " شو"))
+		switch langPart {
+		case "انگلیسی":
+			return "English", "انگلیسی", true
+		case "روسی":
+			return "Russian", "روسی", true
+		case "کره ای", "کره‌ای":
+			return "Korean", "کره‌ای", true
+		case "ترکی":
+			return "Turkish", "ترکی", true
+		case "عربی":
+			return "Arabic", "عربی", true
+		case "فرانسوی", "فرانسه":
+			return "French", "فرانسوی", true
+		case "آلمانی", "المان", "آلمان":
+			return "German", "آلمانی", true
+		case "اسپانیایی":
+			return "Spanish", "اسپانیایی", true
+		case "ژاپنی":
+			return "Japanese", "ژاپنی", true
+		case "چینی":
+			return "Chinese", "چینی", true
+		case "ایتالیایی":
+			return "Italian", "ایتالیایی", true
+		case "فارسی":
+			return "Persian (Farsi)", "فارسی", true
+		}
+	}
+	return "", "", false
+}
+
+func TranslateText(text, targetLang string) (string, error) {
+	_ = godotenv.Load("/opt/wolf/.env")
+	apiKey := strings.TrimSpace(os.Getenv("GROQ_API_KEY"))
+	if apiKey == "" {
+		return "", fmt.Errorf("کلید API یافت نشد")
+	}
+
+	apiURL := "https://api.groq.com/openai/v1/chat/completions"
+	sysPrompt := fmt.Sprintf("You are a professional translator. Translate the following text to %s. Output ONLY the final translation. Do not include any extra text, comments, quotes, or conversational phrases.", targetLang)
+
+	reqBody := GroqRequest{
+		Model: "qwen/qwen3.8-27b",
+		Messages: []Message{
+			{Role: "system", Content: sysPrompt},
+			{Role: "user", Content: text},
+		},
+		Temperature: 0.1,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", err
+	}
+
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("کد %d - %s", resp.StatusCode, string(body))
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		var result GroqResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			lastErr = err
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		if len(result.Choices) > 0 {
+			return strings.TrimSpace(result.Choices[0].Message.Content), nil
+		}
+	}
+
+	return "", fmt.Errorf("خطا پس از 3 بار تلاش: %v", lastErr)
+}
+
+func ProcessLiveTranslator(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, text string) bool {
+	targetLangEn, targetLangFa, isCmd := getLanguageSettings(text)
+	if !isCmd {
+		return false
+	}
+
+	if msg.ReplyTo == nil {
+		go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی یک پیام ریپلای کنید.")
+		return true
+	}
+
+	header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
+	if !ok || header.ReplyToMsgID == 0 {
+		go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ پیام نامعتبر است!")
+		return true
+	}
+
+	replyMsgID := header.ReplyToMsgID
+
+	go func(repID int, p tg.InputPeerClass, mID int) {
+		dCtx, dCancel := context.WithTimeout(context.Background(), 35*time.Second)
+		defer dCancel()
+
+		repMsg, _, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
+		if err != nil || repMsg == nil {
+			notifyAndSelfDestruct(dCtx, client, p, mID, "❌ خطا در یافتن پیام اصلی.")
+			return
+		}
+
+		origText := strings.TrimSpace(repMsg.Message)
+		if origText == "" {
+			notifyAndSelfDestruct(dCtx, client, p, mID, "⚠️ پیام فاقد متن است!")
+			return
+		}
+
+		loadingText := fmt.Sprintf("⚡️ در حال ترجمه به %s...", targetLangFa)
+		_, _ = client.API().MessagesEditMessage(dCtx, &tg.MessagesEditMessageRequest{
+			Peer:    p,
+			ID:      mID,
+			Message: loadingText,
+		})
+
+		translated, err := TranslateText(origText, targetLangEn)
+		if err != nil || translated == "" {
+			_, _ = client.API().MessagesEditMessage(dCtx, &tg.MessagesEditMessageRequest{
+				Peer:    p,
+				ID:      mID,
+				Message: fmt.Sprintf("❌ خطا در ترجمه:\n<code>%v</code>", err),
+				Entities: []tg.MessageEntityClass{
+					&tg.MessageEntityCode{Offset: 16, Length: len([]rune(fmt.Sprintf("%v", err)))},
+				},
+			})
+			return
+		}
+
+		finalText := fmt.Sprintf("🌍 ترجمه به %s:\n\n%s", targetLangFa, translated)
+		importUtf16Len := len([]rune(fmt.Sprintf("🌍 ترجمه به %s:", targetLangFa)))
+
+		_, _ = client.API().MessagesEditMessage(dCtx, &tg.MessagesEditMessageRequest{
+			Peer:    p,
+			ID:      mID,
+			Message: finalText,
+			Entities: []tg.MessageEntityClass{
+				&tg.MessageEntityBold{Offset: 0, Length: importUtf16Len},
+			},
+		})
+	}(replyMsgID, inputPeer, msg.ID)
+
+	return true
+}
+
+// ==========================================
+// 3. سیستم قفل پیوی (PV Lock - پیش‌فرض خاموش)
+// ==========================================
+
+var (
+	pvLockMu         sync.RWMutex
+	pvLockSettings   = make(map[int64]bool)
+	pvWhitelistCache = make(map[int64]map[int64]bool)
+)
+
+func InitPVLockDB() {
+	if db == nil {
+		return
+	}
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_pv_lock_enabled BOOLEAN DEFAULT FALSE")
+	_, _ = db.Exec(`
+	CREATE TABLE IF NOT EXISTS pv_whitelist (
+		owner_id BIGINT,
+		user_id BIGINT,
+		PRIMARY KEY (owner_id, user_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
+
+	rows, err := db.Query("SELECT id, is_pv_lock_enabled FROM users")
+	if err == nil {
+		defer rows.Close()
+		pvLockMu.Lock()
+		for rows.Next() {
+			var uid int64
+			var enabled bool
+			if err := rows.Scan(&uid, &enabled); err == nil {
+				pvLockSettings[uid] = enabled
+			}
+		}
+		pvLockMu.Unlock()
+	}
+
+	wRows, wErr := db.Query("SELECT owner_id, user_id FROM pv_whitelist")
+	if wErr == nil {
+		defer wRows.Close()
+		pvLockMu.Lock()
+		for wRows.Next() {
+			var oID, uID int64
+			if err := wRows.Scan(&oID, &uID); err == nil {
+				if _, ok := pvWhitelistCache[oID]; !ok {
+					pvWhitelistCache[oID] = make(map[int64]bool)
+				}
+				pvWhitelistCache[oID][uID] = true
+			}
+		}
+		pvLockMu.Unlock()
+	}
+}
+
+func IsPVLockEnabled(uid int64) bool {
+	pvLockMu.RLock()
+	defer pvLockMu.RUnlock()
+	if enabled, ok := pvLockSettings[uid]; ok {
+		return enabled
+	}
+	return false // پیش‌فرض: خاموش
+}
+
+func SetPVLockEnabled(uid int64, enabled bool) {
+	pvLockMu.Lock()
+	defer pvLockMu.Unlock()
+	pvLockSettings[uid] = enabled
+	if db != nil {
+		_, _ = db.Exec("UPDATE users SET is_pv_lock_enabled = ? WHERE id = ?", enabled, uid)
+	}
+}
+
+func IsPVWhitelisted(ownerID, targetID int64) bool {
+	pvLockMu.RLock()
+	defer pvLockMu.RUnlock()
+	if list, exists := pvWhitelistCache[ownerID]; exists {
+		return list[targetID]
+	}
+	return false
+}
+
+func AddPVWhitelist(ownerID, targetID int64) {
+	pvLockMu.Lock()
+	defer pvLockMu.Unlock()
+	if _, exists := pvWhitelistCache[ownerID]; !exists {
+		pvWhitelistCache[ownerID] = make(map[int64]bool)
+	}
+	pvWhitelistCache[ownerID][targetID] = true
+	if db != nil {
+		_, _ = db.Exec("INSERT IGNORE INTO pv_whitelist (owner_id, user_id) VALUES (?, ?)", ownerID, targetID)
+	}
+}
+
+func RemovePVWhitelist(ownerID, targetID int64) {
+	pvLockMu.Lock()
+	defer pvLockMu.Unlock()
+	if list, exists := pvWhitelistCache[ownerID]; exists {
+		delete(list, targetID)
+	}
+	if db != nil {
+		_, _ = db.Exec("DELETE FROM pv_whitelist WHERE owner_id = ? AND user_id = ?", ownerID, targetID)
+	}
+}
+
+// ProcessPVLockIncoming رهگیری چت‌های دوطرفه در پیوی
+func ProcessPVLockIncoming(ctx context.Context, client *telegram.Client, userID int64, msg *tg.Message, e tg.Entities) bool {
+	if msg.Out {
+		return false
+	}
+
+	// فقط و فقط پیوی‌های دونفره
+	peerUser, isPV := msg.PeerID.(*tg.PeerUser)
+	if !isPV {
+		return false
+	}
+
+	senderID := peerUser.UserID
+	if senderID == 0 || senderID == userID || senderID == 777000 || senderID == 42777 {
+		return false
+	}
+
+	// رد کردن ربات‌ها، پشتیبانی رسمی و افراد تاییدشده
+	if u, ok := e.Users[senderID]; ok {
+		if u.Bot || u.Verified || u.Support {
+			return false
+		}
+	}
+
+	// اگر قفل پیوی خاموش باشد رد می‌شود
+	if !IsPVLockEnabled(userID) {
+		return false
+	}
+
+	// اگر در لیست دوستان یا لیست سفید پیوی باشد رد می‌شود
+	if isUserFriend(userID, senderID) || IsPVWhitelisted(userID, senderID) {
+		return false
+	}
+
+	// حذف دوطرفه چت مزاحم
+	inputPeer := getInputPeer(msg.PeerID, e, userID)
+	if inputPeer != nil {
+		go func(p tg.InputPeerClass) {
+			dCtx, dCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer dCancel()
+			_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
+				Peer:   p,
+				MaxID:  0,
+				Revoke: true,
+			})
+		}(inputPeer)
+	}
+	return true
+}
+
+// ProcessPVLockCommand پردازش دستورات پیوی
+func ProcessPVLockCommand(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, text string, userID int64) bool {
+	if text == "قفل پیوی روشن" {
+		SetPVLockEnabled(userID, true)
+		if inputPeer != nil {
+			go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔒 قفل پیوی فعال شد")
+		}
+		return true
+	} else if text == "قفل پیوی خاموش" {
+		SetPVLockEnabled(userID, false)
+		if inputPeer != nil {
+			go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔓 قفل پیوی خاموش شد")
+		}
+		return true
+	} else if text == "بازکردن پیوی" || text == "باز کردن پیوی" {
+		if pUser, ok := msg.PeerID.(*tg.PeerUser); ok {
+			targetID := pUser.UserID
+			AddPVWhitelist(userID, targetID)
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "✅ پیوی برای این کاربر باز شد")
+			}
+		} else {
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ این دستور فقط در پیوی کاربرد دارد")
+			}
+		}
+		return true
+	} else if text == "بستن پیوی" {
+		if pUser, ok := msg.PeerID.(*tg.PeerUser); ok {
+			targetID := pUser.UserID
+			RemovePVWhitelist(userID, targetID)
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ پیوی این کاربر مجدداً بسته شد")
+			}
+		}
+		return true
+	}
+	return false
 }

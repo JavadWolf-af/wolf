@@ -31,6 +31,9 @@ var (
 	pvLockMu         sync.RWMutex
 	pvLockSettings   = make(map[int64]bool)
 	pvWhitelistCache = make(map[int64]map[int64]bool)
+
+	userAccessHashesMu sync.RWMutex
+	userAccessHashes   = make(map[int64]int64)
 )
 
 // منوهای کیبورد ثابت ولف +
@@ -389,13 +392,11 @@ func RemovePVWhitelist(ownerID, targetID int64) {
 	}
 }
 
-// ProcessPVLockIncoming فیلتر فقط چت خصوصی اشخاص و واکنش به همه (حتی دوستان) جز ربات‌ها
 func ProcessPVLockIncoming(ctx context.Context, client *telegram.Client, userID int64, msg *tg.Message, e tg.Entities) bool {
 	if msg.Out {
 		return false
 	}
 
-	// ۱. فقط چت شخصی دو نفره (گروه‌ها و کانال‌ها رد می‌شوند)
 	peerUser, isPV := msg.PeerID.(*tg.PeerUser)
 	if !isPV {
 		return false
@@ -406,37 +407,31 @@ func ProcessPVLockIncoming(ctx context.Context, client *telegram.Client, userID 
 		return false
 	}
 
-	// ۲. رد کردن ربات‌ها و پشتیبانی رسمی تلگرام
 	if u, ok := e.Users[senderID]; ok {
 		if u.Bot || u.Support {
 			return false
 		}
 	}
 
-	// ۳. اگر قفل پیوی خاموش باشد رد می‌شود
 	if !IsPVLockEnabled(userID) {
 		return false
 	}
 
-	// ۴. فقط در صورتی اجازه داده می‌شود که خودتان با دستور "بازکردن پیوی" شخص را در لیست سفید گذاشته باشید
-	// حتی دوستان هم اگر در لیست سفید نباشند حذف می‌شوند!
+	// حتی دوستان هم بدون اجازه قبلی پاک می‌شوند
 	if IsPVWhitelisted(userID, senderID) {
 		return false
 	}
 
-	// ۵. حذف فوری پیام جاری و پاکسازی کل تاریخچه چت به صورت دوطرفه
 	inputPeer := getInputPeer(msg.PeerID, e, userID)
 	go func(msgID int, p tg.InputPeerClass) {
 		dCtx, dCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer dCancel()
 
-		// حذف قطعی پیام جدید ارسالی برای هر دو طرف
 		_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
 			Revoke: true,
 			ID:     []int{msgID},
 		})
 
-		// پاکسازی کل سابقه چت برای دو طرف
 		if p != nil {
 			_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
 				Peer:   p,
@@ -488,7 +483,6 @@ func ProcessPVLockCommand(ctx context.Context, client *telegram.Client, inputPee
 	return false
 }
 
-// ارسال اعلان فوری در ربات تلگرام
 func sendBotAlert(userID int64, eventType, shortDetail string) {
 	if controllerBot == nil {
 		return

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf16"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
@@ -54,26 +55,28 @@ var (
 	activeUserbotsMu sync.RWMutex
 	activeUserbots   = make(map[int64]*UserbotSession)
 
-	// کش حافظه برای دوستان
 	friendsCacheMu sync.RWMutex
 	friendsCache   = make(map[int64]map[int64]bool)
 
-	// کش حافظه برای دشمنان
 	enemiesCacheMu sync.RWMutex
 	enemiesCache   = make(map[int64]map[int64]bool)
 
-	// کش حافظه برای ری‌اکشن خودکار
 	autoReactsCacheMu sync.RWMutex
 	autoReactsCache   = make(map[int64]map[int64]string)
 
-	// کش خوشنویسی (Font Styler)
+	// کش قفل پیوی
+	pvLockSettingsMu sync.RWMutex
+	pvLockSettings   = make(map[int64]bool)
+
+	pvWhitelistMu sync.RWMutex
+	pvWhitelist   = make(map[int64]map[int64]bool)
+
 	fontSettingsMu sync.RWMutex
 	fontSettings   = make(map[int64]struct {
 		Enabled bool
 		Mode    string
 	})
 
-	// مدیریت اکشن‌های زنده چت
 	activeActionsMu sync.Mutex
 	activeActions   = make(map[string]context.CancelFunc)
 
@@ -174,12 +177,10 @@ type UserState struct {
 
 func loadConfig() Config {
 	_ = godotenv.Load()
-
 	token := os.Getenv("BOT_TOKEN")
 	if token == "" {
 		log.Fatal("❌ خطای پیکربندی: مقدار BOT_TOKEN در فایل .env یافت نشد.")
 	}
-
 	apiIDStr := os.Getenv("API_ID")
 	apiID, _ := strconv.Atoi(apiIDStr)
 	apiHash := os.Getenv("API_HASH")
@@ -227,7 +228,6 @@ func InitDB(cfg Config) {
 	if err != nil {
 		log.Fatalf("❌ خطا در اتصال به MySQL: %v", err)
 	}
-
 	if err = db.Ping(); err != nil {
 		log.Fatalf("❌ خطا در برقراری ارتباط با دیتابیس: %v", err)
 	}
@@ -256,23 +256,12 @@ func InitDB(cfg Config) {
 		custom_bio VARCHAR(255) DEFAULT '',
 		original_bio VARCHAR(255) DEFAULT '',
 		is_font_enabled BOOLEAN DEFAULT FALSE,
-		font_mode VARCHAR(30) DEFAULT 'bold_italic'
+		font_mode VARCHAR(30) DEFAULT 'bold_italic',
+		is_pv_lock_enabled BOOLEAN DEFAULT TRUE
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN last_billed_at DATETIME DEFAULT CURRENT_TIMESTAMP")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_clock_enabled BOOLEAN DEFAULT FALSE")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN original_last_name VARCHAR(255) DEFAULT ''")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_emoji_enabled BOOLEAN DEFAULT FALSE")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN original_first_name VARCHAR(255) DEFAULT ''")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_timer_media_enabled BOOLEAN DEFAULT FALSE")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_bio_enabled BOOLEAN DEFAULT FALSE")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN bio_mode VARCHAR(20) DEFAULT 'random'")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN custom_bio VARCHAR(255) DEFAULT ''")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN original_bio VARCHAR(255) DEFAULT ''")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_font_enabled BOOLEAN DEFAULT FALSE")
-	_, _ = db.Exec("ALTER TABLE users ADD COLUMN font_mode VARCHAR(30) DEFAULT 'bold_italic'")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_pv_lock_enabled BOOLEAN DEFAULT TRUE")
 
-	// جدول دوستان
 	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wolf_friends (
 		owner_id BIGINT,
@@ -282,7 +271,6 @@ func InitDB(cfg Config) {
 		PRIMARY KEY (owner_id, friend_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
-	// جدول دشمنان
 	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wolf_enemies (
 		owner_id BIGINT,
@@ -292,7 +280,6 @@ func InitDB(cfg Config) {
 		PRIMARY KEY (owner_id, enemy_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
-	// جدول ری‌اکشن‌های خودکار
 	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wolf_auto_reacts (
 		owner_id BIGINT,
@@ -301,6 +288,13 @@ func InitDB(cfg Config) {
 		emoji VARCHAR(50) DEFAULT '❤️',
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY (owner_id, target_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
+
+	_, _ = db.Exec(`
+	CREATE TABLE IF NOT EXISTS pv_whitelist (
+		owner_id BIGINT,
+		user_id BIGINT,
+		PRIMARY KEY (owner_id, user_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
 	_, _ = db.Exec(`
@@ -336,6 +330,87 @@ func InitDB(cfg Config) {
 	loadAllEnemiesToCache()
 	loadAllAutoReactsToCache()
 	loadAllFontSettingsToCache()
+	loadAllPVLockSettingsToCache()
+}
+
+func loadAllPVLockSettingsToCache() {
+	if db == nil {
+		return
+	}
+	// بارگذاری تنظیمات قفل پیوی
+	rows, err := db.Query("SELECT id, is_pv_lock_enabled FROM users")
+	if err == nil {
+		defer rows.Close()
+		pvLockSettingsMu.Lock()
+		pvLockSettings = make(map[int64]bool)
+		for rows.Next() {
+			var uid int64
+			var enabled bool
+			if err := rows.Scan(&uid, &enabled); err == nil {
+				pvLockSettings[uid] = enabled
+			}
+		}
+		pvLockSettingsMu.Unlock()
+	}
+
+	// بارگذاری لیست سفید پیوی
+	wRows, wErr := db.Query("SELECT owner_id, user_id FROM pv_whitelist")
+	if wErr == nil {
+		defer wRows.Close()
+		pvWhitelistMu.Lock()
+		pvWhitelist = make(map[int64]map[int64]bool)
+		for wRows.Next() {
+			var oID, uID int64
+			if err := wRows.Scan(&oID, &uID); err == nil {
+				if _, ok := pvWhitelist[oID]; !ok {
+					pvWhitelist[oID] = make(map[int64]bool)
+				}
+				pvWhitelist[oID][uID] = true
+			}
+		}
+		pvWhitelistMu.Unlock()
+	}
+}
+
+func isPVLockEnabled(uid int64) bool {
+	pvLockSettingsMu.RLock()
+	defer pvLockSettingsMu.RUnlock()
+	if enabled, ok := pvLockSettings[uid]; ok {
+		return enabled
+	}
+	return true // پیش‌فرض روشن
+}
+
+func updatePVLockCache(uid int64, enabled bool) {
+	pvLockSettingsMu.Lock()
+	defer pvLockSettingsMu.Unlock()
+	pvLockSettings[uid] = enabled
+}
+
+func isPVWhitelisted(ownerID, targetID int64) bool {
+	pvWhitelistMu.RLock()
+	defer pvWhitelistMu.RUnlock()
+	if userSet, exists := pvWhitelist[ownerID]; exists {
+		return userSet[targetID]
+	}
+	return false
+}
+
+func addPVWhitelistCache(ownerID, targetID int64) {
+	pvWhitelistMu.Lock()
+	defer pvWhitelistMu.Unlock()
+	if _, exists := pvWhitelist[ownerID]; !exists {
+		pvWhitelist[ownerID] = make(map[int64]bool)
+	}
+	pvWhitelist[ownerID][targetID] = true
+}
+
+func removePVWhitelistCache(ownerID, targetID int64) {
+	pvWhitelistMu.Lock()
+	defer pvWhitelistMu.Unlock()
+	if userSet, exists := pvWhitelist[ownerID]; exists {
+		delete(userSet, targetID)
+	}
 }
 
 func loadAllAutoReactsToCache() {
@@ -661,7 +736,7 @@ func sendTemporaryNotice(ctx context.Context, client *telegram.Client, inputPeer
 		Message:  text,
 		RandomID: rand.Int63(),
 		Entities: []tg.MessageEntityClass{
-			&tg.MessageEntityBold{Offset: 0, Length: len([]rune(text))},
+			&tg.MessageEntityBold{Offset: 0, Length: getUTF16Length(text)},
 		},
 	}
 	res, err := client.API().MessagesSendMessage(ctx, sendReq)
@@ -1117,26 +1192,13 @@ func deleteMsg(ctx context.Context, client *telegram.Client, inputPeer tg.InputP
 	})
 }
 
-func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int, text string) {
-	editReq := &tg.MessagesEditMessageRequest{
-		Peer:    inputPeer,
-		ID:      msgID,
-		Message: text,
-		Entities: []tg.MessageEntityClass{
-			&tg.MessageEntityBold{
-				Offset: 0,
-				Length: len([]rune(text)),
-			},
-		},
-	}
-	_, _ = client.API().MessagesEditMessage(ctx, editReq)
-
-	time.Sleep(100 * time.Millisecond)
-	deleteMsg(context.Background(), client, inputPeer, msgID)
+// تابع کمکی برای محاسبه طول کاراکترها در استایل‌های تلگرام (حل باگ اموجی در خوشنویسی)
+func getUTF16Length(text string) int {
+	return len(utf16.Encode([]rune(text)))
 }
 
 func getEntitiesForFont(text string, mode string) []tg.MessageEntityClass {
-	length := len([]rune(text))
+	length := getUTF16Length(text) // حل باگ طول استایل تلگرام
 	switch mode {
 	case "bold":
 		return []tg.MessageEntityClass{&tg.MessageEntityBold{Offset: 0, Length: length}}
@@ -1400,7 +1462,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			peerKey = fmt.Sprintf("channel_%d", p.ChannelID)
 		}
 
-		// واکنش به پیام‌های دیگران
+		// --- واکنش به پیام‌های دیگران و سیستم قفل پیوی ---
 		if !msg.Out {
 			senderID := int64(0)
 			if fromUser, ok := msg.FromID.(*tg.PeerUser); ok {
@@ -1409,7 +1471,25 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				senderID = peerUser.UserID
 			}
 
-			if senderID != 0 {
+			if senderID != 0 && senderID != selfID && senderID != 777000 {
+				
+				// 🛡 سیستم هوشمند قفل پیوی (دوطرفه)
+				if _, isUserChat := msg.PeerID.(*tg.PeerUser); isUserChat {
+					if isPVLockEnabled(userID) && !isPVWhitelisted(userID, senderID) && !isUserFriend(userID, senderID) {
+						go func(peer tg.InputPeerClass) {
+							dCtx, dCancel := context.WithTimeout(context.Background(), 5*time.Second)
+							defer dCancel()
+							// پاکسازی کل هیستوری این چت به صورت دوطرفه!
+							_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
+								Peer:   peer,
+								MaxID:  0,
+								Revoke: true, // اعمال حذف برای طرف مقابل
+							})
+						}(inputPeer)
+						return // جلوگیری از هر پردازش دیگری برای این مزاحم
+					}
+				}
+
 				// 1. سیستم ری‌اکشن خودکار
 				if emoji, exists := getAutoReact(userID, senderID); exists && inputPeer != nil {
 					go func(msgID int, p tg.InputPeerClass, em string) {
@@ -1477,8 +1557,49 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			return
 		}
 
+		// --- کنترل قفل پیوی (دستی) ---
+		if text == "قفل پیوی روشن" {
+			_, _ = db.Exec("UPDATE users SET is_pv_lock_enabled = TRUE WHERE id = ?", userID)
+			updatePVLockCache(userID, true)
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔒 قفل پیوی برای مزاحمان فعال شد")
+			}
+			return
+		} else if text == "قفل پیوی خاموش" {
+			_, _ = db.Exec("UPDATE users SET is_pv_lock_enabled = FALSE WHERE id = ?", userID)
+			updatePVLockCache(userID, false)
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔓 قفل پیوی غیرفعال شد")
+			}
+			return
+		} else if text == "بازکردن پیوی" || text == "باز کردن پیوی" {
+			if pUser, ok := msg.PeerID.(*tg.PeerUser); ok {
+				targetID := pUser.UserID
+				_, _ = db.Exec("INSERT IGNORE INTO pv_whitelist (owner_id, user_id) VALUES (?, ?)", userID, targetID)
+				addPVWhitelistCache(userID, targetID)
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "✅ پیوی برای این کاربر باز شد")
+				}
+			} else {
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ این دستور فقط در پیوی کاربر کاربرد دارد")
+				}
+			}
+			return
+		} else if text == "بستن پیوی" {
+			if pUser, ok := msg.PeerID.(*tg.PeerUser); ok {
+				targetID := pUser.UserID
+				_, _ = db.Exec("DELETE FROM pv_whitelist WHERE owner_id = ? AND user_id = ?", userID, targetID)
+				removePVWhitelistCache(userID, targetID)
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ این کاربر از لیست سفید پیوی حذف شد")
+				}
+			}
+			return
+		}
+
 		// پردازش دستورات ری‌اکشن خودکار
-		if text == "ری‌اکشن" || strings.HasPrefix(text, "ری‌اکشن ") {
+		if text == "ری اکشن" || strings.HasPrefix(text, "ری اکشن ") {
 			if msg.ReplyTo == nil {
 				if inputPeer != nil {
 					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
@@ -1491,8 +1612,8 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			}
 
 			emoji := "❤️"
-			if strings.HasPrefix(text, "ری‌اکشن ") {
-				em := strings.TrimSpace(strings.TrimPrefix(text, "ری‌اکشن "))
+			if strings.HasPrefix(text, "ری اکشن ") {
+				em := strings.TrimSpace(strings.TrimPrefix(text, "ری اکشن "))
 				if em != "" {
 					emoji = em
 				}
@@ -1537,11 +1658,11 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				`, userID, targetUID, targetUName, selectedEmoji)
 
 				setAutoReactToCache(userID, targetUID, selectedEmoji)
-				go notifyAndSelfDestruct(dCtx, client, p, mID, fmt.Sprintf("✅ ری‌اکشن %s فعال شد", selectedEmoji))
+				go notifyAndSelfDestruct(dCtx, client, p, mID, fmt.Sprintf("✅ ری اکشن %s فعال شد", selectedEmoji))
 			}(header.ReplyToMsgID, inputPeer, msg.ID, emoji)
 			return
 
-		} else if text == "حذف ری‌اکشن" {
+		} else if text == "حذف ری اکشن" {
 			if msg.ReplyTo == nil {
 				if inputPeer != nil {
 					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
@@ -1575,11 +1696,11 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 				_, _ = db.Exec("DELETE FROM wolf_auto_reacts WHERE owner_id = ? AND target_id = ?", userID, targetUID)
 				removeAutoReactFromCache(userID, targetUID)
-				go notifyAndSelfDestruct(dCtx, client, p, mID, "✅ ری‌اکشن این فرد لغو شد")
+				go notifyAndSelfDestruct(dCtx, client, p, mID, "✅ ری اکشن این فرد لغو شد")
 			}(header.ReplyToMsgID, inputPeer, msg.ID)
 			return
 
-		} else if text == "لیست ری‌اکشن" {
+		} else if text == "لیست ری اکشن" {
 			go func(mID int, p tg.InputPeerClass) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer dCancel()
@@ -1616,7 +1737,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			}(msg.ID, inputPeer)
 			return
 
-		} else if text == "پاکسازی ری‌اکشن" {
+		} else if text == "پاکسازی ری اکشن" {
 			go func(mID int, p tg.InputPeerClass) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer dCancel()
@@ -1656,7 +1777,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 							ID:      mID,
 							Message: msgText,
 							Entities: []tg.MessageEntityClass{
-								&tg.MessageEntityBold{Offset: 0, Length: len([]rune(msgText))},
+								&tg.MessageEntityBold{Offset: 0, Length: getUTF16Length(msgText)},
 							},
 						})
 						cancel()
@@ -2327,7 +2448,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			return
 		}
 
-		// اعمال بلادرنگ فونت و خوشنویسی روی تمامی پیام‌های ارسالی کاربر
+		// اعمال بلادرنگ فونت و خوشنویسی روی تمامی پیام‌های ارسالی کاربر (با حل باگ محاسبه طول اموجی‌ها)
 		fontEnabled, fontMode := getFontSetting(userID)
 		if fontEnabled && text != "" && msg.Media == nil {
 			go func(p tg.InputPeerClass, mID int, origText string, fMode string) {
@@ -2823,7 +2944,8 @@ func main() {
 	guidePurgeMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideTimerMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideAutoReactMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
-	guideTranslatorMenu := &tele.ReplyMarkup{ResizeKeyboard: true} // منوی جدید مترجم
+	guideTranslatorMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
+	guidePVLockMenu := &tele.ReplyMarkup{ResizeKeyboard: true} // منوی جدید قفل پیوی
 	guidePVMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideGroupMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
@@ -2836,8 +2958,9 @@ func main() {
 	btnGAction := guideMenu.Text("🎬 اکشن‌ها")
 	btnGPurge := guideMenu.Text("🗑 پاکسازی")
 	btnGTimer := guideMenu.Text("⏳ تایمر")
-	btnGAutoReact := guideMenu.Text("🔥 ری‌اکشن خودکار")
-	btnGTranslator := guideMenu.Text("🌍 مترجم در لحظه") // دکمه جدید مترجم
+	btnGAutoReact := guideMenu.Text("🔥 ری اکشن خودکار")
+	btnGTranslator := guideMenu.Text("🌍 مترجم در لحظه")
+	btnGPVLock := guideMenu.Text("🔐 قفل پیوی") // دکمه جدید قفل پیوی
 	btnGPV := guideMenu.Text("📩 پیوی همه")
 	btnGGroup := guideMenu.Text("👥 گروه همه")
 	btnGBackMain := guideMenu.Text("🔙 بازگشت به منوی اصلی")
@@ -2849,8 +2972,9 @@ func main() {
 		guideMenu.Row(btnGFriend, btnGEnemy),
 		guideMenu.Row(btnGAction, btnGPurge),
 		guideMenu.Row(btnGTimer, btnGAutoReact),
-		guideMenu.Row(btnGTranslator, btnGPV),
-		guideMenu.Row(btnGGroup, btnGBackMain),
+		guideMenu.Row(btnGTranslator, btnGPVLock),
+		guideMenu.Row(btnGPV, btnGGroup),
+		guideMenu.Row(btnGBackMain),
 	)
 
 	btnClockOn := guideClockMenu.Text("🟢 روشن کردن ساعت")
@@ -2928,6 +3052,9 @@ func main() {
 	btnTranslatorBack := guideTranslatorMenu.Text("🔙 بازگشت به راهنما")
 	guideTranslatorMenu.Reply(guideTranslatorMenu.Row(btnTranslatorBack))
 
+	btnPVLockBack := guidePVLockMenu.Text("🔙 بازگشت به راهنما")
+	guidePVLockMenu.Reply(guidePVLockMenu.Row(btnPVLockBack))
+
 	btnPVBack := guidePVMenu.Text("🔙 بازگشت به راهنما")
 	guidePVMenu.Reply(guidePVMenu.Row(btnPVBack))
 
@@ -2935,9 +3062,9 @@ func main() {
 	guideGroupMenu.Reply(guideGroupMenu.Row(btnGroupBack))
 
 	buildGuideDashboardText := func(userID int64) string {
-		var isClock, isEmoji, isBio, isFont bool
+		var isClock, isEmoji, isBio, isFont, isPvLock bool
 		var bioMode string
-		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
+		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled, is_pv_lock_enabled FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont, &isPvLock)
 		var friendCount, enemyCount int
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_friends WHERE owner_id = ?", userID).Scan(&friendCount)
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_enemies WHERE owner_id = ?", userID).Scan(&enemyCount)
@@ -2962,6 +3089,10 @@ func main() {
 		if isFont {
 			fontStatus = "🟢 روشن"
 		}
+		pvLockStatus := "🔴 خاموش"
+		if isPvLock {
+			pvLockStatus = "🟢 روشن (امنیتی)"
+		}
 
 		return fmt.Sprintf(`📚 <b>بخش راهنما و امکانات سلف ولف 🐺</b>
 ➖➖➖➖➖➖➖➖➖➖
@@ -2970,16 +3101,17 @@ func main() {
 ▫️ 🎭 <b>اموجی رندوم:</b> %s
 ▫️ 📝 <b>بیوگرافی هوشمند:</b> %s
 ▫️ ✒️ <b>خوشنویسی پیام‌ها:</b> %s
-▫️ 🌸 <b>سیستم دوست:</b> <code>%d نفر</code> (همیشه فعال)
-▫️ ⚔️ <b>سیستم دشمن:</b> <code>%d نفر</code> (همیشه فعال)
-▫️ 🎬 <b>اکشن‌های جعلی:</b> فعال و آماده
-▫️ 🗑 <b>پاکسازی پیام‌ها:</b> فعال و آماده
-▫️ ⏳ <b>تایمر زنده:</b> فعال و آماده
-▫️ 🔥 <b>ری‌اکشن خودکار:</b> فعال و آماده
-▫️ 🌍 <b>مترجم زنده:</b> فعال و آماده
+▫️ 🌸 <b>سیستم دوست:</b> <code>%d نفر</code>
+▫️ ⚔️ <b>سیستم دشمن:</b> <code>%d نفر</code>
+▫️ 🎬 <b>اکشن‌های جعلی:</b> فعال
+▫️ 🗑 <b>پاکسازی پیام‌ها:</b> فعال
+▫️ ⏳ <b>تایمر زنده:</b> فعال
+▫️ 🔥 <b>ری اکشن خودکار:</b> فعال
+▫️ 🌍 <b>مترجم زنده:</b> فعال
+▫️ 🔐 <b>قفل پیوی ضد مزاحم:</b> %s
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>جهت مطالعه راهنما و تنظیم هر قابلیت، از کیبورد ثابت زیر گزینه مورد نظر را انتخاب کنید:</i>`,
-			clockStatus, emojiStatus, bioStatus, fontStatus, friendCount, enemyCount,
+			clockStatus, emojiStatus, bioStatus, fontStatus, friendCount, enemyCount, pvLockStatus,
 		)
 	}
 
@@ -2987,15 +3119,51 @@ func main() {
 		text := `🌍 <b>راهنمای مترجم در لحظه (Live Translator)</b>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>عملکرد:</b>
-این قابلیت متن‌های خارجی را در کسری از ثانیه مستقیماً به فارسی روان ترجمه کرده و داخل چت قرار می‌دهد.
+این قابلیت متن‌های شما یا دیگران را در کسری از ثانیه مستقیماً به ده‌ها زبان دنیا ترجمه کرده و به زیبایی داخل چت قرار می‌دهد.
 
 💬 <b>نحوه استفاده:</b>
-روی هر پیامی که به زبان دیگری است (انگلیسی، آلمانی، ترکی و...) <b>ریپلای (Reply)</b> کنید و بفرستید:
-▫️ <code>ترجمه</code>
-▫️ <code>ترجمه کن</code>
+روی پیام مورد نظر <b>ریپلای (Reply)</b> کنید و دستور زبان دلخواه را بفرستید:
 
-⚡ <i>سلف‌بات بلافاصله پیام شما را ویرایش کرده و ترجمه آن را به شکلی زیبا جایگزین می‌کند.</i>`
+▫️ <code>ترجمه</code> (پیش‌فرض فارسی)
+▫️ <code>انگلیسی شو</code>
+▫️ <code>روسی شو</code>
+▫️ <code>ترکی شو</code>
+▫️ <code>عربی شو</code>
+▫️ <code>آلمانی شو</code>
+▫️ <code>چینی شو</code>
+▫️ <code>کره ای شو</code>
+▫️ <code>ژاپنی شو</code>
+▫️ <code>اسپانیایی شو</code>
+▫️ <code>فرانسوی شو</code>
+▫️ <code>ایتالیایی شو</code>
+
+⚡ <i>سلف‌بات بلافاصله پیام را ویرایش کرده و زبان مورد نظر را نمایش می‌دهد!</i>`
 		return c.Send(text, guideTranslatorMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnGPVLock, func(c tele.Context) error {
+		text := `🔐 <b>راهنمای سیستم هوشمند قفل پیوی (PV Lock)</b>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>عملکرد:</b>
+این سیستم به طور پیش‌فرض برای جلوگیری از مزاحمت <b>روشن</b> است.
+هرکسی که در پیوی شما پیام بدهد (و در لیست سفید دوستان شما نباشد)، پیام او در کسر از ثانیه <b>به صورت دوطرفه برای هر دو نفر پاک شده</b> و چت کلاً ناپدید می‌شود! به این شکل شما حتی متوجه ورود مزاحم نمی‌شوید.
+
+💬 <b>دستورات چت:</b>
+
+▫️ <b>خاموش کردن کامل قفل پیوی:</b>
+<code>قفل پیوی خاموش</code>
+
+▫️ <b>روشن کردن مجدد قفل پیوی:</b>
+<code>قفل پیوی روشن</code>
+
+▫️ <b>باز کردن پیوی برای یک فرد خاص:</b>
+اگر می‌خواهید فردی بتواند به شما پیام بدهد، وارد پیوی او شوید و بنویسید:
+<code>بازکردن پیوی</code>
+
+▫️ <b>مسدود کردن مجدد یک فرد:</b>
+در پیوی او بنویسید:
+<code>بستن پیوی</code>`
+		return c.Send(text, guidePVLockMenu, tele.ModeHTML)
 	})
 
 	btnConfigAccount := adminPanelMenu.Text("🛠 تنظیم حساب بانکی")
@@ -3434,7 +3602,7 @@ func main() {
 
 		text := fmt.Sprintf(`🌸 <b>مدیریت سیستم هوشمند دوست</b>
 ➖➖➖➖➖➖➖➖➖➖
-📊 <b>تعداد دوستان فعال:</b> <code>%d نفر</code> (همیشه فعال)
+📊 <b>تعداد دوستان فعال:</b> <code>%d نفر</code>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
 این قابلیت همیشه فعال است. به محض اینکه مخاطبی را با دستور <code>تنظیم دوست</code> ثبت کنید، هر پیامی در گروه‌ها بفرستد سلف‌بات شما بلافاصله روی پیامش ریپلای زده و یک متن دوستانه همراه با گل برایش ارسال می‌کند.
@@ -3488,7 +3656,7 @@ func main() {
 
 		text := fmt.Sprintf(`⚔️ <b>مدیریت سیستم هوشمند دشمن</b>
 ➖➖➖➖➖➖➖➖➖➖
-📊 <b>تعداد دشمنان فعال:</b> <code>%d نفر</code> (همیشه فعال)
+📊 <b>تعداد دشمنان فعال:</b> <code>%d نفر</code>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
 این قابلیت همیشه فعال است. با ریپلای روی پیام فرد و ارسال دستور <code>تنظیم دشمن</code>، از این پس هر پیامی در گروه‌ها بفرستد سلف‌بات شما بلافاصله با متن‌های تیکه‌دار و سنگین به او پاسخ می‌دهد.
@@ -3704,24 +3872,23 @@ func main() {
 		text := `🔥 <b>راهنمای ری‌اکشن خودکار (Auto-React)</b>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>عملکرد:</b>
-با این قابلیت بسیار جذاب، می‌توانید کاری کنید که به محض اینکه فرد خاصی پیامی ارسال کرد، سلف‌بات شما در کمتر از کسر ثانیه (سریع‌تر از هر انسانی) دقیقاً روی پیام او ری‌اکشن دلخواهتان (مانند ❤️ یا 🔥) را بزند!
+با این قابلیت بسیار جذاب، می‌توانید کاری کنید که به محض اینکه فرد خاصی پیامی ارسال کرد، سلف‌بات شما در کمتر از کسر ثانیه (سریع‌تر از هر انسانی) دقیقاً روی پیام او ری‌اکشن دلخواهتان را بزند!
 
 💬 <b>دستورات چت (با ریپلای روی پیام فرد):</b>
 
 ▫️ <b>ثبت ری‌اکشن:</b>
 روی پیام شخص ریپلای کنید و بفرستید:
-<code>ری‌اکشن 🔥</code> یا <code>ری‌اکشن 👎</code>
-<i>(اگر فقط کلمه «ری‌اکشن» را بفرستید، به طور پیش‌فرض ❤️ تنظیم می‌شود)</i>
+<code>ری اکشن 🔥</code> یا <code>ری اکشن 👎</code>
 
 ▫️ <b>لغو برای یک فرد:</b>
 روی پیام شخص ریپلای کنید و بفرستید:
-<code>حذف ری‌اکشن</code>
+<code>حذف ری اکشن</code>
 
 ▫️ <b>مشاهده لیست افراد:</b>
-ارسال دستور <code>لیست ری‌اکشن</code>
+ارسال دستور <code>لیست ری اکشن</code>
 
 ▫️ <b>پاکسازی همه:</b>
-ارسال دستور <code>پاکسازی ری‌اکشن</code>`
+ارسال دستور <code>پاکسازی ری اکشن</code>`
 
 		return c.Send(text, guideAutoReactMenu, tele.ModeHTML)
 	})
@@ -3769,7 +3936,8 @@ func main() {
 	bot.Handle(&btnPurgeBack, backToGuideHandler)
 	bot.Handle(&btnTimerBack, backToGuideHandler)
 	bot.Handle(&btnAutoReactBack, backToGuideHandler)
-	bot.Handle(&btnTranslatorBack, backToGuideHandler) // دکمه بازگشت مترجم
+	bot.Handle(&btnTranslatorBack, backToGuideHandler)
+	bot.Handle(&btnPVLockBack, backToGuideHandler)
 	bot.Handle(&btnPVBack, backToGuideHandler)
 	bot.Handle(&btnGroupBack, backToGuideHandler)
 
@@ -4129,7 +4297,7 @@ func main() {
 		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
 		_ = os.Remove(sessionPath)
 
-		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE, is_bio_enabled = FALSE, is_anti_delete_enabled = FALSE, is_edit_logger_enabled = FALSE, is_protected_saver_enabled = FALSE, is_ghost_mode_enabled = FALSE, is_font_enabled = FALSE WHERE id = ?", userID)
+		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE, is_bio_enabled = FALSE, is_anti_delete_enabled = FALSE, is_edit_logger_enabled = FALSE, is_protected_saver_enabled = FALSE, is_ghost_mode_enabled = FALSE, is_font_enabled = FALSE, is_pv_lock_enabled = FALSE WHERE id = ?", userID)
 
 		if c.Message() != nil {
 			_ = bot.Delete(c.Message())

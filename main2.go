@@ -35,14 +35,10 @@ type GroqResponse struct {
 	} `json:"choices"`
 }
 
-// getLanguageSettings زبان مورد نظر را از پیام کاربر تشخیص می‌دهد
 func getLanguageSettings(cmd string) (string, string, bool) {
-	// حالت پیش‌فرض (ترجمه به فارسی)
 	if cmd == "ترجمه" || cmd == "ترجمه کن" {
 		return "Persian (Farsi)", "فارسی", true
 	}
-
-	// تشخیص زبان‌های دیگر با پسوند "شو"
 	if strings.HasSuffix(cmd, " شو") {
 		langPart := strings.TrimSpace(strings.TrimSuffix(cmd, " شو"))
 		switch langPart {
@@ -75,21 +71,19 @@ func getLanguageSettings(cmd string) (string, string, bool) {
 	return "", "", false
 }
 
+// TranslateText دارای سیستم Retry برای جلوگیری از باگ و قطعی سرور هوش مصنوعی
 func TranslateText(text, targetLang string) (string, error) {
 	_ = godotenv.Load("/opt/wolf/.env")
-	
 	apiKey := strings.TrimSpace(os.Getenv("GROQ_API_KEY"))
 	if apiKey == "" {
-		return "", fmt.Errorf("کلید API در سرور یافت نشد. مطمئن شوید در فایل .env قرار دارد")
+		return "", fmt.Errorf("کلید API یافت نشد")
 	}
 
 	apiURL := "https://api.groq.com/openai/v1/chat/completions"
-
-	// پرامپت پویا برای ترجمه به زبانی که کاربر خواسته است
 	sysPrompt := fmt.Sprintf("You are a professional translator. Translate the following text to %s. Output ONLY the final translation. Do not include any extra text, comments, quotes, or conversational phrases.", targetLang)
 
 	reqBody := GroqRequest{
-		Model: "qwen/qwen3.8-27b", 
+		Model: "qwen/qwen3.8-27b",
 		Messages: []Message{
 			{Role: "system", Content: sysPrompt},
 			{Role: "user", Content: text},
@@ -99,45 +93,54 @@ func TranslateText(text, targetLang string) (string, error) {
 
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("خطای ساخت جیسون: %v", err)
+		return "", err
 	}
 
-	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", fmt.Errorf("خطای ساخت ریکوئست: %v", err)
-	}
+	var lastErr error
+	// سیستم تلاش مجدد هوشمند (حداکثر ۳ بار)
+	for i := 0; i < 3; i++ {
+		req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
+		if err != nil {
+			lastErr = err
+			continue
+		}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("خطای شبکه یا اینترنت سرور: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(1 * time.Second) // صبر و تلاش مجدد
+			continue
+		}
+		
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("کد %d - %s", resp.StatusCode, string(body))
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("کد %d - %s", resp.StatusCode, string(body))
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		var result GroqResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			lastErr = err
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		if len(result.Choices) > 0 {
+			return strings.TrimSpace(result.Choices[0].Message.Content), nil
+		}
 	}
 
-	var result GroqResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("خطا در خواندن پاسخ هوش مصنوعی: %v", err)
-	}
-
-	if len(result.Choices) > 0 {
-		translated := strings.TrimSpace(result.Choices[0].Message.Content)
-		return translated, nil
-	}
-
-	return "", fmt.Errorf("پاسخی از شبکه گروک دریافت نشد")
+	return "", fmt.Errorf("خطا پس از 3 بار تلاش: %v", lastErr)
 }
 
 func ProcessLiveTranslator(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, text string) bool {
-	
-	// بررسی اینکه آیا پیام کاربر یک دستور ترجمه است یا خیر
 	targetLangEn, targetLangFa, isCmd := getLanguageSettings(text)
 	if !isCmd {
 		return false
@@ -157,7 +160,7 @@ func ProcessLiveTranslator(ctx context.Context, client *telegram.Client, inputPe
 	replyMsgID := header.ReplyToMsgID
 
 	go func(repID int, p tg.InputPeerClass, mID int) {
-		dCtx, dCancel := context.WithTimeout(context.Background(), 25*time.Second)
+		dCtx, dCancel := context.WithTimeout(context.Background(), 35*time.Second)
 		defer dCancel()
 
 		repMsg, _, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
@@ -168,7 +171,7 @@ func ProcessLiveTranslator(ctx context.Context, client *telegram.Client, inputPe
 
 		origText := strings.TrimSpace(repMsg.Message)
 		if origText == "" {
-			notifyAndSelfDestruct(dCtx, client, p, mID, "⚠️ پیام اصلی فاقد متن برای ترجمه است!")
+			notifyAndSelfDestruct(dCtx, client, p, mID, "⚠️ پیام فاقد متن است!")
 			return
 		}
 
@@ -193,14 +196,16 @@ func ProcessLiveTranslator(ctx context.Context, client *telegram.Client, inputPe
 		}
 
 		finalText := fmt.Sprintf("🌍 ترجمه به %s:\n\n%s", targetLangFa, translated)
-		titleLen := len([]rune(fmt.Sprintf("🌍 ترجمه به %s:", targetLangFa)))
+		
+		// محاسبه دقیق طول برای بولد کردن با رعایت استانداردهای تلگرام (جلوگیری از باگ)
+		importUtf16Len := len([]rune(fmt.Sprintf("🌍 ترجمه به %s:", targetLangFa)))
 
 		_, _ = client.API().MessagesEditMessage(dCtx, &tg.MessagesEditMessageRequest{
 			Peer:    p,
 			ID:      mID,
 			Message: finalText,
 			Entities: []tg.MessageEntityClass{
-				&tg.MessageEntityBold{Offset: 0, Length: titleLen},
+				&tg.MessageEntityBold{Offset: 0, Length: importUtf16Len},
 			},
 		})
 	}(replyMsgID, inputPeer, msg.ID)

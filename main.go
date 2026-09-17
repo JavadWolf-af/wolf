@@ -64,7 +64,6 @@ var (
 	autoReactsCacheMu sync.RWMutex
 	autoReactsCache   = make(map[int64]map[int64]string)
 
-	// کش قفل پیوی
 	pvLockSettingsMu sync.RWMutex
 	pvLockSettings   = make(map[int64]bool)
 
@@ -337,7 +336,6 @@ func loadAllPVLockSettingsToCache() {
 	if db == nil {
 		return
 	}
-	// بارگذاری تنظیمات قفل پیوی
 	rows, err := db.Query("SELECT id, is_pv_lock_enabled FROM users")
 	if err == nil {
 		defer rows.Close()
@@ -353,7 +351,6 @@ func loadAllPVLockSettingsToCache() {
 		pvLockSettingsMu.Unlock()
 	}
 
-	// بارگذاری لیست سفید پیوی
 	wRows, wErr := db.Query("SELECT owner_id, user_id FROM pv_whitelist")
 	if wErr == nil {
 		defer wRows.Close()
@@ -378,7 +375,7 @@ func isPVLockEnabled(uid int64) bool {
 	if enabled, ok := pvLockSettings[uid]; ok {
 		return enabled
 	}
-	return true // پیش‌فرض روشن
+	return true
 }
 
 func updatePVLockCache(uid int64, enabled bool) {
@@ -707,471 +704,6 @@ func startFakeAction(ctx context.Context, client *telegram.Client, userID int64,
 	}()
 }
 
-func deleteMessageBatch(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, ids []int) {
-	if len(ids) == 0 {
-		return
-	}
-	dCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	if ch, ok := inputPeer.(*tg.InputPeerChannel); ok {
-		_, _ = client.API().ChannelsDeleteMessages(dCtx, &tg.ChannelsDeleteMessagesRequest{
-			Channel: &tg.InputChannel{
-				ChannelID:  ch.ChannelID,
-				AccessHash: ch.AccessHash,
-			},
-			ID: ids,
-		})
-		return
-	}
-	_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
-		Revoke: true,
-		ID:     ids,
-	})
-}
-
-func sendTemporaryNotice(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, text string, duration time.Duration) {
-	sendReq := &tg.MessagesSendMessageRequest{
-		Peer:     inputPeer,
-		Message:  text,
-		RandomID: rand.Int63(),
-		Entities: []tg.MessageEntityClass{
-			&tg.MessageEntityBold{Offset: 0, Length: getUTF16Length(text)},
-		},
-	}
-	res, err := client.API().MessagesSendMessage(ctx, sendReq)
-	if err != nil {
-		return
-	}
-
-	msgID := 0
-	if updates, ok := res.(*tg.Updates); ok {
-		for _, u := range updates.Updates {
-			if nu, ok := u.(*tg.UpdateNewMessage); ok {
-				if m, ok := nu.Message.(*tg.Message); ok {
-					msgID = m.ID
-					break
-				}
-			} else if ncu, ok := u.(*tg.UpdateNewChannelMessage); ok {
-				if m, ok := ncu.Message.(*tg.Message); ok {
-					msgID = m.ID
-					break
-				}
-			}
-		}
-	}
-
-	if msgID != 0 {
-		time.Sleep(duration)
-		deleteMsg(context.Background(), client, inputPeer, msgID)
-	}
-}
-
-func handlePurgeAction(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, cmdMsgID int, fromReplyID int, countLimit int) {
-	pCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-
-	var toDelete []int
-	offsetID := cmdMsgID
-
-	for {
-		req := &tg.MessagesGetHistoryRequest{
-			Peer:     inputPeer,
-			OffsetID: offsetID,
-			Limit:    100,
-		}
-		res, err := client.API().MessagesGetHistory(pCtx, req)
-		if err != nil {
-			break
-		}
-
-		var messages []tg.MessageClass
-		switch h := res.(type) {
-		case *tg.MessagesMessages:
-			messages = h.Messages
-		case *tg.MessagesMessagesSlice:
-			messages = h.Messages
-		case *tg.MessagesChannelMessages:
-			messages = h.Messages
-		}
-
-		if len(messages) == 0 {
-			break
-		}
-
-		stopSearch := false
-		for _, mClass := range messages {
-			m, ok := mClass.(*tg.Message)
-			if !ok {
-				continue
-			}
-
-			if fromReplyID > 0 {
-				if m.ID < fromReplyID {
-					stopSearch = true
-					break
-				}
-				if m.Out {
-					toDelete = append(toDelete, m.ID)
-				}
-				if m.ID == fromReplyID {
-					stopSearch = true
-					break
-				}
-			} else {
-				if m.Out {
-					toDelete = append(toDelete, m.ID)
-					if len(toDelete) >= countLimit {
-						stopSearch = true
-						break
-					}
-				}
-			}
-		}
-
-		if stopSearch || len(messages) < 100 {
-			break
-		}
-
-		if lastMsg, ok := messages[len(messages)-1].(*tg.Message); ok {
-			offsetID = lastMsg.ID
-		} else {
-			break
-		}
-	}
-
-	chunkSize := 100
-	for i := 0; i < len(toDelete); i += chunkSize {
-		end := i + chunkSize
-		if end > len(toDelete) {
-			end = len(toDelete)
-		}
-		deleteMessageBatch(pCtx, client, inputPeer, toDelete[i:end])
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	totalDeleted := len(toDelete)
-	reportText := fmt.Sprintf("🗑 %d پیام شما با موفقیت پاکسازی شد", totalDeleted)
-	if totalDeleted == 0 {
-		reportText = "⚠️ پیامی برای پاکسازی یافت نشد"
-	}
-	sendTemporaryNotice(pCtx, client, inputPeer, reportText, 1500*time.Millisecond)
-}
-
-func GetSetting(key string) string {
-	var val string
-	err := db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = ?", key).Scan(&val)
-	if err != nil {
-		return ""
-	}
-	return val
-}
-
-func SetSetting(key, val string) {
-	_, _ = db.Exec("INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?", key, val, val)
-}
-
-func SaveUser(userID int64, firstName, username string) {
-	if db == nil {
-		return
-	}
-	_, _ = db.Exec(`INSERT INTO users (id, first_name, username) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE first_name=?, username=?`, userID, firstName, username, firstName, username)
-	_, _ = db.Exec(`INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0)`, userID)
-}
-
-func GetUserBalance(userID int64) int {
-	var balance int
-	err := db.QueryRow("SELECT balance FROM wallets WHERE user_id = ?", userID).Scan(&balance)
-	if err != nil {
-		return 0
-	}
-	return balance
-}
-
-func IsUserBlocked(userID int64) bool {
-	var blocked bool
-	err := db.QueryRow("SELECT is_blocked FROM users WHERE id = ?", userID).Scan(&blocked)
-	if err != nil {
-		return false
-	}
-	return blocked
-}
-
-func GetUserSelfStatus(userID int64) string {
-	var status string
-	err := db.QueryRow("SELECT self_status FROM users WHERE id = ?", userID).Scan(&status)
-	if err != nil {
-		return "خرید نداشته"
-	}
-	return status
-}
-
-func SafeAddUserBalance(userID int64, amount int) error {
-	tx, err := db.Begin()
-	if err != nil {
-		log.Printf("❌ DB Begin Error: %v", err)
-		return err
-	}
-	defer tx.Rollback()
-
-	_, err = tx.Exec(`INSERT IGNORE INTO users (id, first_name, username) VALUES (?, 'کاربر', 'ثبت_نشده')`, userID)
-	if err != nil {
-		log.Printf("❌ DB Insert User Error: %v", err)
-		return err
-	}
-
-	_, err = tx.Exec(`INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON DUPLICATE KEY UPDATE balance = balance + ?`, userID, amount, amount)
-	if err != nil {
-		log.Printf("❌ DB Wallet Update Error: %v", err)
-		return err
-	}
-
-	_, err = tx.Exec(`UPDATE users SET purchases_count = purchases_count + 1 WHERE id = ?`, userID)
-	if err != nil {
-		log.Printf("❌ DB Purchases Count Error: %v", err)
-		return err
-	}
-
-	return tx.Commit()
-}
-
-func toBoldDigits(t string) string {
-	boldDigits := map[rune]string{
-		'0': "𝟎", '1': "𝟏", '2': "𝟐", '3': "𝟑", '4': "𝟒",
-		'5': "𝟓", '6': "𝟔", '7': "𝟕", '8': "𝟖", '9': "𝟗",
-		':': ":",
-	}
-	var sb strings.Builder
-	for _, r := range t {
-		if b, ok := boldDigits[r]; ok {
-			sb.WriteString(b)
-		} else {
-			sb.WriteRune(r)
-		}
-	}
-	return sb.String()
-}
-
-func getTehranBoldTime() string {
-	loc := getTehranLocation()
-	now := time.Now().In(loc)
-	return toBoldDigits(now.Format("15:04"))
-}
-
-func handleClockOn(ctx context.Context, userID int64, client *telegram.Client) {
-	var isEnabled bool
-	var origLast string
-	_ = db.QueryRow("SELECT is_clock_enabled, original_last_name FROM users WHERE id = ?", userID).Scan(&isEnabled, &origLast)
-
-	if !isEnabled || origLast == "" {
-		self, err := client.Self(ctx)
-		if err == nil {
-			origLast = self.LastName
-			_, _ = db.Exec("UPDATE users SET original_last_name = ? WHERE id = ?", origLast, userID)
-		}
-	}
-
-	boldTime := getTehranBoldTime()
-	req := &tg.AccountUpdateProfileRequest{}
-	req.SetLastName(boldTime)
-	_, err := client.API().AccountUpdateProfile(ctx, req)
-	if err == nil {
-		_, _ = db.Exec("UPDATE users SET is_clock_enabled = TRUE WHERE id = ?", userID)
-	}
-}
-
-func handleClockOff(ctx context.Context, userID int64, client *telegram.Client) {
-	var origLastName string
-	_ = db.QueryRow("SELECT original_last_name FROM users WHERE id = ?", userID).Scan(&origLastName)
-
-	req := &tg.AccountUpdateProfileRequest{}
-	req.SetLastName(origLastName)
-	_, _ = client.API().AccountUpdateProfile(ctx, req)
-
-	_, _ = db.Exec("UPDATE users SET is_clock_enabled = FALSE WHERE id = ?", userID)
-}
-
-func handleEmojiOn(ctx context.Context, userID int64, client *telegram.Client) {
-	var isEnabled bool
-	var origFirst string
-	_ = db.QueryRow("SELECT is_emoji_enabled, original_first_name FROM users WHERE id = ?", userID).Scan(&isEnabled, &origFirst)
-
-	if !isEnabled || origFirst == "" {
-		self, err := client.Self(ctx)
-		if err == nil {
-			origFirst = cleanName(self.FirstName)
-			_, _ = db.Exec("UPDATE users SET original_first_name = ? WHERE id = ?", origFirst, userID)
-		}
-	}
-
-	emoji := getRandomEmoji()
-	newName := fmt.Sprintf("%s %s", origFirst, emoji)
-	req := &tg.AccountUpdateProfileRequest{}
-	req.SetFirstName(newName)
-	_, err := client.API().AccountUpdateProfile(ctx, req)
-	if err == nil {
-		_, _ = db.Exec("UPDATE users SET is_emoji_enabled = TRUE WHERE id = ?", userID)
-	}
-}
-
-func handleEmojiOff(ctx context.Context, userID int64, client *telegram.Client) {
-	var origFirst string
-	_ = db.QueryRow("SELECT original_first_name FROM users WHERE id = ?", userID).Scan(&origFirst)
-
-	if origFirst != "" {
-		req := &tg.AccountUpdateProfileRequest{}
-		req.SetFirstName(origFirst)
-		_, _ = client.API().AccountUpdateProfile(ctx, req)
-	}
-
-	_, _ = db.Exec("UPDATE users SET is_emoji_enabled = FALSE WHERE id = ?", userID)
-}
-
-func handleBioOn(ctx context.Context, userID int64, client *telegram.Client) {
-	var isBioEnabled bool
-	var origBio string
-	_ = db.QueryRow("SELECT is_bio_enabled, original_bio FROM users WHERE id = ?", userID).Scan(&isBioEnabled, &origBio)
-
-	if !isBioEnabled || origBio == "" {
-		full, err := client.API().UsersGetFullUser(ctx, &tg.InputUserSelf{})
-		if err == nil {
-			origBio = full.FullUser.About
-			_, _ = db.Exec("UPDATE users SET original_bio = ? WHERE id = ?", origBio, userID)
-		}
-	}
-
-	bio := getRandomBio()
-	req := &tg.AccountUpdateProfileRequest{}
-	req.SetAbout(bio)
-	_, err := client.API().AccountUpdateProfile(ctx, req)
-	if err == nil {
-		_, _ = db.Exec("UPDATE users SET is_bio_enabled = TRUE, bio_mode = 'random' WHERE id = ?", userID)
-	}
-}
-
-func handleBioOff(ctx context.Context, userID int64, client *telegram.Client) {
-	var origBio string
-	_ = db.QueryRow("SELECT original_bio FROM users WHERE id = ?", userID).Scan(&origBio)
-
-	req := &tg.AccountUpdateProfileRequest{}
-	req.SetAbout(origBio)
-	_, _ = client.API().AccountUpdateProfile(ctx, req)
-
-	_, _ = db.Exec("UPDATE users SET is_bio_enabled = FALSE WHERE id = ?", userID)
-}
-
-func handleBioRandom(ctx context.Context, userID int64, client *telegram.Client) {
-	bio := getRandomBio()
-	req := &tg.AccountUpdateProfileRequest{}
-	req.SetAbout(bio)
-	_, err := client.API().AccountUpdateProfile(ctx, req)
-	if err == nil {
-		_, _ = db.Exec("UPDATE users SET is_bio_enabled = TRUE, bio_mode = 'random' WHERE id = ?", userID)
-	}
-}
-
-func handleBioCustom(ctx context.Context, userID int64, client *telegram.Client, customBio string) {
-	var origBio string
-	_ = db.QueryRow("SELECT original_bio FROM users WHERE id = ?", userID).Scan(&origBio)
-	if origBio == "" {
-		full, err := client.API().UsersGetFullUser(ctx, &tg.InputUserSelf{})
-		if err == nil {
-			origBio = full.FullUser.About
-			_, _ = db.Exec("UPDATE users SET original_bio = ? WHERE id = ?", origBio, userID)
-		}
-	}
-
-	runes := []rune(customBio)
-	if len(runes) > 70 {
-		customBio = string(runes[:70])
-	}
-
-	req := &tg.AccountUpdateProfileRequest{}
-	req.SetAbout(customBio)
-	_, err := client.API().AccountUpdateProfile(ctx, req)
-	if err == nil {
-		_, _ = db.Exec("UPDATE users SET is_bio_enabled = TRUE, bio_mode = 'custom', custom_bio = ? WHERE id = ?", customBio, userID)
-	}
-}
-
-func getInputPeer(peer tg.PeerClass, e tg.Entities, selfID int64) tg.InputPeerClass {
-	if peer == nil {
-		return nil
-	}
-	switch p := peer.(type) {
-	case *tg.PeerUser:
-		if p.UserID == selfID {
-			return &tg.InputPeerSelf{}
-		}
-		if u, ok := e.Users[p.UserID]; ok {
-			return &tg.InputPeerUser{
-				UserID:     u.ID,
-				AccessHash: u.AccessHash,
-			}
-		}
-		return &tg.InputPeerUser{UserID: p.UserID}
-	case *tg.PeerChat:
-		return &tg.InputPeerChat{ChatID: p.ChatID}
-	case *tg.PeerChannel:
-		var aHash int64
-		if ch, ok := e.Channels[p.ChannelID]; ok {
-			aHash = ch.AccessHash
-			channelAccessHashesMu.Lock()
-			channelAccessHashes[ch.ID] = ch.AccessHash
-			channelAccessHashesMu.Unlock()
-		} else {
-			channelAccessHashesMu.RLock()
-			aHash = channelAccessHashes[p.ChannelID]
-			channelAccessHashesMu.RUnlock()
-		}
-		return &tg.InputPeerChannel{
-			ChannelID:  p.ChannelID,
-			AccessHash: aHash,
-		}
-	}
-	return nil
-}
-
-func getRepliedMessageAndUsers(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int) (*tg.Message, []tg.UserClass, error) {
-	var res tg.MessagesMessagesClass
-	var err error
-
-	if ch, ok := inputPeer.(*tg.InputPeerChannel); ok {
-		res, err = client.API().ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
-			Channel: &tg.InputChannel{ChannelID: ch.ChannelID, AccessHash: ch.AccessHash},
-			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}},
-		})
-	} else {
-		res, err = client.API().MessagesGetMessages(ctx, []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}})
-	}
-
-	if err != nil {
-		return nil, nil, err
-	}
-
-	switch m := res.(type) {
-	case *tg.MessagesChannelMessages:
-		if len(m.Messages) > 0 {
-			if msg, ok := m.Messages[0].(*tg.Message); ok {
-				return msg, m.Users, nil
-			}
-		}
-	case *tg.MessagesMessages:
-		if len(m.Messages) > 0 {
-			if msg, ok := m.Messages[0].(*tg.Message); ok {
-				return msg, m.Users, nil
-			}
-		}
-	case *tg.MessagesMessagesSlice:
-		if len(m.Messages) > 0 {
-			if msg, ok := m.Messages[0].(*tg.Message); ok {
-				return msg, m.Users, nil
-			}
-		}
-	}
-	return nil, nil, errors.New("message not found")
-}
-
 func deleteMsg(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int) {
 	dCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
@@ -1197,6 +729,25 @@ func getUTF16Length(text string) int {
 	return len(utf16.Encode([]rune(text)))
 }
 
+// تابع حیاتی که باعث ارور کامپایل شده بود
+func notifyAndSelfDestruct(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msgID int, text string) {
+	editReq := &tg.MessagesEditMessageRequest{
+		Peer:    inputPeer,
+		ID:      msgID,
+		Message: text,
+		Entities: []tg.MessageEntityClass{
+			&tg.MessageEntityBold{
+				Offset: 0,
+				Length: getUTF16Length(text),
+			},
+		},
+	}
+	_, _ = client.API().MessagesEditMessage(ctx, editReq)
+
+	time.Sleep(100 * time.Millisecond)
+	deleteMsg(context.Background(), client, inputPeer, msgID)
+}
+
 func getEntitiesForFont(text string, mode string) []tg.MessageEntityClass {
 	length := getUTF16Length(text) // حل باگ طول استایل تلگرام
 	switch mode {
@@ -1218,10 +769,7 @@ func getEntitiesForFont(text string, mode string) []tg.MessageEntityClass {
 	case "spoiler":
 		return []tg.MessageEntityClass{&tg.MessageEntitySpoiler{Offset: 0, Length: length}}
 	default:
-		return []tg.MessageEntityClass{
-			&tg.MessageEntityBold{Offset: 0, Length: length},
-			&tg.MessageEntityItalic{Offset: 0, Length: length},
-		}
+		return []tg.MessageEntityClass{&tg.MessageEntityBold{Offset: 0, Length: length}}
 	}
 }
 
@@ -1390,6 +938,97 @@ func handleForwardToAllGroups(ctx context.Context, client *telegram.Client, inpu
 	if inputPeer != nil {
 		notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "انجام شد")
 	}
+}
+
+func handlePurgeAction(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, cmdMsgID int, fromReplyID int, countLimit int) {
+	pCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	var toDelete []int
+	offsetID := cmdMsgID
+
+	for {
+		req := &tg.MessagesGetHistoryRequest{
+			Peer:     inputPeer,
+			OffsetID: offsetID,
+			Limit:    100,
+		}
+		res, err := client.API().MessagesGetHistory(pCtx, req)
+		if err != nil {
+			break
+		}
+
+		var messages []tg.MessageClass
+		switch h := res.(type) {
+		case *tg.MessagesMessages:
+			messages = h.Messages
+		case *tg.MessagesMessagesSlice:
+			messages = h.Messages
+		case *tg.MessagesChannelMessages:
+			messages = h.Messages
+		}
+
+		if len(messages) == 0 {
+			break
+		}
+
+		stopSearch := false
+		for _, mClass := range messages {
+			m, ok := mClass.(*tg.Message)
+			if !ok {
+				continue
+			}
+
+			if fromReplyID > 0 {
+				if m.ID < fromReplyID {
+					stopSearch = true
+					break
+				}
+				if m.Out {
+					toDelete = append(toDelete, m.ID)
+				}
+				if m.ID == fromReplyID {
+					stopSearch = true
+					break
+				}
+			} else {
+				if m.Out {
+					toDelete = append(toDelete, m.ID)
+					if len(toDelete) >= countLimit {
+						stopSearch = true
+						break
+					}
+				}
+			}
+		}
+
+		if stopSearch || len(messages) < 100 {
+			break
+		}
+
+		if lastMsg, ok := messages[len(messages)-1].(*tg.Message); ok {
+			offsetID = lastMsg.ID
+		} else {
+			break
+		}
+	}
+
+	chunkSize := 100
+	for i := 0; i < len(toDelete); i += chunkSize {
+		end := i + chunkSize
+		if end > len(toDelete) {
+			end = len(toDelete)
+		}
+		deleteMessageBatch(pCtx, client, inputPeer, toDelete[i:end])
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	totalDeleted := len(toDelete)
+	reportText := fmt.Sprintf("🗑 %d پیام شما با موفقیت پاکسازی شد", totalDeleted)
+	if totalDeleted == 0 {
+		reportText = "⚠️ پیامی برای پاکسازی یافت نشد"
+	}
+	sendTemporaryNotice(pCtx, client, inputPeer, reportText, 1500*time.Millisecond)
 }
 
 func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
@@ -2260,29 +1899,36 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		} else if strings.HasPrefix(text, "خوشنویسی ") {
 			cleanSub := strings.TrimSpace(strings.TrimPrefix(text, "خوشنویسی "))
 			mode := ""
+			label := ""
 			switch cleanSub {
 			case "بولد":
 				mode = "bold"
+				label = "بولد"
 			case "ایتالیک":
 				mode = "italic"
+				label = "ایتالیک"
 			case "بولد ایتالیک":
 				mode = "bold_italic"
+				label = "بولد ایتالیک"
 			case "زیر خط":
 				mode = "underline"
+				label = "زیر خط"
 			case "خط خورده":
 				mode = "strike"
+				label = "خط خورده"
 			case "مونو":
 				mode = "mono"
+				label = "مونو"
 			case "اسپویل":
 				mode = "spoiler"
+				label = "اسپویل"
 			}
 
 			if mode != "" {
 				_, _ = db.Exec("UPDATE users SET font_mode = ?, is_font_enabled = TRUE WHERE id = ?", mode, userID)
-				en, _ := getFontSetting(userID)
-				updateFontCache(userID, en, mode)
+				updateFontCache(userID, true, mode)
 				if inputPeer != nil {
-					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, fmt.Sprintf("✅ فونت به %s تغییر یافت", text))
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, fmt.Sprintf("✅ فونت به «%s» تغییر یافت", label))
 				}
 				return
 			}
@@ -2945,7 +2591,7 @@ func main() {
 	guideTimerMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideAutoReactMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideTranslatorMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
-	guidePVLockMenu := &tele.ReplyMarkup{ResizeKeyboard: true} // منوی جدید قفل پیوی
+	guidePVLockMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guidePVMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideGroupMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
 
@@ -2960,12 +2606,11 @@ func main() {
 	btnGTimer := guideMenu.Text("⏳ تایمر")
 	btnGAutoReact := guideMenu.Text("🔥 ری اکشن خودکار")
 	btnGTranslator := guideMenu.Text("🌍 مترجم در لحظه")
-	btnGPVLock := guideMenu.Text("🔐 قفل پیوی") // دکمه جدید قفل پیوی
+	btnGPVLock := guideMenu.Text("🔐 قفل پیوی")
 	btnGPV := guideMenu.Text("📩 پیوی همه")
 	btnGGroup := guideMenu.Text("👥 گروه همه")
 	btnGBackMain := guideMenu.Text("🔙 بازگشت به منوی اصلی")
 
-	// چیدمان تمیز و متقارن کیبورد راهنما
 	guideMenu.Reply(
 		guideMenu.Row(btnGClock, btnGEmoji),
 		guideMenu.Row(btnGBio, btnGFont),
@@ -3419,7 +3064,6 @@ func main() {
 
 	RegisterWolfPlusHandlers(bot)
 
-	// ثبت هندلرهای بخش راهنما
 	bot.Handle(&btnGuide, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
@@ -3451,9 +3095,7 @@ func main() {
 
 💬 <b>دستورات چت:</b>
 ▫️ روشن کردن: <code>ساعت روشن شو</code> یا <code>ساعت روشن</code>
-▫️ خاموش کردن: <code>ساعت خاموش شو</code> یا <code>ساعت خاموش</code>
-
-👇 همچنین می‌توانید مستقیماً از کلیدهای زیر جهت کنترل استفاده کنید:`, statusStr)
+▫️ خاموش کردن: <code>ساعت خاموش شو</code> یا <code>ساعت خاموش</code>`, statusStr)
 		return c.Send(text, guideClockMenu, tele.ModeHTML)
 	})
 
@@ -3502,9 +3144,7 @@ func main() {
 
 💬 <b>دستورات چت:</b>
 ▫️ روشن کردن: <code>اموجی روشن شو</code> یا <code>اموجی روشن</code>
-▫️ خاموش کردن: <code>اموجی خاموش شو</code> یا <code>اموجی خاموش</code>
-
-👇 همچنین می‌توانید از دکمه‌های زیر برای روشن/خاموش کردن استفاده کنید:`, statusStr)
+▫️ خاموش کردن: <code>اموجی خاموش شو</code> یا <code>اموجی خاموش</code>`, statusStr)
 		return c.Send(text, guideEmojiMenu, tele.ModeHTML)
 	})
 
@@ -3560,9 +3200,7 @@ func main() {
 ▫️ روشن کردن بیو رندوم: <code>بیو روشن شو</code> یا <code>بیو روشن</code>
 ▫️ خاموش کردن و بازگردانی بیو قبلی: <code>بیو خاموش شو</code> یا <code>بیو خاموش</code>
 ▫️ تعویض فوری به بیو رندوم دیگر: <code>رندوم شو</code>
-▫️ تبدیل متن پیام به بیو: ریپلای روی پیام و ارسال دستور <code>بیو شو</code>
-
-👇 کنترل سریع بیو با دکمه‌های زیر:`, statusStr)
+▫️ تبدیل متن پیام به بیو: ریپلای روی پیام و ارسال دستور <code>بیو شو</code>`, statusStr)
 		return c.Send(text, guideBioMenu, tele.ModeHTML)
 	})
 
@@ -3594,7 +3232,6 @@ func main() {
 		return c.Send("🔴 <b>بیوگرافی خاموش شد و بیوی اولیه شما بازگردانده شد.</b>", guideBioMenu, tele.ModeHTML)
 	})
 
-	// منوی دوست
 	bot.Handle(&btnGFriend, func(c tele.Context) error {
 		userID := c.Sender().ID
 		var friendCount int
@@ -3605,7 +3242,7 @@ func main() {
 📊 <b>تعداد دوستان فعال:</b> <code>%d نفر</code>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
-این قابلیت همیشه فعال است. به محض اینکه مخاطبی را با دستور <code>تنظیم دوست</code> ثبت کنید، هر پیامی در گروه‌ها بفرستد سلف‌بات شما بلافاصله روی پیامش ریپلای زده و یک متن دوستانه همراه با گل برایش ارسال می‌کند.
+به محض اینکه مخاطبی را با دستور <code>تنظیم دوست</code> ثبت کنید، هر پیامی در گروه‌ها بفرستد سلف‌بات شما بلافاصله روی پیامش ریپلای زده و متن دوستانه می‌فرستد.
 
 💬 <b>دستورات چت (با ریپلای روی پیام فرد):</b>
 ▫️ <b>افزودن دوست:</b> ریپلای روی پیام و ارسال <code>تنظیم دوست</code>
@@ -3648,7 +3285,6 @@ func main() {
 		return c.Send("🗑 <b>لیست دوستان شما به طور کامل پاکسازی شد 🌸</b>", guideFriendMenu, tele.ModeHTML)
 	})
 
-	// منوی دشمن
 	bot.Handle(&btnGEnemy, func(c tele.Context) error {
 		userID := c.Sender().ID
 		var enemyCount int
@@ -3659,7 +3295,7 @@ func main() {
 📊 <b>تعداد دشمنان فعال:</b> <code>%d نفر</code>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
-این قابلیت همیشه فعال است. با ریپلای روی پیام فرد و ارسال دستور <code>تنظیم دشمن</code>، از این پس هر پیامی در گروه‌ها بفرستد سلف‌بات شما بلافاصله با متن‌های تیکه‌دار و سنگین به او پاسخ می‌دهد.
+با ریپلای روی پیام فرد و ارسال دستور <code>تنظیم دشمن</code>، از این پس هر پیامی در گروه‌ها بفرستد سلف‌بات شما بلافاصله با متن‌های تیکه‌دار به او پاسخ می‌دهد.
 
 💬 <b>دستورات چت (با ریپلای روی پیام فرد):</b>
 ▫️ <b>افزودن دشمن:</b> ریپلای روی پیام و ارسال <code>تنظیم دشمن</code>
@@ -3702,34 +3338,22 @@ func main() {
 		return c.Send("🗑 <b>لیست دشمنان شما به طور کامل پاکسازی شد ⚔️</b>", guideEnemyMenu, tele.ModeHTML)
 	})
 
-	// منوی خوشنویسی
-	formatFontModeName := func(mode string) string {
-		switch mode {
-		case "bold":
-			return "بولد"
-		case "italic":
-			return "ایتالیک"
-		case "bold_italic":
-			return "بولد ایتالیک"
-		case "underline":
-			return "زیر خط"
-		case "strike":
-			return "خط خورده"
-		case "mono":
-			return "مونو"
-		case "spoiler":
-			return "اسپویل"
-		default:
-			return "بولد ایتالیک"
-		}
-	}
-
 	bot.Handle(&btnGFont, func(c tele.Context) error {
 		userID := c.Sender().ID
 		en, mode := getFontSetting(userID)
 		statusStr := "🔴 خاموش"
 		if en {
 			statusStr = "🟢 روشن"
+		}
+		
+		formatModeStr := "بولد ایتالیک"
+		switch mode {
+		case "bold": formatModeStr = "بولد"
+		case "italic": formatModeStr = "ایتالیک"
+		case "underline": formatModeStr = "زیر خط"
+		case "strike": formatModeStr = "خط خورده"
+		case "mono": formatModeStr = "مونو"
+		case "spoiler": formatModeStr = "اسپویل"
 		}
 
 		text := fmt.Sprintf(`✒️ <b>مدیریت سیستم خوشنویسی و استایل پیام‌ها</b>
@@ -3738,7 +3362,7 @@ func main() {
 🔤 <b>فونت انتخابی فعلی:</b> <b>%s</b>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
-با روشن بودن این قابلیت، هر پیامی که در گروه‌ها یا پیوی ارسال کنید بلافاصله به فونت و استایل انتخابی شما تبدیل (Edit) می‌شود.
+با روشن بودن این قابلیت، هر پیامی که ارسال کنید بلافاصله به فونت انتخابی شما تبدیل می‌شود.
 
 💬 <b>دستورات چت:</b>
 ▫️ روشن کردن: <code>خوشنویسی روشن</code>
@@ -3746,13 +3370,11 @@ func main() {
 
 ▫️ <code>خوشنویسی بولد</code>
 ▫️ <code>خوشنویسی ایتالیک</code>
-▫️ <code>خوشنویسی بولد ایتالیک</code> (پیش‌فرض)
+▫️ <code>خوشنویسی بولد ایتالیک</code>
 ▫️ <code>خوشنویسی زیر خط</code>
 ▫️ <code>خوشنویسی خط خورده</code>
 ▫️ <code>خوشنویسی مونو</code>
-▫️ <code>خوشنویسی اسپویل</code>
-
-👇 <i>همچنین می‌توانید مستقیماً از کلیدهای کیبورد زیر فونت دلخواه را تنظیم کنید:</i>`, statusStr, formatFontModeName(mode))
+▫️ <code>خوشنویسی اسپویل</code>`, statusStr, formatModeStr)
 
 		return c.Send(text, guideFontMenu, tele.ModeHTML)
 	})
@@ -3790,16 +3412,13 @@ func main() {
 	bot.Handle(&btnFontMono, setFontHandler("mono", "مونو"))
 	bot.Handle(&btnFontSpoiler, setFontHandler("spoiler", "اسپویل"))
 
-	// منوی اکشن‌ها
 	bot.Handle(&btnGAction, func(c tele.Context) error {
 		text := `🎬 <b>راهنمای اکشن‌های جعلی چت (Fake Actions)</b>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>عملکرد:</b>
-با ارسال هر دستور، سلف‌بات وضعیت مورد نظر را در بالای صفحه چت (برای طرف مقابل یا گروه) شبیه‌سازی می‌کند.
-هر دستور به طور خودکار هر ۴ ثانیه تمدید می‌شود تا قبل از پایان زمان قطع نشود.
+با ارسال هر دستور، سلف‌بات وضعیت مورد نظر را در بالای صفحه چت شبیه‌سازی می‌کند.
 
 💬 <b>دستورات چت (همراه با زمان دلخواه به ثانیه):</b>
-<i>اگر زمان را وارد نکنید، به طور خودکار ۲۰ ثانیه در نظر گرفته می‌شود.</i>
 
 ▫️ ✍️ <b>در حال نوشتن:</b>
 <code>تایپینگ 30</code> یا <code>اکشن تایپ 30</code>
@@ -3828,28 +3447,25 @@ func main() {
 		return c.Send(text, guideActionMenu, tele.ModeHTML)
 	})
 
-	// منوی پاکسازی هوشمند
 	bot.Handle(&btnGPurge, func(c tele.Context) error {
 		text := `🗑 <b>راهنمای پاکسازی سریع و هوشمند پیام‌ها (پاکشو)</b>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>عملکرد:</b>
-این قابلیت به شما امکان می‌دهد پیام‌های ارسالی خودتان را در هر گروه یا چت خصوصی با بیشترین سرعت و بدون باقی ماندن ردپا پاکسازی کنید.
+این قابلیت به شما امکان می‌دهد پیام‌های ارسالی خودتان را در هر گروه یا چت خصوصی با بیشترین سرعت پاکسازی کنید.
 
 💬 <b>دستورات چت:</b>
 
 ▫️ <b>۱. حذف بر اساس تعداد:</b>
 ارسال دستور <code>پاکشو 20</code>
-<i>(تعداد پیام‌های مشخص شده از آخرین پیام‌های خودتان را پاک می‌کند - حداکثر ۱۰۰ عدد در هر بار)</i>
+<i>(تعداد پیام‌های مشخص شده از آخرین پیام‌های خودتان را پاک می‌کند)</i>
 
 ▫️ <b>۲. حذف از یک نقطه خاص (با ریپلای):</b>
 روی پیام قدیمی خودت ریپلای کن و بفرست:
-<code>پاکشو</code>
-<i>(تمام پیام‌های ارسالی شما از آن پیام ریپلای‌شده تا پیام فعلی پاک خواهند شد)</i>`
+<code>پاکشو</code>`
 
 		return c.Send(text, guidePurgeMenu, tele.ModeHTML)
 	})
 
-	// منوی تایمر زنده
 	bot.Handle(&btnGTimer, func(c tele.Context) error {
 		text := `⏳ <b>راهنمای شمارش معکوس زنده (تایمر)</b>
 ➖➖➖➖➖➖➖➖➖➖
@@ -3859,20 +3475,16 @@ func main() {
 💬 <b>دستورات چت:</b>
 
 ▫️ <code>تایمر 10</code>
-▫️ <code>شمارش 5</code>
-<i>(عدد مقابل دستور، زمان تایمر به ثانیه است. برای جلوگیری از محدودیت تلگرام، حداکثر زمان مجاز ۶۰ ثانیه می‌باشد)</i>
-
-⚡ <i>این دستور مستقیماً روی پیام خودتان اعمال شده و به صورت زنده ویرایش می‌شود.</i>`
+▫️ <code>شمارش 5</code>`
 
 		return c.Send(text, guideTimerMenu, tele.ModeHTML)
 	})
 
-	// منوی ری‌اکشن خودکار
 	bot.Handle(&btnGAutoReact, func(c tele.Context) error {
 		text := `🔥 <b>راهنمای ری‌اکشن خودکار (Auto-React)</b>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>عملکرد:</b>
-با این قابلیت بسیار جذاب، می‌توانید کاری کنید که به محض اینکه فرد خاصی پیامی ارسال کرد، سلف‌بات شما در کمتر از کسر ثانیه (سریع‌تر از هر انسانی) دقیقاً روی پیام او ری‌اکشن دلخواهتان را بزند!
+سلف‌بات شما در کمتر از کسر ثانیه (سریع‌تر از هر انسانی) دقیقاً روی پیام هدف ری‌اکشن دلخواهتان را می‌زند!
 
 💬 <b>دستورات چت (با ریپلای روی پیام فرد):</b>
 
@@ -3891,515 +3503,6 @@ func main() {
 ارسال دستور <code>پاکسازی ری اکشن</code>`
 
 		return c.Send(text, guideAutoReactMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnPVBack, func(c tele.Context) error {
-		text := `📩 <b>راهنمای فوروارد همگانی به پیوی‌ها (Broadcast PV)</b>
-➖➖➖➖➖➖➖➖➖➖
-📖 <b>نحوه ارسال:</b>
-روی پیام مورد نظر خود در هر چتی ریپلای (Reply) کرده و یکی از دستورات زیر را بفرستید:
-
-🔸 <code>بفرست پیوی همه</code>
-پیام بدون درج نام فرستنده اصلی برای تمام مخاطبان خصوصی فوروارد می‌شود.
-
-🔸 <code>پیوی همه</code>
-پیام با حفظ نام فرستنده برای تمامی پیوی‌ها فوروارد می‌گردد.`
-		return c.Send(text, guidePVMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnGGroup, func(c tele.Context) error {
-		text := `👥 <b>راهنمای فوروارد همگانی به گروه‌ها (Broadcast Groups)</b>
-➖➖➖➖➖➖➖➖➖➖
-📖 <b>نحوه ارسال:</b>
-روی پیام مورد نظر در هر چتی ریپلای (Reply) کرده و یکی از دستورات زیر را بفرستید:
-
-🔸 <code>بفرست گروه همه</code>
-پیام بدون درج نام فرستنده اصلی برای تمام گروه‌ها فوروارد می‌شود.
-
-🔸 <code>گروه همه</code>
-پیام با حفظ نام فرستنده برای تمامی گروه‌ها ارسال می‌گردد.`
-		return c.Send(text, guideGroupMenu, tele.ModeHTML)
-	})
-
-	backToGuideHandler := func(c tele.Context) error {
-		userID := c.Sender().ID
-		return c.Send(buildGuideDashboardText(userID), guideMenu, tele.ModeHTML)
-	}
-
-	bot.Handle(&btnClockBack, backToGuideHandler)
-	bot.Handle(&btnEmojiBack, backToGuideHandler)
-	bot.Handle(&btnBioBack, backToGuideHandler)
-	bot.Handle(&btnFriendBack, backToGuideHandler)
-	bot.Handle(&btnEnemyBack, backToGuideHandler)
-	bot.Handle(&btnFontBack, backToGuideHandler)
-	bot.Handle(&btnActionBack, backToGuideHandler)
-	bot.Handle(&btnPurgeBack, backToGuideHandler)
-	bot.Handle(&btnTimerBack, backToGuideHandler)
-	bot.Handle(&btnAutoReactBack, backToGuideHandler)
-	bot.Handle(&btnTranslatorBack, backToGuideHandler)
-	bot.Handle(&btnPVLockBack, backToGuideHandler)
-	bot.Handle(&btnPVBack, backToGuideHandler)
-	bot.Handle(&btnGroupBack, backToGuideHandler)
-
-	bot.Handle(&btnGBackMain, func(c tele.Context) error {
-		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getMainKeyboard(c.Sender().ID), tele.ModeHTML)
-	})
-
-	getWalletInlineKeyboard := func() *tele.ReplyMarkup {
-		menu := &tele.ReplyMarkup{}
-		btnP25k := menu.Data("➕ 25,000", "wallet_change", "25000")
-		btnP50k := menu.Data("➕ 50,000", "wallet_change", "50000")
-		btnP100k := menu.Data("➕ 100,000", "wallet_change", "100000")
-		btnM1k := menu.Data("➖ 1,000", "wallet_change", "-1000")
-		btnP1k := menu.Data("➕ 1,000", "wallet_change", "1000")
-		btnM5k := menu.Data("➖ 5,000", "wallet_change", "-5000")
-		btnP5k := menu.Data("➕ 5,000", "wallet_change", "5000")
-		btnM10k := menu.Data("➖ 10,000", "wallet_change", "-10000")
-		btnP10k := menu.Data("➕ 10,000", "wallet_change", "10000")
-
-		menu.Inline(
-			menu.Row(btnP25k, btnP50k, btnP100k),
-			menu.Row(btnM1k, btnP1k),
-			menu.Row(btnM5k, btnP5k),
-			menu.Row(btnM10k, btnP10k),
-		)
-		return menu
-	}
-
-	formatWalletText := func(amountToAdd int, currentKeys int) string {
-		price := getKeyPrice()
-		return fmt.Sprintf("👛 <b>شارژ کیف پول (کارت به کارت)</b>\n\n"+
-			"🌿 <b>جهت افزایش موجودی با استفاده از دکمه‌های زیر مبلغ مورد نظر را انتخاب کنید:</b>\n\n"+
-			"💰 <b>مبلغ مورد نظر جهت افزایش موجودی:</b> <code>%s تومان</code>\n"+
-			"🔑 <b>کلیدهای موجود :</b> <code>%d</code>\n\n"+
-			"⚠️ <i>حداقل برای فعالسازی سلف شما 30 کلید نیاز دارید</i>\n"+
-			"🏷 <i>قیمت هر کلید : %s تومان</i>", formatMoney(amountToAdd), currentKeys, formatMoney(price))
-	}
-
-	bot.Handle(&btnWallet, func(c tele.Context) error {
-		if IsUserBlocked(c.Sender().ID) {
-			return c.Send("❌ حساب کاربری شما مسدود شده است.")
-		}
-		userID := c.Sender().ID
-
-		stateMu.Lock()
-		userWalletTemp[userID] = 0
-		stateMu.Unlock()
-
-		price := getKeyPrice()
-		currentBalance := GetUserBalance(userID)
-		currentKeys := currentBalance / price
-
-		_ = c.Send("🔰 <b>به بخش شارژ کیف پول خوش آمدید!</b>\nلطفاً مبلغ را از پیام زیر تنظیم کرده و سپس دکمه تایید پایین صفحه را بزنید.", walletReplyMenu, tele.ModeHTML)
-
-		return c.Send(formatWalletText(0, currentKeys), getWalletInlineKeyboard(), tele.ModeHTML)
-	})
-
-	bot.Handle(&tele.Btn{Unique: "wallet_change"}, func(c tele.Context) error {
-		userID := c.Sender().ID
-		val, err := strconv.Atoi(c.Data())
-		if err != nil {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ خطا در پردازش مبلغ."})
-		}
-
-		stateMu.Lock()
-		current := userWalletTemp[userID] + val
-		if current < 0 {
-			current = 0
-		}
-		userWalletTemp[userID] = current
-		stateMu.Unlock()
-
-		price := getKeyPrice()
-		currentBalance := GetUserBalance(userID)
-		currentKeys := currentBalance / price
-
-		_ = c.Edit(formatWalletText(current, currentKeys), getWalletInlineKeyboard(), tele.ModeHTML)
-		return c.Respond()
-	})
-
-	bot.Handle(&btnWalletConfirm, func(c tele.Context) error {
-		userID := c.Sender().ID
-
-		stateMu.RLock()
-		amount := userWalletTemp[userID]
-		stateMu.RUnlock()
-
-		if amount <= 0 {
-			return c.Send("❌ <b>لطفاً ابتدا مبلغی را با استفاده از دکمه‌های شیشه‌ای انتخاب کنید.</b>", tele.ModeHTML)
-		}
-
-		price := getKeyPrice()
-		keys := float64(amount) / float64(price)
-
-		cNum := GetSetting("card_number")
-		cName := GetSetting("card_name")
-		cBank := GetSetting("card_bank")
-
-		text := fmt.Sprintf(
-			"🧾 <b>فاکتور شارژ کیف پول صادر شد</b>\n\n"+
-				"💰 <b>مبلغ قابل پرداخت:</b> <code>%s تومان</code>\n"+
-				"🔑 <b>تعداد کلید دریافتی:</b> <code>%.2f کلید</code>\n"+
-				"🏷 (نرخ هر کلید: %s تومان)\n\n"+
-				"💳 لطفاً مبلغ فوق را به کارت زیر واریز نمایید:\n\n"+
-				"🏦 <b>%s</b>\n"+
-				"💳 <code>%s</code>\n"+
-				"👤 به نام: <b>%s</b>\n\n"+
-				"📸 <b>سپس تصویر رسید (فیش) واریزی را همینجا ارسال نمایید:</b>",
-			formatMoney(amount), keys, formatMoney(price), cBank, cNum, cName,
-		)
-
-		return c.Send(text, waitingReceiptMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnCancelReceipt, func(c tele.Context) error {
-		userID := c.Sender().ID
-		stateMu.Lock()
-		userWalletTemp[userID] = 0
-		stateMu.Unlock()
-		return c.Send("❌ <b>فرآیند پرداخت لغو گردید.</b>", getMainKeyboard(userID), tele.ModeHTML)
-	})
-
-	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
-		user := c.Sender()
-		if IsUserBlocked(user.ID) {
-			return c.Send("❌ حساب کاربری شما مسدود شده است.")
-		}
-
-		stateMu.RLock()
-		amount := userWalletTemp[user.ID]
-		stateMu.RUnlock()
-
-		if amount <= 0 {
-			return c.Send("📸 تصویر شما دریافت شد.")
-		}
-
-		res, err := db.Exec(`INSERT INTO transactions (user_id, amount, status) VALUES (?, ?, 'pending')`, user.ID, amount)
-		if err != nil {
-			log.Printf("❌ خطا در ثبت تراکنش: %v", err)
-			return c.Send("❌ خطایی در پردازش اطلاعات رخ داد. لطفاً مجدداً تلاش کنید.")
-		}
-		txID, _ := res.LastInsertId()
-
-		var dbJoinedAt time.Time
-		var phone, selfStatus string
-		var purchasesCount int
-
-		err = db.QueryRow("SELECT joined_at, phone, self_status, purchases_count FROM users WHERE id = ?", user.ID).Scan(&dbJoinedAt, &phone, &selfStatus, &purchasesCount)
-		if err != nil || dbJoinedAt.IsZero() {
-			dbJoinedAt = time.Now()
-		}
-
-		loc := getTehranLocation()
-		tJoined := gpc.New(dbJoinedAt.In(loc))
-		tJoinedStr := toPersianDigits(tJoined.Format("yyyy/MM/dd"))
-
-		usernameStr := "ثبت نشده"
-		if user.Username != "" {
-			usernameStr = "@" + html.EscapeString(user.Username)
-		}
-
-		price := getKeyPrice()
-		captionText := fmt.Sprintf(
-			"🔔 <b>درخواست شارژ (کارت به کارت)</b>\n\n🆔 <b>شناسه فاکتور:</b> <code>#%d</code>\n👤 %s (%s)\n🆔 <code>%d</code>\n💰 <b>مبلغ:</b> <code>%s تومان</code>\n🔑 <b>تعداد کلید:</b> <code>%.2f کلید</code>\n📅 <b>عضویت:</b> %s\n🔥 <b>وضعیت سلف:</b> %s",
-			txID, html.EscapeString(user.FirstName), usernameStr, user.ID, formatMoney(amount), float64(amount)/float64(price), tJoinedStr, html.EscapeString(selfStatus),
-		)
-
-		menu := &tele.ReplyMarkup{}
-		btnApprove := menu.Data("✅ تایید", "admin_approve", strconv.FormatInt(txID, 10))
-		btnReject := menu.Data("❌ رد", "admin_reject", strconv.FormatInt(txID, 10))
-		btnBlock := menu.Data("🚫 مسدود", "admin_block", strconv.FormatInt(user.ID, 10))
-		btnUnblock := menu.Data("🔓 رفع مسدود", "admin_unblock", strconv.FormatInt(user.ID, 10))
-		btnMessage := menu.Data("💬 پیام", "admin_msg", strconv.FormatInt(user.ID, 10))
-		btnManual := menu.Data("💰 شارژ دستی", "admin_manual", strconv.FormatInt(user.ID, 10))
-		btnClose := menu.Data("❌ بستن پنل", "admin_close")
-
-		menu.Inline(
-			menu.Row(btnApprove, btnReject),
-			menu.Row(btnBlock, btnUnblock),
-			menu.Row(btnMessage, btnManual),
-			menu.Row(btnClose),
-		)
-
-		photo := c.Message().Photo
-		photo.Caption = captionText
-
-		for _, adminID := range cfg.AdminIDs {
-			_, _ = bot.Send(&tele.User{ID: adminID}, photo, menu, tele.ModeHTML)
-		}
-
-		stateMu.Lock()
-		userWalletTemp[user.ID] = 0
-		stateMu.Unlock()
-
-		return c.Send("✅ <b>فیش واریزی شما با موفقیت برای ادمین ارسال شد.</b>\n\nپس از بررسی و تایید، موجودی کیف پول شما به‌روزرسانی خواهد شد.", tele.ModeHTML, getMainKeyboard(user.ID))
-	})
-
-	bot.Handle(&btnBuy, func(c tele.Context) error {
-		userID := c.Sender().ID
-		if IsUserBlocked(userID) {
-			return c.Send("❌ حساب کاربری شما مسدود شده است.")
-		}
-
-		selfStatus := GetUserSelfStatus(userID)
-		price := getKeyPrice()
-		balance := GetUserBalance(userID)
-		keys := balance / price
-
-		if selfStatus == "روشن" || selfStatus == "خاموش" {
-			loc := getTehranLocation()
-			now := time.Now().In(loc)
-			tNow := gpc.New(now)
-			tNowStr := toPersianDigits(tNow.Format("yyyy/MM/dd"))
-			tTimeStr := toPersianDigits(tNow.Format("HH:mm:ss"))
-
-			text := fmt.Sprintf(
-				"🎉 <b>سلف شما فعال هست!</b> 🐺\n\n"+
-					"🔑 <b>تعداد کلیدهای شما:</b> <code>%d</code> عدد\n"+
-					"📅 <b>تاریخ:</b> %s\n"+
-					"⏰ <b>ساعت:</b> %s",
-				keys, tNowStr, tTimeStr,
-			)
-			return c.Send(text, getKeyboard(userID), tele.ModeHTML)
-		}
-
-		if keys < 30 {
-			text := fmt.Sprintf(
-				"❌ <b>سلام شما کلید لازم برای شروع ندارید !</b>\n\n"+
-					"⏳ <i>سلف روزانه بیلینگ میشه : هر روز یک کلید از حسابت کم میشه !</i>\n\n"+
-					"🔑 تعداد کلید های موجود شما <b>%d</b> عدد هست!\n\n"+
-					"⚠️ <b>برای فعالسازی حداقل باید 30 کلید داشته باشید ..</b>\n\n"+
-					"🛒 <i>لطفا از بخش کیف پول کلید خریداری نمایید.</i>", keys,
-			)
-			return c.Send(text, tele.ModeHTML)
-		}
-
-		text := fmt.Sprintf(
-			"🎉 <b>سلام شما کلید لازم برای شروع را دارید !</b>\n\n"+
-				"⏳ <i>سلف روزانه بیلینگ میشه : هر روز یک کلید از حسابت کم میشه !</i>\n\n"+
-				"🔑 تعداد کلید های موجود شما <b>%d</b> عدد هست!\n\n"+
-				"✅ <b>برای فعالسازی سلف و شروع کسر کلید روی دکمه زیر کلیک کنید.</b>", keys,
-		)
-
-		return c.Send(text, confirmSelfMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {
-		userID := c.Sender().ID
-		if IsUserBlocked(userID) {
-			return c.Send("❌ حساب کاربری شما مسدود شده است.")
-		}
-
-		selfStatus := GetUserSelfStatus(userID)
-
-		if selfStatus == "روشن" {
-			return c.Send("⚠️ <b>سلف روشن است.</b>", getKeyboard(userID), tele.ModeHTML)
-		}
-
-		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
-		_, statErr := os.Stat(sessionPath)
-		hasSession := (statErr == nil)
-
-		if selfStatus == "خاموش" && hasSession {
-			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", userID)
-			startUserbot(userID, cfg, bot)
-
-			return c.Send("🟢 <b>سلف شما با موفقیت روشن شد و امکانات مجدداً فعال گردید.</b>", getKeyboard(userID), tele.ModeHTML)
-		}
-
-		text := "❌ <b>سلف شما فعال نیست!</b>\n\n" +
-			"لطفاً برای راه‌اندازی و اتصال سلف، ابتدا از بخش <b>🛍️ خرید سلف</b> اقدام نمایید."
-		return c.Send(text, getKeyboard(userID), tele.ModeHTML)
-	})
-
-	bot.Handle(&btnTurnOffSelf, func(c tele.Context) error {
-		userID := c.Sender().ID
-		if IsUserBlocked(userID) {
-			return c.Send("❌ حساب کاربری شما مسدود شده است.")
-		}
-
-		selfStatus := GetUserSelfStatus(userID)
-		if selfStatus == "خاموش" {
-			return c.Send("⚠️ <b>سلف خاموش هست.</b>", getKeyboard(userID), tele.ModeHTML)
-		}
-		if selfStatus != "روشن" {
-			return c.Send("❌ <b>شما سلف فعالی ندارید.</b>", getKeyboard(userID), tele.ModeHTML)
-		}
-
-		var isClock, isEmoji, isBio bool
-		var origLast, origFirst, origBio string
-		_ = db.QueryRow("SELECT is_clock_enabled, original_last_name, is_emoji_enabled, original_first_name, is_bio_enabled, original_bio FROM users WHERE id = ?", userID).Scan(&isClock, &origLast, &isEmoji, &origFirst, &isBio, &origBio)
-
-		activeUserbotsMu.RLock()
-		if ub, ok := activeUserbots[userID]; ok && ub.Client != nil {
-			req := &tg.AccountUpdateProfileRequest{}
-			needRevert := false
-			if isClock {
-				req.SetLastName(origLast)
-				needRevert = true
-			}
-			if isEmoji && origFirst != "" {
-				req.SetFirstName(origFirst)
-				needRevert = true
-			}
-			if isBio && origBio != "" {
-				req.SetAbout(origBio)
-				needRevert = true
-			}
-			if needRevert {
-				cTimeout, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_, _ = ub.Client.API().AccountUpdateProfile(cTimeout, req)
-				cancel()
-			}
-		}
-		activeUserbotsMu.RUnlock()
-
-		_, _ = db.Exec("UPDATE users SET self_status = 'خاموش' WHERE id = ?", userID)
-		stopUserbot(userID)
-
-		return c.Send("🔴 <b>سلف شما خاموش شد.</b>\nامکانات سلف غیرفعال گردید، اما اتصال اکانت شما برقرار است.", getKeyboard(userID), tele.ModeHTML)
-	})
-
-	bot.Handle(&btnExitSelf, func(c tele.Context) error {
-		userID := c.Sender().ID
-		if IsUserBlocked(userID) {
-			return c.Send("❌ حساب کاربری شما مسدود شده است.")
-		}
-
-		selfStatus := GetUserSelfStatus(userID)
-		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
-			return c.Send("❌ <b>شما سلف فعالی ندارید که از آن خارج شوید.</b>", getKeyboard(userID), tele.ModeHTML)
-		}
-
-		exitMenu := &tele.ReplyMarkup{}
-		btnConfirm := exitMenu.Data("🛑 بله، خروج قطعی", "exit_confirm")
-		btnCancel := exitMenu.Data("❌ انصراف", "exit_cancel")
-		exitMenu.Inline(exitMenu.Row(btnConfirm, btnCancel))
-
-		text := "⚠️ <b>آیا مطمئن هستید که می‌خواهید از سلف خارج شوید؟</b>\n\nبا تایید این گزینه، اتصال اکانت شما به طور کامل قطع شده و فایل نشست (Session) شما از سرور حذف خواهد شد."
-		return c.Send(text, exitMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&tele.Btn{Unique: "exit_confirm"}, func(c tele.Context) error {
-		userID := c.Sender().ID
-
-		stopUserbot(userID)
-
-		stateMu.Lock()
-		if uState, exists := userStates[userID]; exists {
-			if uState.Cancel != nil {
-				uState.Cancel()
-			}
-			delete(userStates, userID)
-		}
-		stateMu.Unlock()
-
-		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
-		_ = os.Remove(sessionPath)
-
-		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE, is_bio_enabled = FALSE, is_anti_delete_enabled = FALSE, is_edit_logger_enabled = FALSE, is_protected_saver_enabled = FALSE, is_ghost_mode_enabled = FALSE, is_font_enabled = FALSE, is_pv_lock_enabled = FALSE WHERE id = ?", userID)
-
-		if c.Message() != nil {
-			_ = bot.Delete(c.Message())
-		}
-
-		return c.Send("🛑 <b>شما با موفقیت از سیستم سلف خارج شدید و نشست اکانت شما حذف شد.</b>", getKeyboard(userID), tele.ModeHTML)
-	})
-
-	bot.Handle(&tele.Btn{Unique: "exit_cancel"}, func(c tele.Context) error {
-		if c.Message() != nil {
-			_ = bot.Delete(c.Message())
-		}
-		return c.Send("✅ <b>عملیات خروج لغو شد و سلف شما دست‌نخورده باقی ماند.</b>", getKeyboard(c.Sender().ID), tele.ModeHTML)
-	})
-
-	bot.Handle(&btnConfirmSelfAction, func(c tele.Context) error {
-		userID := c.Sender().ID
-		if IsUserBlocked(userID) {
-			return c.Send("❌ حساب کاربری شما مسدود شده است.")
-		}
-
-		price := getKeyPrice()
-		balance := GetUserBalance(userID)
-		keys := balance / price
-
-		if keys < 30 {
-			return c.Send("❌ <b>شما کلید کافی برای فعالسازی ندارید!</b>", getKeyboard(userID), tele.ModeHTML)
-		}
-
-		stateMu.Lock()
-		userStates[userID] = &UserState{Action: "waiting_for_contact"}
-		stateMu.Unlock()
-
-		shareMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
-		btnShare := shareMenu.Contact("📱 ارسال شماره اکانت (Share Contact)")
-		btnBackShare := shareMenu.Text("🔙 بازگشت")
-		shareMenu.Reply(shareMenu.Row(btnShare), shareMenu.Row(btnBackShare))
-
-		text := "📞 <b>مرحله اول: تایید اکانت تلگرام</b>\n\n" +
-			"برای اتصال ربات به اکانت شما، لطفاً شماره تلگرام خود را از طریق دکمه پایین صفحه <b>(📱 ارسال شماره اکانت)</b> با ما به اشتراک بگذارید."
-
-		return c.Send(text, shareMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(tele.OnContact, func(c tele.Context) error {
-		userID := c.Sender().ID
-
-		stateMu.RLock()
-		state, exists := userStates[userID]
-		stateMu.RUnlock()
-
-		if !exists || state.Action != "waiting_for_contact" {
-			return nil
-		}
-
-		contact := c.Message().Contact
-		if contact.UserID != userID {
-			return c.Send("❌ <b>خطا!</b> لطفاً شماره خودتان را ارسال کنید، نه شخص دیگر!", tele.ModeHTML)
-		}
-
-		codeChan := make(chan string, 1)
-		passwordChan := make(chan string, 1)
-		resultChan := make(chan AuthResult, 1)
-		ctx, cancel := context.WithCancel(context.Background())
-
-		authHandler := &botAuthenticator{
-			phone:        contact.PhoneNumber,
-			codeChan:     codeChan,
-			passwordChan: passwordChan,
-			resultChan:   resultChan,
-		}
-
-		stateMu.Lock()
-		userStates[userID] = &UserState{
-			Action:       "waiting_for_code",
-			Phone:        contact.PhoneNumber,
-			CodeChan:     codeChan,
-			PasswordChan: passwordChan,
-			ResultChan:   resultChan,
-			Cancel:       cancel,
-		}
-		stateMu.Unlock()
-
-		go startTelegramLogin(ctx, userID, cfg, authHandler)
-
-		codeMenu := &tele.ReplyMarkup{ResizeKeyboard: true}
-		btnB := codeMenu.Text("🔙 بازگشت")
-		codeMenu.Reply(codeMenu.Row(btnB))
-
-		text := fmt.Sprintf("✅ <b>شماره %s تایید شد و درخواست کد به تلگرام ارسال گردید.</b>\n\n"+
-			"📲 <b>مرحله دوم: ورود کد تایید</b>\n\n"+
-			"لطفاً کد ۵ رقمی ارسال شده توسط تلگرام را <b>با فاصله</b> ارسال کنید:\n\n"+
-			"مثال: <code>1 2 3 4 5</code>", contact.PhoneNumber)
-
-		return c.Send(text, codeMenu, tele.ModeHTML)
-	})
-
-	bot.Handle(&btnAdminPanel, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) {
-			return c.Send("❌ شما دسترسی به بخش مدیریت را ندارید.")
-		}
-		return c.Send(getAdminDashboard(), adminPanelMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnConfigAccount, func(c tele.Context) error {

@@ -2694,14 +2694,18 @@ func toPersianDigits(s string) string {
 }
 
 func extractDigits(s string) string {
-	persianDigits := map[rune]rune{
+	digitMap := map[rune]rune{
+		// ارقام فارسی
 		'۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
 		'۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
+		// ارقام عربی
+		'٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+		'٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
 	}
 	var sb strings.Builder
 	for _, r := range s {
 		if unicode.IsDigit(r) {
-			if en, ok := persianDigits[r]; ok {
+			if en, ok := digitMap[r]; ok {
 				sb.WriteRune(en)
 			} else {
 				sb.WriteRune(r)
@@ -4482,6 +4486,10 @@ func main() {
 
 		if userHasState && uState != nil {
 			if uState.Action == "waiting_for_code" {
+				if !strings.Contains(text, " ") {
+					return c.Send("❌ <b>کد را با فاصله وارد کن دوست عزیز</b>\n\nمثال: <code>1 2 3 4 5</code>", tele.ModeHTML)
+				}
+
 				cleanCode := extractDigits(text)
 				if len(cleanCode) < 5 {
 					return c.Send("❌ <b>کد وارد شده نامعتبر است!</b>\nلطفاً کد ۵ رقمی را با فاصله ارسال کنید (مثال: <code>1 2 3 4 5</code>):", tele.ModeHTML)

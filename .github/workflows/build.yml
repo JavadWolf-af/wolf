@@ -21,7 +21,7 @@ jobs:
       with:
         go-version: '1.22'
 
-    # کش قدرتمند پوشه پکیج‌ها بر اساس go.mod
+    # کش پوشه پکیج‌ها بر اساس go.mod
     - name: Cache Go modules
       uses: actions/cache@v4
       with:
@@ -34,6 +34,7 @@ jobs:
       run: |
         go mod tidy
         CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o wolfbot .
+        ls -lh wolfbot
 
     - name: Publish Release
       uses: softprops/action-gh-release@v2
@@ -41,5 +42,5 @@ jobs:
         tag_name: latest
         name: "WolfBot Latest Release"
         files: wolfbot
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fail_on_unmatched_files: true

@@ -1167,7 +1167,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		case *tg.PeerChannel: peerKey = fmt.Sprintf("channel_%d", p.ChannelID)
 		}
 
-		// پردازش قفل پیوی (از guide.go)
+		// پردازش قفل پیوی (از wolfplus.go)
 		if ProcessPVLockIncoming(ctx, client, userID, msg, e) { return }
 
 		// واکنش به پیام‌های دیگران
@@ -1209,7 +1209,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 		text := strings.TrimSpace(msg.Message)
 
-		// پردازش مترجم و قفل پیوی (از guide.go)
+		// پردازش مترجم (از guide.go) و قفل پیوی (از wolfplus.go)
 		if ProcessLiveTranslator(ctx, client, inputPeer, msg, text) { return }
 		if ProcessPVLockCommand(ctx, client, inputPeer, msg, text, userID) { return }
 
@@ -1703,7 +1703,7 @@ func main() {
 		if GetUserSelfStatus(c.Sender().ID) == "خرید نداشته" {
 			return c.Send("❌ اشتراک سلف فعال نیست.")
 		}
-		return c.Send(buildWolfPlusDashboardText(c.Sender().ID), wolfPlusMenu, tele.ModeHTML)
+		return c.Send(buildWolfPlusDashboardText(c.Sender().ID), getWolfPlusKeyboard(c.Sender().ID), tele.ModeHTML)
 	})
 
 	bot.Handle(&btnSupport, func(c tele.Context) error {

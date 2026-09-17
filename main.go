@@ -293,7 +293,6 @@ func InitDB(cfg Config) {
 	loadAllEnemiesToCache()
 	loadAllAutoReactsToCache()
 	loadAllFontSettingsToCache()
-	InitPVLockDB()
 }
 
 func loadAllAutoReactsToCache() {
@@ -1703,7 +1702,7 @@ func main() {
 		if GetUserSelfStatus(c.Sender().ID) == "خرید نداشته" {
 			return c.Send("❌ اشتراک سلف فعال نیست.")
 		}
-		return c.Send(buildWolfPlusDashboardText(c.Sender().ID), getWolfPlusKeyboard(c.Sender().ID), tele.ModeHTML)
+		return c.Send(buildWolfPlusDashboardText(c.Sender().ID), wolfPlusMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnSupport, func(c tele.Context) error {

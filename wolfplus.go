@@ -184,8 +184,12 @@ func formatTelegramUser(u *tg.User) string {
 func PopulatePeerCache(users []tg.UserClass) {
 	peerNamesMu.Lock()
 	defer peerNamesMu.Unlock()
+	userAccessHashesMu.Lock()
+	defer userAccessHashesMu.Unlock()
+
 	for _, uClass := range users {
 		if u, ok := uClass.(*tg.User); ok {
+			userAccessHashes[u.ID] = u.AccessHash
 			name := formatTelegramUser(u)
 			if name != "" {
 				peerNames[u.ID] = name
@@ -277,7 +281,6 @@ func InitWolfPlusDB() {
 		PRIMARY KEY (owner_id, user_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
-	// بارگذاری وضعیت قفل پیوی
 	rows, err := db.Query("SELECT id, is_pv_lock_enabled FROM users")
 	if err == nil {
 		pvLockMu.Lock()
@@ -386,11 +389,13 @@ func RemovePVWhitelist(ownerID, targetID int64) {
 	}
 }
 
+// ProcessPVLockIncoming فیلتر فقط چت خصوصی اشخاص و واکنش به همه (حتی دوستان) جز ربات‌ها
 func ProcessPVLockIncoming(ctx context.Context, client *telegram.Client, userID int64, msg *tg.Message, e tg.Entities) bool {
 	if msg.Out {
 		return false
 	}
 
+	// ۱. فقط چت شخصی دو نفره (گروه‌ها و کانال‌ها رد می‌شوند)
 	peerUser, isPV := msg.PeerID.(*tg.PeerUser)
 	if !isPV {
 		return false
@@ -401,32 +406,46 @@ func ProcessPVLockIncoming(ctx context.Context, client *telegram.Client, userID 
 		return false
 	}
 
+	// ۲. رد کردن ربات‌ها و پشتیبانی رسمی تلگرام
 	if u, ok := e.Users[senderID]; ok {
-		if u.Bot || u.Verified || u.Support {
+		if u.Bot || u.Support {
 			return false
 		}
 	}
 
+	// ۳. اگر قفل پیوی خاموش باشد رد می‌شود
 	if !IsPVLockEnabled(userID) {
 		return false
 	}
 
-	if isUserFriend(userID, senderID) || IsPVWhitelisted(userID, senderID) {
+	// ۴. فقط در صورتی اجازه داده می‌شود که خودتان با دستور "بازکردن پیوی" شخص را در لیست سفید گذاشته باشید
+	// حتی دوستان هم اگر در لیست سفید نباشند حذف می‌شوند!
+	if IsPVWhitelisted(userID, senderID) {
 		return false
 	}
 
+	// ۵. حذف فوری پیام جاری و پاکسازی کل تاریخچه چت به صورت دوطرفه
 	inputPeer := getInputPeer(msg.PeerID, e, userID)
-	if inputPeer != nil {
-		go func(p tg.InputPeerClass) {
-			dCtx, dCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer dCancel()
+	go func(msgID int, p tg.InputPeerClass) {
+		dCtx, dCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer dCancel()
+
+		// حذف قطعی پیام جدید ارسالی برای هر دو طرف
+		_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
+			Revoke: true,
+			ID:     []int{msgID},
+		})
+
+		// پاکسازی کل سابقه چت برای دو طرف
+		if p != nil {
 			_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
 				Peer:   p,
 				MaxID:  0,
 				Revoke: true,
 			})
-		}(inputPeer)
-	}
+		}
+	}(msg.ID, inputPeer)
+
 	return true
 }
 
@@ -1041,7 +1060,8 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 📌 <b>وضعیت فعلی شما:</b> %s
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
-با روشن کردن این قابلیت، هر فرد غریبه‌ای که در پیوی به شما پیام بدهد (غیر از دوستان، ربات‌ها و افراد تایید شده)، پیام و چت او در کسری از ثانیه <b>به صورت دوطرفه</b> حذف می‌گردد تا مزاحمتی ایجاد نشود.
+با روشن کردن این قابلیت، هر فردی (حتی دوستان) که در پیوی پیام بدهد، پیام او بلافاصله <b>به صورت دوطرفه</b> حذف می‌گردد و چت بسته می‌شود.
+فقط ربات‌ها مستثنی هستند و تنها در صورتی پیام شخصی باقی می‌ماند که خودتان با دستور <code>بازکردن پیوی</code> او را تایید کرده باشید.
 
 💬 <b>دستورات چت:</b>
 ▫️ <code>قفل پیوی روشن</code>
@@ -1054,7 +1074,7 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 	bot.Handle(&btnPV_On, func(c tele.Context) error {
 		userID := c.Sender().ID
 		SetPVLockEnabled(userID, true)
-		return c.Send("🟢 <b>قفل پیوی فعال شد.</b>\nاز این پس پیام غریبه‌ها در پیوی به صورت دوطرفه حذف خواهد شد.", pvLockMenu, tele.ModeHTML)
+		return c.Send("🟢 <b>قفل پیوی فعال شد.</b>\nاز این پس تمامی پیام‌های خصوصی (به جز ربات‌ها و افراد تایید شده) دوطرفه حذف خواهند شد.", pvLockMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnPV_Off, func(c tele.Context) error {

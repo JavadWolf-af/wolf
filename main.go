@@ -836,11 +836,11 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			if _, ok := msg.PeerID.(*tg.PeerUser); ok && senderID != 0 {
 				
 				// بررسی استثنائات (تلگرام رسمی و ربات‌ها)
-				isBot := false
+isBot := false
 				if senderID == 777000 {
 					isBot = true
-				} else if uClass, exists := e.Users[senderID]; exists {
-					if usr, ok := uClass.(*tg.User); ok && usr.Bot {
+				} else if usr, exists := e.Users[senderID]; exists && usr != nil {
+					if usr.Bot {
 						isBot = true
 					}
 				}

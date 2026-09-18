@@ -836,7 +836,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			if _, ok := msg.PeerID.(*tg.PeerUser); ok && senderID != 0 {
 				
 				// بررسی استثنائات (تلگرام رسمی و ربات‌ها)
-isBot := false
+				isBot := false
 				if senderID == 777000 {
 					isBot = true
 				} else if usr, exists := e.Users[senderID]; exists && usr != nil {
@@ -858,13 +858,13 @@ isBot := false
 								dCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 								defer cancel()
 								
-								// 1. حذف درجای خود پیام (پاک کردن قطعی متن، عکس، فایل، استیکر و...)
+								// 1. حذف پیام اولیه
 								_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
 									Revoke: true,
 									ID:     []int{mID},
 								})
 								
-								// 2. پاکسازی کامل تاریخچه چت به صورت دوطرفه
+								// 2. پاکسازی کامل تاریخچه چت به صورت دوطرفه و محو کامل از سمت خود شما
 								_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
 									Peer:   p,
 									MaxID:  0,
@@ -1625,14 +1625,14 @@ isBot := false
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(gCtx, client, inputPeer, msg, true)
+				handleForwardToAllGroups(bCtx, client, inputPeer, msg, true)
 			}()
 			return
 		} else if text == "گروه همه" {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(gCtx, client, inputPeer, msg, false)
+				handleForwardToAllGroups(bCtx, client, inputPeer, msg, false)
 			}()
 			return
 		}
@@ -2195,6 +2195,31 @@ func main() {
 	bot.Handle(&btnGPV, func(c tele.Context) error { return c.Send("📩 دستور <code>پیوی همه</code> روی پیام", guidePVMenu, tele.ModeHTML) })
 	bot.Handle(&btnGGroup, func(c tele.Context) error { return c.Send("👥 دستور <code>گروه همه</code> روی پیام", guideGroupMenu, tele.ModeHTML) })
 
+	bot.Handle(&btnFontBack, func(c tele.Context) error {
+		var isClock, isEmoji, isBio, isFont bool
+		var bioMode string
+		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled FROM users WHERE id = ?", c.Sender().ID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
+		
+		clockStatus := "🔴 خاموش"
+		if isClock { clockStatus = "🟢 روشن" }
+		emojiStatus := "🔴 خاموش"
+		if isEmoji { emojiStatus = "🟢 روشن" }
+		bioStatus := "🔴 خاموش"
+		if isBio {
+			if bioMode == "custom" { bioStatus = "🟢 روشن (دستی)" } else { bioStatus = "🟢 روشن (رندوم)" }
+		}
+		fontStatus := "🔴 خاموش"
+		if isFont { fontStatus = "🟢 روشن" }
+
+		text := fmt.Sprintf(`📚 <b>بخش راهنما</b>
+▫️ ⏱ ساعت: %s
+▫️ 🎭 اموجی: %s
+▫️ 📝 بیو: %s
+▫️ ✒️ فونت: %s`, clockStatus, emojiStatus, bioStatus, fontStatus)
+		
+		return c.Send(text, guideMenu, tele.ModeHTML)
+	})
+
 	backToGuideHandler := func(c tele.Context) error {
 		var isClock, isEmoji, isBio, isFont bool
 		var bioMode string
@@ -2224,7 +2249,6 @@ func main() {
 	bot.Handle(&btnBioBack, backToGuideHandler)
 	bot.Handle(&btnFriendBack, backToGuideHandler)
 	bot.Handle(&btnEnemyBack, backToGuideHandler)
-	bot.Handle(&btnFontBack, backToGuideHandler)
 	bot.Handle(&btnActionBack, backToGuideHandler)
 	bot.Handle(&btnPurgeBack, backToGuideHandler)
 	bot.Handle(&btnTimerBack, backToGuideHandler)

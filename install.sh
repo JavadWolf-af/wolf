@@ -1,70 +1,14 @@
-#!/bin/bash
-set -e
-
-echo "🚀 آماده‌سازی سرور و نصب پیش‌نیازها..."
-apt update -y
-apt install mariadb-server curl git -y
-
-echo "🗄️ پیکربندی دیتابیس MySQL..."
-systemctl start mariadb || systemctl start mysql || true
-mysql -e "CREATE DATABASE IF NOT EXISTS wolf_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-mysql -e "CREATE USER IF NOT EXISTS 'wolf_user'@'localhost' IDENTIFIED BY 'wolf_password';"
-mysql -e "GRANT ALL PRIVILEGES ON wolf_db.* TO 'wolf_user'@'localhost';"
-mysql -e "FLUSH PRIVILEGES;"
-
-echo "📥 دریافت پروژه و ایجاد پوشه‌ها..."
-systemctl stop wolfbot 2>/dev/null || true
-
-# مدیریت ایمن پوشه پروژه جهت جلوگیری از ارور git clone
-if [ -d "/opt/wolf/.git" ]; then
-    cd /opt/wolf
-    git fetch --all --quiet
-    git reset --hard origin/main --quiet
-else
-    if [ -f "/opt/wolf/.env" ]; then
-        cp /opt/wolf/.env /tmp/wolf_env_backup 2>/dev/null || true
-    fi
-    rm -rf /opt/wolf
-    git clone https://github.com/JavadWolf-af/wolf /opt/wolf
-    cd /opt/wolf
-    if [ -f "/tmp/wolf_env_backup" ]; then
-        mv /tmp/wolf_env_backup /opt/wolf/.env
-    fi
-fi
-
-# ساخت پوشه نشست‌ها بعد از کلون شدن مخزن
-mkdir -p /opt/wolf/sessions
-cd /opt/wolf || exit 1
-
-if [ ! -f .env ]; then
-    echo "⚙️ فایل تنظیمات (.env) یافت نشد. لطفاً اطلاعات را وارد کنید:"
-    read -r -p "Enter BOT_TOKEN: " bot_token < /dev/tty
-    read -r -p "Enter ADMIN_ID: " admin_id < /dev/tty
-    read -r -p "Enter API_ID: " api_id < /dev/tty
-    read -r -p "Enter API_HASH: " api_hash < /dev/tty
-
-    cat << EOF > .env
-BOT_TOKEN=$bot_token
-ADMIN_ID=$admin_id
-API_ID=$api_id
-API_HASH=$api_hash
-DB_USER=wolf_user
-DB_PASS=wolf_password
-DB_NAME=wolf_db
-EOF
-    echo "✅ فایل .env با موفقیت ایجاد شد."
-fi
-
-echo "📦 دریافت مستقیم فایل باینری سلف‌بات از گیت‌هاب..."
-curl -sSL -L -o /opt/wolf/wolfbot https://github.com/JavadWolf-af/wolf/releases/download/latest/wolfbot
-chmod +x /opt/wolf/wolfbot
-
-echo "🛠️ تنظیم اسکریپت آپدیت سریع (wolf-update)..."
 cat << 'EOF' > /usr/local/bin/wolf-update
 #!/bin/bash
 set -e
 
-echo " "
+# ANSI Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+echo -e "${CYAN}"
 echo "  __          _  __   _____      _  __"
 echo "  \ \        / / | |/ _| / ____|    | |/ _|"
 echo "   \ \  /\  / /__ | | |_ | (___   ___| | |_ "
@@ -72,47 +16,23 @@ echo "    \ \/  \/ / _ \| |  _| \___ \ / _ \ |  _|"
 echo "     \  /\  / (_) | | |   ____) |  __/ | |  "
 echo "      \/  \/ \___/|_|_|  |_____/ \___|_|_|  "
 echo "          >>> WOLF SELF-BOT FAST UPDATER <<<"
-echo " "
+echo -e "${NC}"
 
 cd /opt/wolf || exit 1
 
-echo "[ 25% ] همگام‌سازی ریپازیتوری..."
+echo -e "${YELLOW}[ 25% ] Syncing repository with GitHub...${NC}"
 git fetch --all --quiet
 git reset --hard origin/main --quiet
 
-echo "[ 60% ] دانلود فایل اجرایی جدید..."
+echo -e "${YELLOW}[ 60% ] Downloading the latest binary...${NC}"
 systemctl stop wolfbot || true
 curl -sSL -L -o /opt/wolf/wolfbot https://github.com/JavadWolf-af/wolf/releases/download/latest/wolfbot
 chmod +x /opt/wolf/wolfbot
 
-echo "[ 90% ] راه‌اندازی سرویس سلف‌بات..."
+echo -e "${YELLOW}[ 90% ] Starting WolfBot service...${NC}"
 systemctl restart wolfbot
 
-echo "[ 100% ] آپدیت با موفقیت کامل شد و ربات آنلاین است! 🐺🚀"
+echo -e "${GREEN}[ 100% ] Update successfully completed! WolfBot is now online. 🐺🚀${NC}"
 echo " "
 EOF
 chmod +x /usr/local/bin/wolf-update
-
-echo "🤖 ساخت سرویس سیستمی wolfbot..."
-cat << 'EOF' > /etc/systemd/system/wolfbot.service
-[Unit]
-Description=Wolf Self Bot
-After=network.target mysql.service mariadb.service
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/wolf
-ExecStart=/opt/wolf/wolfbot
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable wolfbot
-systemctl restart wolfbot
-
-echo "🎉 نصب با موفقیت انجام شد و ربات فعال گردید!"

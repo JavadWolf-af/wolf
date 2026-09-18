@@ -2019,7 +2019,12 @@ func main() {
 		_ = db.QueryRow("SELECT is_clock_enabled FROM users WHERE id = ?", c.Sender().ID).Scan(&isClock)
 		statusStr := "🔴 خاموش"
 		if isClock { statusStr = "🟢 روشن" }
-		text := fmt.Sprintf("⏱ <b>راهنمای ساعت زنده</b>\nوضعیت: %s\nدستورات چت:\n<code>ساعت روشن</code>\n<code>ساعت خاموش</code>", statusStr)
+		text := fmt.Sprintf(`⏱ <b>راهنمای ساعت زنده (Live Clock)</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی:</b> %s
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+با روشن کردن این قابلیت، ساعت جاری به صورت زنده و با فونت بولد در نام خانوادگی (LastName) شما نمایش داده می‌شود و هر دقیقه به‌روزرسانی می‌گردد.`, statusStr)
 		return c.Send(text, guideClockMenu, tele.ModeHTML)
 	})
 
@@ -2052,7 +2057,13 @@ func main() {
 		_ = db.QueryRow("SELECT is_emoji_enabled FROM users WHERE id = ?", c.Sender().ID).Scan(&isEmoji)
 		statusStr := "🔴 خاموش"
 		if isEmoji { statusStr = "🟢 روشن" }
-		return c.Send(fmt.Sprintf("🎭 <b>راهنمای اموجی رندوم</b>\nوضعیت: %s\nدستورات: <code>اموجی روشن</code> و <code>اموجی خاموش</code>", statusStr), guideEmojiMenu, tele.ModeHTML)
+		text := fmt.Sprintf(`🎭 <b>راهنمای اموجی رندوم (Random Emoji)</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی:</b> %s
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+با فعال‌سازی این قابلیت، ربات به صورت دوره‌ای یک اموجی جذاب و زیبا را به انتهای نام شما اضافه می‌کند.`, statusStr)
+		return c.Send(text, guideEmojiMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnEmojiOn, func(c tele.Context) error {
 		userID := c.Sender().ID
@@ -2079,10 +2090,19 @@ func main() {
 
 	bot.Handle(&btnGBio, func(c tele.Context) error {
 		var isBio bool
-		_ = db.QueryRow("SELECT is_bio_enabled FROM users WHERE id = ?", c.Sender().ID).Scan(&isBio)
+		var bioMode string
+		_ = db.QueryRow("SELECT is_bio_enabled, bio_mode FROM users WHERE id = ?", c.Sender().ID).Scan(&isBio, &bioMode)
 		statusStr := "🔴 خاموش"
-		if isBio { statusStr = "🟢 روشن" }
-		return c.Send(fmt.Sprintf("📝 <b>راهنمای بیوگرافی</b>\nوضعیت: %s\nدستورات: <code>بیو روشن</code> و <code>بیو خاموش</code>", statusStr), guideBioMenu, tele.ModeHTML)
+		if isBio {
+			if bioMode == "custom" { statusStr = "🟢 روشن (دستی)" } else { statusStr = "🟢 روشن (رندوم)" }
+		}
+		text := fmt.Sprintf(`📝 <b>راهنمای بیوگرافی هوشمند (Smart Bio)</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی:</b> %s
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+بیوگرافی پروفایل شما به صورت هوشمند و رندوم از جملات خاص آپدیت می‌شود. همچنین با ریپلای روی هر متنی و ارسال دستور <code>بیو شو</code> می‌توانید بیوگرافی خود را تنظیم کنید.`, statusStr)
+		return c.Send(text, guideBioMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnBioOn, func(c tele.Context) error {
 		userID := c.Sender().ID
@@ -2110,74 +2130,101 @@ func main() {
 	bot.Handle(&btnGFriend, func(c tele.Context) error {
 		var friendCount int
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_friends WHERE owner_id = ?", c.Sender().ID).Scan(&friendCount)
-		return c.Send(fmt.Sprintf("🌸 <b>سیستم دوست</b>\nتعداد فعال: %d نفر\nبا ریپلای ارسال کنید: <code>تنظیم دوست</code>", friendCount), guideFriendMenu, tele.ModeHTML)
+		text := fmt.Sprintf(`🌸 <b>سیستم دوست (Friend System)</b>
+➖➖➖➖➖➖➖➖➖➖
+📊 <b>تعداد دوستان ثبت‌شده:</b> <code>%d نفر</code>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+با ریپلای روی پیام هر شخص و ارسال دستور <code>تنظیم دوست</code>، آن فرد به لیست دوستان شما اضافه می‌شود و سلف به طور خودکار پیام‌های او را با جملات دوستانه پاسخ می‌دهد.`, friendCount)
+		return c.Send(text, guideFriendMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnFriendList, func(c tele.Context) error {
 		rows, err := db.Query("SELECT friend_id, friend_name FROM wolf_friends WHERE owner_id = ?", c.Sender().ID)
-		if err != nil { return c.Send("❌ خطا", guideFriendMenu, tele.ModeHTML) }
+		if err != nil { return c.Send("❌ خطا در دریافت لیست دوستان.", guideFriendMenu, tele.ModeHTML) }
 		defer rows.Close()
 		var list []string
+		idx := 1
 		for rows.Next() {
 			var fid int64
 			var fname string
-			if err := rows.Scan(&fid, &fname); err == nil { list = append(list, fmt.Sprintf("%s (%d)", fname, fid)) }
+			if err := rows.Scan(&fid, &fname); err == nil {
+				list = append(list, fmt.Sprintf("%d. %s (<code>%d</code>)", idx, fname, fid))
+				idx++
+			}
 		}
-		if len(list) == 0 { return c.Send("لیست خالی است", guideFriendMenu, tele.ModeHTML) }
-		return c.Send(strings.Join(list, "\n"), guideFriendMenu, tele.ModeHTML)
+		if len(list) == 0 { return c.Send("⚠️ <i>لیست دوستان شما خالی است.</i>", guideFriendMenu, tele.ModeHTML) }
+		return c.Send("📋 <b>لیست دوستان شما:</b>\n\n"+strings.Join(list, "\n"), guideFriendMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnFriendClear, func(c tele.Context) error {
 		_, _ = db.Exec("DELETE FROM wolf_friends WHERE owner_id = ?", c.Sender().ID)
 		clearFriendsCache(c.Sender().ID)
-		return c.Send("🗑 <b>پاکسازی شد</b>", guideFriendMenu, tele.ModeHTML)
+		return c.Send("🗑 <b>لیست دوستان پاکسازی شد.</b>", guideFriendMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnGEnemy, func(c tele.Context) error {
 		var enemyCount int
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_enemies WHERE owner_id = ?", c.Sender().ID).Scan(&enemyCount)
-		return c.Send(fmt.Sprintf("⚔️ <b>سیستم دشمن</b>\nتعداد فعال: %d نفر\nبا ریپلای ارسال کنید: <code>تنظیم دشمن</code>", enemyCount), guideEnemyMenu, tele.ModeHTML)
+		text := fmt.Sprintf(`⚔️ <b>سیستم دشمن (Enemy System)</b>
+➖➖➖➖➖➖➖➖➖➖
+📊 <b>تعداد دشمنان ثبت‌شده:</b> <code>%d نفر</code>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+با ریپلای روی پیام هر شخص و ارسال دستور <code>تنظیم دشمن</code>، آن فرد در لیست سیاه قرار می‌گیرد و سلف به طور خودکار با پاسخ‌های خاص به او جواب می‌دهد.`, enemyCount)
+		return c.Send(text, guideEnemyMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnEnemyList, func(c tele.Context) error {
 		rows, err := db.Query("SELECT enemy_id, enemy_name FROM wolf_enemies WHERE owner_id = ?", c.Sender().ID)
-		if err != nil { return c.Send("❌ خطا", guideEnemyMenu, tele.ModeHTML) }
+		if err != nil { return c.Send("❌ خطا در دریافت لیست دشمنان.", guideEnemyMenu, tele.ModeHTML) }
 		defer rows.Close()
 		var list []string
+		idx := 1
 		for rows.Next() {
 			var eid int64
 			var ename string
-			if err := rows.Scan(&eid, &ename); err == nil { list = append(list, fmt.Sprintf("%s (%d)", ename, eid)) }
+			if err := rows.Scan(&eid, &ename); err == nil {
+				list = append(list, fmt.Sprintf("%d. %s (<code>%d</code>)", idx, ename, eid))
+				idx++
+			}
 		}
-		if len(list) == 0 { return c.Send("لیست خالی است", guideEnemyMenu, tele.ModeHTML) }
-		return c.Send(strings.Join(list, "\n"), guideEnemyMenu, tele.ModeHTML)
+		if len(list) == 0 { return c.Send("⚠️ <i>لیست دشمنان شما خالی است.</i>", guideEnemyMenu, tele.ModeHTML) }
+		return c.Send("📋 <b>لیست دشمنان شما:</b>\n\n"+strings.Join(list, "\n"), guideEnemyMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnEnemyClear, func(c tele.Context) error {
 		_, _ = db.Exec("DELETE FROM wolf_enemies WHERE owner_id = ?", c.Sender().ID)
 		clearEnemiesCache(c.Sender().ID)
-		return c.Send("🗑 <b>پاکسازی شد</b>", guideEnemyMenu, tele.ModeHTML)
+		return c.Send("🗑 <b>لیست دشمنان پاکسازی شد.</b>", guideEnemyMenu, tele.ModeHTML)
 	})
 
 	bot.Handle(&btnGFont, func(c tele.Context) error {
-		en, _ := getFontSetting(c.Sender().ID)
+		en, mode := getFontSetting(c.Sender().ID)
 		st := "🔴 خاموش"
 		if en { st = "🟢 روشن" }
-		return c.Send(fmt.Sprintf("✒️ <b>سیستم خوشنویسی</b>\nوضعیت: %s\nدر چت: <code>خوشنویسی روشن</code>", st), guideFontMenu, tele.ModeHTML)
+		text := fmt.Sprintf(`✒️ <b>سیستم خوشنویسی (Calligraphy)</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی:</b> %s
+🎨 <b>استایل فعلی فونت:</b> <code>%s</code>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+با روشن کردن خوشنویسی، تمام پیام‌هایی که ارسال می‌کنید به صورت خودکار با فونت و استایل دلخواه (بولد، ایتالیک، مونو و...) فرمت می‌شوند.`, st, mode)
+		return c.Send(text, guideFontMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnFontOn, func(c tele.Context) error {
 		_, _ = db.Exec("UPDATE users SET is_font_enabled = TRUE WHERE id = ?", c.Sender().ID)
 		_, mode := getFontSetting(c.Sender().ID)
 		updateFontCache(c.Sender().ID, true, mode)
-		return c.Send("🟢 روشن شد.", guideFontMenu, tele.ModeHTML)
+		return c.Send("🟢 <b>خوشنویسی روشن شد.</b>", guideFontMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnFontOff, func(c tele.Context) error {
 		_, _ = db.Exec("UPDATE users SET is_font_enabled = FALSE WHERE id = ?", c.Sender().ID)
 		_, mode := getFontSetting(c.Sender().ID)
 		updateFontCache(c.Sender().ID, false, mode)
-		return c.Send("🔴 خاموش شد.", guideFontMenu, tele.ModeHTML)
+		return c.Send("🔴 <b>خوشنویسی خاموش شد.</b>", guideFontMenu, tele.ModeHTML)
 	})
 	setFontHandler := func(mode, label string) tele.HandlerFunc {
 		return func(c tele.Context) error {
 			_, _ = db.Exec("UPDATE users SET font_mode = ?, is_font_enabled = TRUE WHERE id = ?", mode, c.Sender().ID)
 			updateFontCache(c.Sender().ID, true, mode)
-			return c.Send(fmt.Sprintf("✅ فونت به «%s» تغییر یافت.", label), guideFontMenu, tele.ModeHTML)
+			return c.Send(fmt.Sprintf("✅ <b>فونت به «%s» تغییر یافت و خوشنویسی فعال شد.</b>", label), guideFontMenu, tele.ModeHTML)
 		}
 	}
 	bot.Handle(&btnFontBoldItalic, setFontHandler("bold_italic", "بولد ایتالیک"))
@@ -2188,12 +2235,24 @@ func main() {
 	bot.Handle(&btnFontMono, setFontHandler("mono", "مونو"))
 	bot.Handle(&btnFontSpoiler, setFontHandler("spoiler", "اسپویل"))
 
-	bot.Handle(&btnGAction, func(c tele.Context) error { return c.Send("🎬 دستور <code>تایپینگ</code> در چت", guideActionMenu, tele.ModeHTML) })
-	bot.Handle(&btnGPurge, func(c tele.Context) error { return c.Send("🗑 دستور <code>پاکشو 20</code> در چت", guidePurgeMenu, tele.ModeHTML) })
-	bot.Handle(&btnGTimer, func(c tele.Context) error { return c.Send("⏳ دستور <code>تایمر 10</code> در چت", guideTimerMenu, tele.ModeHTML) })
-	bot.Handle(&btnGAutoReact, func(c tele.Context) error { return c.Send("🔥 دستور <code>ری‌اکشن ❤️</code> روی پیام", guideAutoReactMenu, tele.ModeHTML) })
-	bot.Handle(&btnGPV, func(c tele.Context) error { return c.Send("📩 دستور <code>پیوی همه</code> روی پیام", guidePVMenu, tele.ModeHTML) })
-	bot.Handle(&btnGGroup, func(c tele.Context) error { return c.Send("👥 دستور <code>گروه همه</code> روی پیام", guideGroupMenu, tele.ModeHTML) })
+	bot.Handle(&btnGAction, func(c tele.Context) error {
+		return c.Send("🎬 <b>راهنمای اکشن‌های جعلی (Fake Actions)</b>\n\nبا ارسال دستور <code>تایپینگ</code> یا <code>اکشن تایپ 30</code> در چت، وضعیت نوشتن (Typing) برای مخاطب نمایش داده می‌شود.", guideActionMenu, tele.ModeHTML)
+	})
+	bot.Handle(&btnGPurge, func(c tele.Context) error {
+		return c.Send("🗑 <b>راهنمای پاکسازی پیام‌ها (Purge)</b>\n\nبا ارسال دستور <code>پاکشو 20</code> در چت، ۲۰ پیام اخیر خودتان به سرعت پاکسازی می‌شود.", guidePurgeMenu, tele.ModeHTML)
+	})
+	bot.Handle(&btnGTimer, func(c tele.Context) error {
+		return c.Send("⏳ <b>راهنمای شمارش معکوس (Timer)</b>\n\nبا ارسال دستور <code>تایمر 10</code>، یک شمارش معکوس زیبا در پیام ایجاد می‌شود.", guideTimerMenu, tele.ModeHTML)
+	})
+	bot.Handle(&btnGAutoReact, func(c tele.Context) error {
+		return c.Send("🔥 <b>راهنمای ری‌اکشن خودکار (Auto React)</b>\n\nبا ریپلای روی پیام یک نفر و ارسال <code>ری‌اکشن ❤️</code>، ربات به طور خودکار به پیام‌های آن شخص ریکلای می‌کند.", guideAutoReactMenu, tele.ModeHTML)
+	})
+	bot.Handle(&btnGPV, func(c tele.Context) error {
+		return c.Send("📩 <b>راهنمای ارسال به پیوی همه</b>\n\nبا ریپلای روی یک پیام و ارسال <code>پیوی همه</code>، آن پیام برای تمام مخاطبان پیوی ارسال می‌شود.", guidePVMenu, tele.ModeHTML)
+	})
+	bot.Handle(&btnGGroup, func(c tele.Context) error {
+		return c.Send("👥 <b>راهنمای ارسال به گروه همه</b>\n\nبا ریپلای روی یک پیام و ارسال <code>گروه همه</code>، آن پیام برای تمام گروه‌های شما فروارد می‌شود.", guideGroupMenu, tele.ModeHTML)
+	})
 
 	bot.Handle(&btnFontBack, func(c tele.Context) error {
 		var isClock, isEmoji, isBio, isFont bool
@@ -2255,7 +2314,7 @@ func main() {
 	bot.Handle(&btnAutoReactBack, backToGuideHandler)
 	bot.Handle(&btnPVBack, backToGuideHandler)
 	bot.Handle(&btnGroupBack, backToGuideHandler)
-	bot.Handle(&btnGBackMain, func(c tele.Context) error { return c.Send("🔙 بازگشت", getMainKeyboard(c.Sender().ID), tele.ModeHTML) })
+	bot.Handle(&btnGBackMain, func(c tele.Context) error { return c.Send("🔙 بازگشت به منوی اصلی", getMainKeyboard(c.Sender().ID), tele.ModeHTML) })
 
 	bot.Handle(&btnWallet, func(c tele.Context) error {
 		if IsUserBlocked(c.Sender().ID) { return c.Send("❌ مسدود هستید") }

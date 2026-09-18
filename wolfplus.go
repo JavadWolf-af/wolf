@@ -266,6 +266,7 @@ func InitWolfPlusDB() {
 		PRIMARY KEY (owner_id, chat_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
+	// جدول استثناهای قفل پیوی
 	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wolf_pv_allowed (
 		owner_id BIGINT,

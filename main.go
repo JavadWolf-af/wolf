@@ -1625,14 +1625,14 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(bCtx, client, inputPeer, msg, true)
+				handleForwardToAllGroups(gCtx, client, inputPeer, msg, true)
 			}()
 			return
 		} else if text == "گروه همه" {
 			go func() {
 				gCtx, gCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer gCancel()
-				handleForwardToAllGroups(bCtx, client, inputPeer, msg, false)
+				handleForwardToAllGroups(gCtx, client, inputPeer, msg, false)
 			}()
 			return
 		}

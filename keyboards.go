@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strconv"
 	tele "gopkg.in/telebot.v3"
 )
 

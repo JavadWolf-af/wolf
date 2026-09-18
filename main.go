@@ -2254,31 +2254,6 @@ func main() {
 		return c.Send("👥 <b>راهنمای ارسال به گروه همه</b>\n\nبا ریپلای روی یک پیام و ارسال <code>گروه همه</code>، آن پیام برای تمام گروه‌های شما فروارد می‌شود.", guideGroupMenu, tele.ModeHTML)
 	})
 
-	bot.Handle(&btnFontBack, func(c tele.Context) error {
-		var isClock, isEmoji, isBio, isFont bool
-		var bioMode string
-		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled FROM users WHERE id = ?", c.Sender().ID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
-		
-		clockStatus := "🔴 خاموش"
-		if isClock { clockStatus = "🟢 روشن" }
-		emojiStatus := "🔴 خاموش"
-		if isEmoji { emojiStatus = "🟢 روشن" }
-		bioStatus := "🔴 خاموش"
-		if isBio {
-			if bioMode == "custom" { bioStatus = "🟢 روشن (دستی)" } else { bioStatus = "🟢 روشن (رندوم)" }
-		}
-		fontStatus := "🔴 خاموش"
-		if isFont { fontStatus = "🟢 روشن" }
-
-		text := fmt.Sprintf(`📚 <b>بخش راهنما</b>
-▫️ ⏱ ساعت: %s
-▫️ 🎭 اموجی: %s
-▫️ 📝 بیو: %s
-▫️ ✒️ فونت: %s`, clockStatus, emojiStatus, bioStatus, fontStatus)
-		
-		return c.Send(text, guideMenu, tele.ModeHTML)
-	})
-
 	backToGuideHandler := func(c tele.Context) error {
 		var isClock, isEmoji, isBio, isFont bool
 		var bioMode string
@@ -2296,18 +2271,33 @@ func main() {
 		fontStatus := "🔴 خاموش"
 		if isFont { fontStatus = "🟢 روشن" }
 
-		text := fmt.Sprintf(`📚 <b>بخش راهنما</b>
-▫️ ⏱ ساعت: %s
-▫️ 🎭 اموجی: %s
-▫️ 📝 بیو: %s
-▫️ ✒️ فونت: %s`, clockStatus, emojiStatus, bioStatus, fontStatus)
+		text := fmt.Sprintf(`📚 <b>بخش راهنما و امکانات سلف ولف 🐺</b>
+➖➖➖➖➖➖➖➖➖➖
+📊 <b>وضعیت لحظه‌ای قابلیت‌ها:</b>
+▫️ ⏱ <b>ساعت زنده:</b> %s
+▫️ 🎭 <b>اموجی رندوم:</b> %s
+▫️ 📝 <b>بیوگرافی هوشمند:</b> %s
+▫️ ✒️ <b>خوشنویسی پیام‌ها:</b> %s
+▫️ 🌸 <b>سیستم دوست:</b> <code>0 نفر</code> (همیشه فعال)
+▫️ ⚔️ <b>سیستم دشمن:</b> <code>2 نفر</code> (همیشه فعال)
+▫️ 🎬 <b>اکشن‌های جعلی:</b> فعال و آماده
+▫️ 🗑 <b>پاکسازی پیام‌ها:</b> فعال و آماده
+▫️ ⏳ <b>تایمر زنده:</b> فعال و آماده
+▫️ 🔥 <b>ری‌اکشن خودکار:</b> فعال و آماده
+➖➖➖➖➖➖➖➖➖➖
+💡 <i>جهت مطالعه راهنما و تنظیم قابلیت‌ها، از کیبورد ثابت زیر استفاده کنید:</i>`,
+			clockStatus, emojiStatus, bioStatus, fontStatus)
+		
+		// بازگرداندن کیبورد ثابت اصلی راهنما (guideMenu) جهت جلوگیری از به‌هم‌ریختگی صفحه
 		return c.Send(text, guideMenu, tele.ModeHTML)
 	}
+
 	bot.Handle(&btnClockBack, backToGuideHandler)
 	bot.Handle(&btnEmojiBack, backToGuideHandler)
 	bot.Handle(&btnBioBack, backToGuideHandler)
 	bot.Handle(&btnFriendBack, backToGuideHandler)
 	bot.Handle(&btnEnemyBack, backToGuideHandler)
+	bot.Handle(&btnFontBack, backToGuideHandler)
 	bot.Handle(&btnActionBack, backToGuideHandler)
 	bot.Handle(&btnPurgeBack, backToGuideHandler)
 	bot.Handle(&btnTimerBack, backToGuideHandler)

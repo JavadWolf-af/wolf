@@ -40,6 +40,7 @@ var (
 	protectedMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
 	ghostMenu     = &tele.ReplyMarkup{ResizeKeyboard: true}
 	notifyMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
+	pvLockMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
 
 	btnWP_AntiDel   = wolfPlusMenu.Text("🗑 ضد حذف")
 	btnWP_EditLog   = wolfPlusMenu.Text("📝 ادیت لاگر")
@@ -49,6 +50,7 @@ var (
 	btnWP_Protected = wolfPlusMenu.Text("🔓 دانلودر ضدکپی")
 	btnWP_Ghost     = wolfPlusMenu.Text("👻 حالت روح")
 	btnWP_Notify    = wolfPlusMenu.Text("🔔 اعلان ربات")
+	btnWP_PVLock    = wolfPlusMenu.Text("🔒 قفل پیوی")
 	btnWP_Refresh   = wolfPlusMenu.Text("🔄 بروزرسانی وضعیت")
 	btnWP_BackMain  = wolfPlusMenu.Text("🔙 بازگشت به منوی اصلی")
 
@@ -91,6 +93,10 @@ var (
 	btnNT_On   = notifyMenu.Text("🟢 روشن کردن اعلان‌ها")
 	btnNT_Off  = notifyMenu.Text("🔴 خاموش کردن اعلان‌ها")
 	btnNT_Back = notifyMenu.Text("🔙 بازگشت به ولف +")
+
+	btnPV_On   = pvLockMenu.Text("🟢 قفل پیوی روشن")
+	btnPV_Off  = pvLockMenu.Text("🔴 قفل پیوی خاموش")
+	btnPV_Back = pvLockMenu.Text("🔙 بازگشت به ولف +")
 )
 
 func init() {
@@ -99,6 +105,7 @@ func init() {
 		wolfPlusMenu.Row(btnWP_Timer, btnWP_Group),
 		wolfPlusMenu.Row(btnWP_Target, btnWP_Protected),
 		wolfPlusMenu.Row(btnWP_Ghost, btnWP_Notify),
+		wolfPlusMenu.Row(btnWP_PVLock),
 		wolfPlusMenu.Row(btnWP_Refresh, btnWP_BackMain),
 	)
 
@@ -143,6 +150,11 @@ func init() {
 	notifyMenu.Reply(
 		notifyMenu.Row(btnNT_On, btnNT_Off),
 		notifyMenu.Row(btnNT_Back),
+	)
+
+	pvLockMenu.Reply(
+		pvLockMenu.Row(btnPV_On, btnPV_Off),
+		pvLockMenu.Row(btnPV_Back),
 	)
 }
 
@@ -204,6 +216,7 @@ func InitWolfPlusDB() {
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_protected_saver_enabled BOOLEAN DEFAULT FALSE")
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_ghost_mode_enabled BOOLEAN DEFAULT FALSE")
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_bot_notify_enabled BOOLEAN DEFAULT TRUE")
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN is_pv_lock_enabled BOOLEAN DEFAULT FALSE")
 
 	_, _ = db.Exec(`
 	CREATE TABLE IF NOT EXISTS wolf_message_cache (
@@ -251,6 +264,14 @@ func InitWolfPlusDB() {
 		chat_title VARCHAR(255),
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY (owner_id, chat_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
+
+	_, _ = db.Exec(`
+	CREATE TABLE IF NOT EXISTS wolf_pv_allowed (
+		owner_id BIGINT,
+		allowed_id BIGINT,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (owner_id, allowed_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`)
 
 	go func() {
@@ -313,6 +334,9 @@ func getWolfPlusStatus(userID int64) (antiDelete, editLogger, timerMedia, protec
 func buildWolfPlusDashboardText(userID int64) string {
 	antiDel, editLog, timerMed, protSaver, ghostMode, botNotify, groupCount, targetCount, protCount := getWolfPlusStatus(userID)
 
+	var pvLock bool
+	_ = db.QueryRow("SELECT is_pv_lock_enabled FROM users WHERE id = ?", userID).Scan(&pvLock)
+
 	statusIcon := func(b bool) string {
 		if b {
 			return "🟢 روشن"
@@ -323,6 +347,7 @@ func buildWolfPlusDashboardText(userID int64) string {
 	return fmt.Sprintf(`🐺 <b>پنل امکانات پیشرفته | ولف + (Wolf+)</b>
 ➖➖➖➖➖➖➖➖➖➖
 📊 <b>وضعیت لحظه‌ای امکانات:</b>
+▫️ 🔒 <b>قفل پیوی:</b> %s
 ▫️ 🗑 <b>ضد حذف پیوی (Anti-Delete):</b> %s
 ▫️ 📝 <b>لاگر ادیت پیوی (Edit Logger):</b> %s
 ▫️ 📸 <b>رسانه تایمردار (View-Once):</b> %s
@@ -333,7 +358,7 @@ func buildWolfPlusDashboardText(userID int64) string {
 ▫️ 🔔 <b>اعلان‌های ربات:</b> %s
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>برای ورود به تنظیمات و راهنمای هر قابلیت، گزینه مورد نظر را از کیبورد ثابت زیر لمس کنید:</i>`,
-		statusIcon(antiDel), statusIcon(editLog), statusIcon(timerMed), groupCount, targetCount,
+		statusIcon(pvLock), statusIcon(antiDel), statusIcon(editLog), statusIcon(timerMed), groupCount, targetCount,
 		statusIcon(protSaver), protCount, statusIcon(ghostMode), statusIcon(botNotify),
 	)
 }
@@ -506,6 +531,7 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 	bot.Handle(&btnPC_Back, showDashboard)
 	bot.Handle(&btnGH_Back, showDashboard)
 	bot.Handle(&btnNT_Back, showDashboard)
+	bot.Handle(&btnPV_Back, showDashboard)
 
 	bot.Handle(&btnWP_BackMain, func(c tele.Context) error {
 		userID := c.Sender().ID
@@ -513,6 +539,31 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 		delete(wolfPlusStates, userID)
 		wolfPlusStatesMu.Unlock()
 		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getMainKeyboard(userID), tele.ModeHTML)
+	})
+
+	// قفل پیوی
+	bot.Handle(&btnWP_PVLock, func(c tele.Context) error {
+		userID := c.Sender().ID
+		var pvLock bool
+		_ = db.QueryRow("SELECT is_pv_lock_enabled FROM users WHERE id = ?", userID).Scan(&pvLock)
+		statusStr := "🔴 خاموش"
+		if pvLock {
+			statusStr = "🟢 روشن"
+		}
+		text := fmt.Sprintf("🔒 <b>تنظیمات قفل پیوی</b>\n➖➖➖➖➖➖\n📌 وضعیت فعلی: %s\n\nبا روشن کردن این بخش، هر پیامی از افراد ناشناس در پیوی بیاید در لحظه دوطرفه حذف می‌شود و اعلانی دریافت نمی‌کنید.\n\nبرای استثنا کردن افراد از این قاعده کافیست به پیوی آن‌ها رفته و دستور <code>قفل پیوی باز</code> را ارسال کنید.", statusStr)
+		return c.Send(text, pvLockMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnPV_On, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_pv_lock_enabled = TRUE WHERE id = ?", userID)
+		return c.Send("🟢 <b>قفل پیوی روشن شد.</b> (حذف آنی پیام‌ها فعال است)", pvLockMenu, tele.ModeHTML)
+	})
+
+	bot.Handle(&btnPV_Off, func(c tele.Context) error {
+		userID := c.Sender().ID
+		_, _ = db.Exec("UPDATE users SET is_pv_lock_enabled = FALSE WHERE id = ?", userID)
+		return c.Send("🔴 <b>قفل پیوی خاموش شد.</b>", pvLockMenu, tele.ModeHTML)
 	})
 
 	// ۱. ضد حذف

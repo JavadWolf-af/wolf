@@ -813,8 +813,6 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			channelAccessHashesMu.Unlock()
 		}
 
-		WolfPlusHandleIncoming(ctx, client, bot, userID, msg, e)
-
 		var inputPeer tg.InputPeerClass
 		self, err := client.Self(ctx)
 		selfID := int64(0)
@@ -822,6 +820,66 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			selfID = self.ID
 		}
 		inputPeer = getInputPeer(msg.PeerID, e, selfID)
+
+		// استخراج شناسه فرستنده
+		senderID := int64(0)
+		if fromUser, ok := msg.FromID.(*tg.PeerUser); ok {
+			senderID = fromUser.UserID
+		} else if peerUser, ok := msg.PeerID.(*tg.PeerUser); ok {
+			senderID = peerUser.UserID
+		}
+
+		// =======================================================================
+		// 🔴 هسته اصلی قفل پیوی (اولین خط دفاعی برای نابودی تمام پیام‌های مزاحم)
+		// =======================================================================
+		if !msg.Out {
+			if _, ok := msg.PeerID.(*tg.PeerUser); ok && senderID != 0 {
+				
+				// بررسی استثنائات (تلگرام رسمی و ربات‌ها)
+				isBot := false
+				if senderID == 777000 {
+					isBot = true
+				} else if uClass, exists := e.Users[senderID]; exists {
+					if usr, ok := uClass.(*tg.User); ok && usr.Bot {
+						isBot = true
+					}
+				}
+
+				if !isBot {
+					var pvLockEnabled bool
+					_ = db.QueryRow("SELECT is_pv_lock_enabled FROM users WHERE id = ?", userID).Scan(&pvLockEnabled)
+					
+					if pvLockEnabled {
+						var isAllowed int
+						_ = db.QueryRow("SELECT COUNT(*) FROM wolf_pv_allowed WHERE owner_id = ? AND allowed_id = ?", userID, senderID).Scan(&isAllowed)
+						
+						if isAllowed == 0 {
+							go func(p tg.InputPeerClass, mID int) {
+								dCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+								defer cancel()
+								
+								// 1. حذف درجای خود پیام (پاک کردن قطعی متن، عکس، فایل، استیکر و...)
+								_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
+									Revoke: true,
+									ID:     []int{mID},
+								})
+								
+								// 2. پاکسازی کامل تاریخچه چت به صورت دوطرفه
+								_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
+									Peer:   p,
+									MaxID:  0,
+									Revoke: true,
+								})
+							}(inputPeer, msg.ID)
+							return // ❌ خروج فوری از تابع (توقف ارسال به حالت روح یا لاگر)
+						}
+					}
+				}
+			}
+		}
+
+		// هدایت سایر پیام‌های مجاز به سمت سیستم‌های ولف پلاس (مثل حالت روح و ضدحذف)
+		WolfPlusHandleIncoming(ctx, client, bot, userID, msg, e)
 
 		peerKey := "chat"
 		switch p := msg.PeerID.(type) {
@@ -833,39 +891,8 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			peerKey = fmt.Sprintf("channel_%d", p.ChannelID)
 		}
 
-		// واکنش به پیام‌های دیگران
+		// پردازش سیستم دوست و دشمن و ری‌اکشن برای پیام‌های مجاز دریافتی
 		if !msg.Out {
-			senderID := int64(0)
-			if fromUser, ok := msg.FromID.(*tg.PeerUser); ok {
-				senderID = fromUser.UserID
-			} else if peerUser, ok := msg.PeerID.(*tg.PeerUser); ok {
-				senderID = peerUser.UserID
-			}
-
-			// === هسته اصلی قفل پیوی ===
-			if _, ok := msg.PeerID.(*tg.PeerUser); ok && senderID != 0 {
-				var pvLockEnabled bool
-				_ = db.QueryRow("SELECT is_pv_lock_enabled FROM users WHERE id = ?", userID).Scan(&pvLockEnabled)
-				
-				if pvLockEnabled {
-					var isAllowed int
-					_ = db.QueryRow("SELECT COUNT(*) FROM wolf_pv_allowed WHERE owner_id = ? AND allowed_id = ?", userID, senderID).Scan(&isAllowed)
-					
-					if isAllowed == 0 {
-						go func(p tg.InputPeerClass) {
-							dCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-							defer cancel()
-							_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
-								Peer:   p,
-								MaxID:  0,
-								Revoke: true,
-							})
-						}(inputPeer)
-						return
-					}
-				}
-			}
-
 			if senderID != 0 {
 				// ری‌اکشن خودکار
 				if emoji, exists := getAutoReact(userID, senderID); exists && inputPeer != nil {
@@ -883,7 +910,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					}(msg.ID, inputPeer, emoji)
 				}
 
-				// دوست
+				// سیستم دوست
 				if isUserFriend(userID, senderID) {
 					go func(msgID int, p tg.InputPeerClass) {
 						time.Sleep(150 * time.Millisecond)
@@ -900,7 +927,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					}(msg.ID, inputPeer)
 				}
 
-				// دشمن
+				// سیستم دشمن
 				if isUserEnemy(userID, senderID) {
 					go func(msgID int, p tg.InputPeerClass) {
 						time.Sleep(150 * time.Millisecond)
@@ -922,7 +949,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 		text := strings.TrimSpace(msg.Message)
 
-		// === قفل پیوی ===
+		// === تنظیمات قفل پیوی (دستورات کاربر) ===
 		if text == "قفل پیوی روشن" {
 			_, _ = db.Exec("UPDATE users SET is_pv_lock_enabled = TRUE WHERE id = ?", userID)
 			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔒 قفل پیوی روشن شد") }
@@ -2338,7 +2365,7 @@ func main() {
 		
 		menu := &tele.ReplyMarkup{ResizeKeyboard: true}
 		menu.Reply(menu.Row(menu.Text("🔙 بازگشت")))
-		return c.Send("✅ کد ৫ رقمی را با فاصله بفرستید:", menu)
+		return c.Send("✅ کد ۵ رقمی را با فاصله بفرستید:", menu)
 	})
 
 	bot.Handle(&btnAdminPanel, func(c tele.Context) error {

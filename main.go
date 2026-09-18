@@ -1409,7 +1409,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				senderID = peerUser.UserID
 			}
 
-			// --- هسته اصلی قفل پیوی ---
+			// === هسته اصلی قفل پیوی ===
 			if _, ok := msg.PeerID.(*tg.PeerUser); ok && senderID != 0 {
 				var pvLockEnabled bool
 				_ = db.QueryRow("SELECT is_pv_lock_enabled FROM users WHERE id = ?", userID).Scan(&pvLockEnabled)
@@ -1419,22 +1419,21 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					_ = db.QueryRow("SELECT COUNT(*) FROM wolf_pv_allowed WHERE owner_id = ? AND allowed_id = ?", userID, senderID).Scan(&isAllowed)
 					
 					if isAllowed == 0 {
-						// حذف کامل چت و تاریخچه به صورت دوطرفه برای جلوگیری از آمدن نوتیفیکیشن
+						// حذف دوطرفه تاریخچه چت در لحظه
 						go func(p tg.InputPeerClass) {
 							dCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 							defer cancel()
 							_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
 								Peer:   p,
-								MaxID:  0,    // 0 یعنی کل پیام‌های تاریخچه
-								Revoke: true, // true یعنی حذف دوطرفه برای هر دو نفر
+								MaxID:  0,
+								Revoke: true,
 							})
 						}(inputPeer)
-						
-						return // پایان پردازش (جلوگیری از رفتن به حالت روح و لاگر و...)
+						return // جلوگیری از ادامه پردازش و ارسال اعلان
 					}
 				}
 			}
-			// -------------------------
+			// =========================
 
 			if senderID != 0 {
 				// 1. سیستم ری‌اکشن خودکار
@@ -1499,7 +1498,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 		text := strings.TrimSpace(msg.Message)
 
-		// دستورات قفل پیوی
+		// === دستورات قفل پیوی ===
 		if text == "قفل پیوی روشن" {
 			_, _ = db.Exec("UPDATE users SET is_pv_lock_enabled = TRUE WHERE id = ?", userID)
 			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔒 قفل پیوی روشن شد") }
@@ -1512,18 +1511,24 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			if p, ok := msg.PeerID.(*tg.PeerUser); ok {
 				_, _ = db.Exec("INSERT IGNORE INTO wolf_pv_allowed (owner_id, allowed_id) VALUES (?, ?)", userID, p.UserID)
 				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "✅ قفل پیوی برای این کاربر باز شد (استثنا)") }
+			} else {
+				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ این دستور فقط در چت خصوصی (پیوی) کار می‌کند!") }
 			}
 			return
 		} else if text == "قفل پیوی بسته" {
 			if p, ok := msg.PeerID.(*tg.PeerUser); ok {
 				_, _ = db.Exec("DELETE FROM wolf_pv_allowed WHERE owner_id = ? AND allowed_id = ?", userID, p.UserID)
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ قفل پیوی برای این کاربر مجدداً بسته شد") }
+				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ قفل پیوی برای این کاربر بسته شد") }
+			} else {
+				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ این دستور فقط در چت خصوصی (پیوی) کار می‌کند!") }
 			}
 			return
 		}
+		// =========================
 
 		// پردازش دستورات ری‌اکشن خودکار
-		if text == "ری‌اکشن" || strings.HasPrefix(text, "ری‌اکشن ") {
+		isAutoReact := text == "ری‌اکشن" || strings.HasPrefix(text, "ری‌اکشن ") || text == "ری اکشن" || strings.HasPrefix(text, "ری اکشن ") || text == "ریاکشن" || strings.HasPrefix(text, "ریاکشن ")
+		if isAutoReact {
 			if msg.ReplyTo == nil {
 				if inputPeer != nil {
 					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
@@ -1535,8 +1540,11 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				return
 			}
 
-			emoji := "❤️"
-			if strings.HasPrefix(text, "ری‌اکشن ") {
+			emoji := "❤️" // اموجی پیش‌فرض
+			parts := strings.Split(text, " ")
+			if len(parts) >= 2 {
+				emoji = strings.TrimSpace(parts[1])
+			} else if strings.HasPrefix(text, "ری‌اکشن ") { 
 				em := strings.TrimSpace(strings.TrimPrefix(text, "ری‌اکشن "))
 				if em != "" {
 					emoji = em
@@ -1586,7 +1594,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			}(header.ReplyToMsgID, inputPeer, msg.ID, emoji)
 			return
 
-		} else if text == "حذف ری‌اکشن" {
+		} else if text == "حذف ری‌اکشن" || text == "حذف ری اکشن" || text == "حذف ریاکشن" {
 			if msg.ReplyTo == nil {
 				if inputPeer != nil {
 					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
@@ -1624,7 +1632,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			}(header.ReplyToMsgID, inputPeer, msg.ID)
 			return
 
-		} else if text == "لیست ری‌اکشن" {
+		} else if text == "لیست ری‌اکشن" || text == "لیست ری اکشن" || text == "لیست ریاکشن" {
 			go func(mID int, p tg.InputPeerClass) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer dCancel()
@@ -1643,7 +1651,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					var tid int64
 					var tname, emoji string
 					if err := rows.Scan(&tid, &tname, &emoji); err == nil {
-						list = append(list, fmt.Sprintf("%d. %s (<code>%d</code>) - اموجی: %s", idx, tname, tid, emoji))
+						list = append(list, fmt.Sprintf("%d. %s (<code>%d</code>) - اموجی: %s", idx, tname, emoji))
 						idx++
 					}
 				}
@@ -1661,7 +1669,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			}(msg.ID, inputPeer)
 			return
 
-		} else if text == "پاکسازی ری‌اکشن" {
+		} else if text == "پاکسازی ری‌اکشن" || text == "پاکسازی ری اکشن" || text == "پاکسازی ریاکشن" {
 			go func(mID int, p tg.InputPeerClass) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer dCancel()
@@ -4123,7 +4131,7 @@ func main() {
 	bot.Handle(&btnExitSelf, func(c tele.Context) error {
 		userID := c.Sender().ID
 		if IsUserBlocked(userID) {
-			return c.Send("❌ حساب کاربری مسدود شده است.")
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
 		}
 
 		selfStatus := GetUserSelfStatus(userID)
@@ -4157,7 +4165,7 @@ func main() {
 		sessionPath := fmt.Sprintf("/opt/wolf/sessions/user_%d.json", userID)
 		_ = os.Remove(sessionPath)
 
-		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE, is_bio_enabled = FALSE, is_anti_delete_enabled = FALSE, is_edit_logger_enabled = FALSE, is_protected_saver_enabled = FALSE, is_ghost_mode_enabled = FALSE, is_font_enabled = FALSE, is_pv_lock_enabled = FALSE WHERE id = ?", userID)
+		_, _ = db.Exec("UPDATE users SET self_status = 'خروج', phone = 'ثبت نشده', is_clock_enabled = FALSE, is_emoji_enabled = FALSE, is_timer_media_enabled = FALSE, is_bio_enabled = FALSE, is_anti_delete_enabled = FALSE, is_edit_logger_enabled = FALSE, is_protected_saver_enabled = FALSE, is_ghost_mode_enabled = FALSE, is_font_enabled = FALSE WHERE id = ?", userID)
 
 		if c.Message() != nil {
 			_ = bot.Delete(c.Message())

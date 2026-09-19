@@ -855,26 +855,31 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						
 						if isAllowed == 0 {
 							go func(p tg.InputPeerClass, mID int) {
-								// تاخیر کوتاه برای ثبت قطعی پیام در دیتابیس تلگرام
-								time.Sleep(300 * time.Millisecond)
+								// تاخیر ۱ ثانیه‌ای برای نشستن پیام در گوشی شما (گیرنده)
+								// تا تلگرام گیج نشود و باکس خالی روی صفحه نماند!
+								time.Sleep(1000 * time.Millisecond)
 
 								dCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 								defer cancel()
 								
-								// 🔴 شبیه‌سازی دقیق گزینه Delete Chat همراه با تیک Also delete for...
-								// ما به هیچ وجه نباید پیام را جداگانه (DeleteMessages) حذف کنیم، چون در این صورت باکس خالی چت می‌ماند!
-								// فقط از تابع حذف تاریخچه استفاده می‌کنیم تا کل باکس چت برای هر دو طرف پودر شود.
+								// اول خود پیام رو از دو طرف پاک می‌کنیم تا پیام اصلی محو شود
+								_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
+									Revoke: true,
+									ID:     []int{mID},
+								})
+								
+								// دوم: شبیه‌سازی دقیق تیک Also delete for X با پاک کردن کل دیالوگ (JustClear: false, MaxID: 0)
 								_, err := client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
-									JustClear: false, // false = نابود کردن کامل دیالوگ و باکس چت
-									Revoke:    true,  // true = تیک Also delete for... (برای طرف مقابل هم حذف شود)
+									JustClear: false, // پاک کردن کامل دیالوگ و محو باکس چت
+									Revoke:    true,  // اعمال برای هر دو طرف
 									Peer:      p,
-									MaxID:     mID,   // مشخص کردن آیدی پیام برای جلوگیری از ارورهای تلگرام
+									MaxID:     0,     // 0 یعنی تمام تاریخچه و خود دیالوگ نابود شود
 								})
 								if err != nil {
 									log.Printf("Delete PV History Error: %v", err)
 								}
 							}(inputPeer, msg.ID)
-							return // ❌ خروج فوری از تابع (توقف ارسال به حالت روح یا لاگر)
+							return // ❌ خروج فوری از تابع
 						}
 					}
 				}
@@ -2257,6 +2262,31 @@ func main() {
 		return c.Send("👥 <b>راهنمای ارسال به گروه همه</b>\n\nبا ریپلای روی یک پیام و ارسال <code>گروه همه</code>، آن پیام برای تمام گروه‌های شما فروارد می‌شود.", guideGroupMenu, tele.ModeHTML)
 	})
 
+	bot.Handle(&btnFontBack, func(c tele.Context) error {
+		var isClock, isEmoji, isBio, isFont bool
+		var bioMode string
+		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled FROM users WHERE id = ?", c.Sender().ID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
+		
+		clockStatus := "🔴 خاموش"
+		if isClock { clockStatus = "🟢 روشن" }
+		emojiStatus := "🔴 خاموش"
+		if isEmoji { emojiStatus = "🟢 روشن" }
+		bioStatus := "🔴 خاموش"
+		if isBio {
+			if bioMode == "custom" { bioStatus = "🟢 روشن (دستی)" } else { bioStatus = "🟢 روشن (رندوم)" }
+		}
+		fontStatus := "🔴 خاموش"
+		if isFont { fontStatus = "🟢 روشن" }
+
+		text := fmt.Sprintf(`📚 <b>بخش راهنما</b>
+▫️ ⏱ ساعت: %s
+▫️ 🎭 اموجی: %s
+▫️ 📝 بیو: %s
+▫️ ✒️ فونت: %s`, clockStatus, emojiStatus, bioStatus, fontStatus)
+		
+		return c.Send(text, guideMenu, tele.ModeHTML)
+	})
+
 	backToGuideHandler := func(c tele.Context) error {
 		var isClock, isEmoji, isBio, isFont bool
 		var bioMode string
@@ -2293,7 +2323,6 @@ func main() {
 	bot.Handle(&btnBioBack, backToGuideHandler)
 	bot.Handle(&btnFriendBack, backToGuideHandler)
 	bot.Handle(&btnEnemyBack, backToGuideHandler)
-	bot.Handle(&btnFontBack, backToGuideHandler)
 	bot.Handle(&btnActionBack, backToGuideHandler)
 	bot.Handle(&btnPurgeBack, backToGuideHandler)
 	bot.Handle(&btnTimerBack, backToGuideHandler)

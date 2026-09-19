@@ -857,7 +857,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 							go func(p tg.InputPeerClass, mID int) {
 								// تاخیر ۱ ثانیه‌ای برای نشستن پیام در گوشی شما (گیرنده)
 								// تا تلگرام گیج نشود و باکس خالی روی صفحه نماند!
-								time.Sleep(1000 * time.Millisecond)
+								time.Sleep(100 * time.Millisecond)
 
 								dCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 								defer cancel()

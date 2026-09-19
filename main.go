@@ -854,29 +854,19 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						_ = db.QueryRow("SELECT COUNT(*) FROM wolf_pv_allowed WHERE owner_id = ? AND allowed_id = ?", userID, senderID).Scan(&isAllowed)
 						
 						if isAllowed == 0 {
-							go func(p tg.InputPeerClass, mID int) {
-								// تاخیر نیم ثانیه‌ای برای جلوگیری از باگ (Race Condition) تلگرام
-								// تا تلگرام اول پیام را کامل ثبت کند و بعد ما کل دیالوگ را نابود کنیم 
-								// تا هیچ صفحه خالی یا ردی در گوشی شما نماند.
-								time.Sleep(500 * time.Millisecond)
-
+							go func(p tg.InputPeerClass) {
 								dCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 								defer cancel()
 								
-								// 1. پاکسازی کامل تاریخچه و محو کردن خود دیالوگ (چت) از لیست شما و طرف مقابل
+								// فقط از تابع حذف تاریخچه استفاده می‌کنیم تا کل باکس چت محو شود
+								// با قرار دادن JustClear: false، باکس چت از لیست دیالوگ‌ها به صورت دوطرفه پاک خواهد شد
 								_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
-									JustClear: false, // این گزینه باعث حذف کامل باکس چت می‌شود
-									Revoke:    true,  // دو طرفه
+									JustClear: false,
+									Revoke:    true,
 									Peer:      p,
-									MaxID:     0,     // 0 یعنی تمام پیام‌ها
+									MaxID:     0,
 								})
-
-								// 2. شلیک نهایی به خود پیام برای اطمینان از پاک شدن در سرور
-								_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
-									Revoke: true,
-									ID:     []int{mID},
-								})
-							}(inputPeer, msg.ID)
+							}(inputPeer)
 							return // ❌ خروج فوری از تابع (توقف ارسال به حالت روح یا لاگر)
 						}
 					}
@@ -2288,7 +2278,6 @@ func main() {
 💡 <i>جهت مطالعه راهنما و تنظیم قابلیت‌ها، از کیبورد ثابت زیر استفاده کنید:</i>`,
 			clockStatus, emojiStatus, bioStatus, fontStatus)
 		
-		// بازگرداندن کیبورد ثابت اصلی راهنما (guideMenu) جهت جلوگیری از به‌هم‌ریختگی صفحه
 		return c.Send(text, guideMenu, tele.ModeHTML)
 	}
 

@@ -1389,9 +1389,11 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				if err != nil || repMsg == nil { return }
 
 				var targetUID int64
-				if f, ok := repMsg.FromID.(*tg.PeerUser); ok { targetUID = f.UserID
-				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok { targetUID = peerU.UserID }
-
+				if f, ok := repMsg.FromID.(*tg.PeerUser); ok {
+					targetUID = f.UserID
+				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok {
+					targetUID = peerU.UserID
+				}
 				if targetUID == 0 { return }
 
 				_, _ = db.Exec("DELETE FROM wolf_friends WHERE owner_id = ? AND friend_id = ?", userID, targetUID)
@@ -2099,10 +2101,9 @@ func main() {
 ▫️ 🗑 <b>پاکسازی پیام‌ها:</b> فعال و آماده
 ▫️ ⏳ <b>تایمر زنده:</b> فعال و آماده
 ▫️ 🔥 <b>ری‌اکشن خودکار:</b> فعال و آماده
-▫️ 🌍 <b>مترجم هوشمند:</b> آماده ترجمه به ۸ زبان (جدید)
+▫️ 🌍 <b>مترجم هوشمند:</b> آماده ترجمه به ۸ زبان دنیا
 ➖➖➖➖➖➖➖➖➖➖
-💡 <i>جهت مطالعه راهنما و تنظیم قابلیت‌ها، از کیبورد ثابت زیر استفاده کنید:
-(برای مترجم کافیست پیام را ریپلای کرده و دستور <code>ترجمه کن</code> یا <code>ترجمه ژاپنی شو</code> را بفرستید)</i>`,
+💡 <i>جهت مطالعه راهنما و تنظیم قابلیت‌ها، از کیبورد ثابت زیر استفاده کنید:</i>`,
 			clockStatus, emojiStatus, bioStatus, fontStatus, friendCount, enemyCount)
 		return c.Send(text, guideMenu, tele.ModeHTML)
 	})
@@ -2347,10 +2348,39 @@ func main() {
 		return c.Send("👥 <b>راهنمای ارسال به گروه همه</b>\n\nبا ریپلای روی یک پیام و ارسال <code>گروه همه</code>، آن پیام برای تمام گروه‌های شما فروارد می‌شود.", guideGroupMenu, tele.ModeHTML)
 	})
 
+	// === اضافه شدن راهنمای مترجم هوشمند ===
+	bot.Handle(&btnGTranslate, func(c tele.Context) error {
+		text := `🌍 <b>راهنمای مترجم هوشمند (AI Translator)</b>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+این سیستم به هوش مصنوعی قدرتمند متصل است و پیام‌ها را در کسری از ثانیه ترجمه می‌کند. 
+
+⚙️ <b>نحوه استفاده:</b>
+روی پیام هر شخص (یا پیام خودتان) ریپلای کنید و یکی از دستورات زیر را بفرستید:
+
+▫️ <code>ترجمه کن</code> (ترجمه خودکار به فارسی)
+▫️ <code>ترجمه انگلیسی شو</code>
+▫️ <code>ترجمه ترکی شو</code>
+▫️ <code>ترجمه ژاپنی شو</code>
+▫️ <code>ترجمه چینی شو</code>
+▫️ <code>ترجمه آلمانی شو</code>
+▫️ <code>ترجمه روسی شو</code>
+▫️ <code>ترجمه دری شو</code>
+▫️ <code>ترجمه کره ای شو</code>
+
+💡 <i>نکته: اگر پیامی از قبل فارسی باشد و دستور ترجمه فارسی بدهید، ربات هوشمندانه متوجه می‌شود!</i>`
+		return c.Send(text, guideTranslateMenu, tele.ModeHTML)
+	})
+
 	backToGuideHandler := func(c tele.Context) error {
+		userID := c.Sender().ID
 		var isClock, isEmoji, isBio, isFont bool
 		var bioMode string
-		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled FROM users WHERE id = ?", c.Sender().ID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
+		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled FROM users WHERE id = ?", userID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
+		
+		var friendCount, enemyCount int
+		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_friends WHERE owner_id = ?", userID).Scan(&friendCount)
+		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_enemies WHERE owner_id = ?", userID).Scan(&enemyCount)
 		
 		clockStatus := "🔴 خاموش"
 		if isClock { clockStatus = "🟢 روشن" }
@@ -2371,9 +2401,16 @@ func main() {
 ▫️ 🎭 <b>اموجی رندوم:</b> %s
 ▫️ 📝 <b>بیوگرافی هوشمند:</b> %s
 ▫️ ✒️ <b>خوشنویسی پیام‌ها:</b> %s
+▫️ 🌸 <b>سیستم دوست:</b> <code>%d نفر</code> (همیشه فعال)
+▫️ ⚔️ <b>سیستم دشمن:</b> <code>%d نفر</code> (همیشه فعال)
+▫️ 🎬 <b>اکشن‌های جعلی:</b> فعال و آماده
+▫️ 🗑 <b>پاکسازی پیام‌ها:</b> فعال و آماده
+▫️ ⏳ <b>تایمر زنده:</b> فعال و آماده
+▫️ 🔥 <b>ری‌اکشن خودکار:</b> فعال و آماده
+▫️ 🌍 <b>مترجم هوشمند:</b> آماده ترجمه به ۸ زبان دنیا
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>جهت مطالعه راهنما و تنظیم قابلیت‌ها، از کیبورد ثابت زیر استفاده کنید:</i>`,
-			clockStatus, emojiStatus, bioStatus, fontStatus)
+			clockStatus, emojiStatus, bioStatus, fontStatus, friendCount, enemyCount)
 		
 		return c.Send(text, guideMenu, tele.ModeHTML)
 	}
@@ -2390,6 +2427,7 @@ func main() {
 	bot.Handle(&btnAutoReactBack, backToGuideHandler)
 	bot.Handle(&btnPVBack, backToGuideHandler)
 	bot.Handle(&btnGroupBack, backToGuideHandler)
+	bot.Handle(&btnTranslateBack, backToGuideHandler) // هندلر دکمه بازگشت مترجم
 	bot.Handle(&btnGBackMain, func(c tele.Context) error { return c.Send("🔙 بازگشت به منوی اصلی", getMainKeyboard(c.Sender().ID), tele.ModeHTML) })
 
 	bot.Handle(&btnWallet, func(c tele.Context) error {

@@ -162,3 +162,106 @@ func getKeyPrice() int {
 	}
 	return price
 }
+// ------------------------------------
+// سیستم مترجم هوشمند و بررسی زبان
+// ------------------------------------
+
+func IsPersianText(text string) bool {
+	persianCount := 0
+	totalCount := 0
+	for _, r := range text {
+		if unicode.IsLetter(r) {
+			totalCount++
+			if unicode.In(r, unicode.Arabic) { // فارسی در بلاک عربی یونیکد است
+				persianCount++
+			}
+		}
+	}
+	if totalCount == 0 {
+		return false
+	}
+	return float64(persianCount)/float64(totalCount) > 0.4 // اگر بیش از ۴۰ درصد کاراکترها فارسی بود
+}
+
+func TranslateWithGroq(text string, targetLang string) (string, error) {
+	apiKey := os.Getenv("GROQ_API_KEY")
+	if apiKey == "" {
+		return "", errors.New("کلید API در فایل .env یافت نشد")
+	}
+
+	// شرط خنده‌داری که خواسته بودی
+	if targetLang == "فارسی" && IsPersianText(text) {
+		return "😐 کسخلی؟ این خودش فارسیه", nil
+	}
+
+	langMap := map[string]string{
+		"فارسی":   "Persian",
+		"ترکی":    "Turkish",
+		"انگلیسی": "English",
+		"ژاپنی":   "Japanese",
+		"چینی":    "Chinese",
+		"آلمانی":  "German",
+		"روسی":    "Russian",
+		"دری":     "Dari (Afghan Persian)",
+		"کره ای":  "Korean",
+		"کره‌ای":  "Korean",
+	}
+
+	engLang, ok := langMap[targetLang]
+	if !ok {
+		engLang = "Persian" // پیش‌فرض
+	}
+
+	url := "https://api.groq.com/openai/v1/chat/completions"
+	modelName := "qwen/qwen3.8-27b" // بهترین مدل برای این زبان‌ها بر اساس لیست سرور شما
+
+	systemPrompt := fmt.Sprintf("You are an expert native translator. Translate the user's text into %s accurately. Output ONLY the translated text without quotes, notes, conversational filler, or markdown formatting.", engLang)
+
+	payload := map[string]interface{}{
+		"model": modelName,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": text},
+		},
+		"temperature": 0.2,
+	}
+
+	jsonData, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", errors.New("خطا در ارتباط با سرور هوش مصنوعی")
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("خطای API: %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", errors.New("خطا در پاسخ هوش مصنوعی")
+	}
+
+	if len(result.Choices) > 0 {
+		return strings.TrimSpace(result.Choices[0].Message.Content), nil
+	}
+
+	return "", errors.New("متن ترجمه دریافت نشد")
+}

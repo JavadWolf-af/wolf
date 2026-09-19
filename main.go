@@ -855,31 +855,27 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						
 						if isAllowed == 0 {
 							go func(p tg.InputPeerClass, mID int) {
-								// تاخیر ۱ ثانیه‌ای برای نشستن پیام در گوشی شما (گیرنده)
-								// تا تلگرام گیج نشود و باکس خالی روی صفحه نماند!
-								time.Sleep(100 * time.Millisecond)
+								time.Sleep(1000 * time.Millisecond)
 
 								dCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 								defer cancel()
 								
-								// اول خود پیام رو از دو طرف پاک می‌کنیم تا پیام اصلی محو شود
 								_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
 									Revoke: true,
 									ID:     []int{mID},
 								})
 								
-								// دوم: شبیه‌سازی دقیق تیک Also delete for X با پاک کردن کل دیالوگ (JustClear: false, MaxID: 0)
 								_, err := client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
-									JustClear: false, // پاک کردن کامل دیالوگ و محو باکس چت
-									Revoke:    true,  // اعمال برای هر دو طرف
+									JustClear: false,
+									Revoke:    true,
 									Peer:      p,
-									MaxID:     0,     // 0 یعنی تمام تاریخچه و خود دیالوگ نابود شود
+									MaxID:     0,
 								})
 								if err != nil {
 									log.Printf("Delete PV History Error: %v", err)
 								}
 							}(inputPeer, msg.ID)
-							return // ❌ خروج فوری از تابع
+							return
 						}
 					}
 				}
@@ -956,6 +952,93 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		}
 
 		text := strings.TrimSpace(msg.Message)
+
+		// === سیستم مترجم هوشمند (جدید) ===
+		if text == "ترجمه کن" || (strings.HasPrefix(text, "ترجمه ") && strings.HasSuffix(text, " شو")) {
+			targetLang := "فارسی"
+			if text != "ترجمه کن" {
+				targetLang = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(text, " شو"), "ترجمه "))
+			}
+
+			validLangs := map[string]bool{
+				"فارسی": true, "ترکی": true, "انگلیسی": true, "ژاپنی": true,
+				"چینی": true, "آلمانی": true, "روسی": true, "دری": true,
+				"کره ای": true, "کره‌ای": true,
+			}
+
+			if validLangs[targetLang] {
+				if msg.ReplyTo == nil {
+					if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام یک نفر ریپلای کنید!") }
+					return
+				}
+				header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
+				if !ok || header.ReplyToMsgID == 0 { return }
+
+				go func(repID int, p tg.InputPeerClass, mID int, lang string) {
+					dCtx, dCancel := context.WithTimeout(context.Background(), 20*time.Second)
+					defer dCancel()
+
+					eCtx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+					_, _ = client.API().MessagesEditMessage(eCtx, &tg.MessagesEditMessageRequest{
+						Peer:    p,
+						ID:      mID,
+						Message: "⏳ در حال ترجمه...",
+					})
+
+					repMsg, _, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
+					if err != nil || repMsg == nil || repMsg.Message == "" {
+						eCtx2, _ := context.WithTimeout(context.Background(), 5*time.Second)
+						_, _ = client.API().MessagesEditMessage(eCtx2, &tg.MessagesEditMessageRequest{
+							Peer:    p,
+							ID:      mID,
+							Message: "❌ پیام متنی یافت نشد!",
+						})
+						time.Sleep(2 * time.Second)
+						deleteMsg(context.Background(), client, p, mID)
+						return
+					}
+
+					translatedText, err := TranslateWithGroq(repMsg.Message, lang)
+					if err != nil {
+						eCtx3, _ := context.WithTimeout(context.Background(), 5*time.Second)
+						_, _ = client.API().MessagesEditMessage(eCtx3, &tg.MessagesEditMessageRequest{
+							Peer:    p,
+							ID:      mID,
+							Message: "❌ خطا در ترجمه: " + err.Error(),
+						})
+						time.Sleep(3 * time.Second)
+						deleteMsg(context.Background(), client, p, mID)
+						return
+					}
+
+					eCtx4, _ := context.WithTimeout(context.Background(), 10*time.Second)
+					finalMsg := translatedText
+					
+					if translatedText != "😐 کسخلی؟ این خودش فارسیه" {
+						flag := "🌍"
+						switch lang {
+						case "فارسی": flag = "🇮🇷"
+						case "انگلیسی": flag = "🇬🇧"
+						case "ترکی": flag = "🇹🇷"
+						case "ژاپنی": flag = "🇯🇵"
+						case "چینی": flag = "🇨🇳"
+						case "آلمانی": flag = "🇩🇪"
+						case "روسی": flag = "🇷🇺"
+						case "دری": flag = "🇦🇫"
+						case "کره ای", "کره‌ای": flag = "🇰🇷"
+						}
+						finalMsg = fmt.Sprintf("%s ترجمه به %s:\n\n%s", flag, lang, translatedText)
+					}
+
+					_, _ = client.API().MessagesEditMessage(eCtx4, &tg.MessagesEditMessageRequest{
+						Peer:    p,
+						ID:      mID,
+						Message: finalMsg,
+					})
+				}(header.ReplyToMsgID, inputPeer, msg.ID, targetLang)
+				return
+			}
+		}
 
 		// === تنظیمات قفل پیوی (دستورات کاربر) ===
 		if text == "قفل پیوی روشن" {
@@ -2016,8 +2099,10 @@ func main() {
 ▫️ 🗑 <b>پاکسازی پیام‌ها:</b> فعال و آماده
 ▫️ ⏳ <b>تایمر زنده:</b> فعال و آماده
 ▫️ 🔥 <b>ری‌اکشن خودکار:</b> فعال و آماده
+▫️ 🌍 <b>مترجم هوشمند:</b> آماده ترجمه به ۸ زبان (جدید)
 ➖➖➖➖➖➖➖➖➖➖
-💡 <i>جهت مطالعه راهنما و تنظیم قابلیت‌ها، از کیبورد ثابت زیر استفاده کنید:</i>`,
+💡 <i>جهت مطالعه راهنما و تنظیم قابلیت‌ها، از کیبورد ثابت زیر استفاده کنید:
+(برای مترجم کافیست پیام را ریپلای کرده و دستور <code>ترجمه کن</code> یا <code>ترجمه ژاپنی شو</code> را بفرستید)</i>`,
 			clockStatus, emojiStatus, bioStatus, fontStatus, friendCount, enemyCount)
 		return c.Send(text, guideMenu, tele.ModeHTML)
 	})
@@ -2262,31 +2347,6 @@ func main() {
 		return c.Send("👥 <b>راهنمای ارسال به گروه همه</b>\n\nبا ریپلای روی یک پیام و ارسال <code>گروه همه</code>، آن پیام برای تمام گروه‌های شما فروارد می‌شود.", guideGroupMenu, tele.ModeHTML)
 	})
 
-	bot.Handle(&btnFontBack, func(c tele.Context) error {
-		var isClock, isEmoji, isBio, isFont bool
-		var bioMode string
-		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled FROM users WHERE id = ?", c.Sender().ID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
-		
-		clockStatus := "🔴 خاموش"
-		if isClock { clockStatus = "🟢 روشن" }
-		emojiStatus := "🔴 خاموش"
-		if isEmoji { emojiStatus = "🟢 روشن" }
-		bioStatus := "🔴 خاموش"
-		if isBio {
-			if bioMode == "custom" { bioStatus = "🟢 روشن (دستی)" } else { bioStatus = "🟢 روشن (رندوم)" }
-		}
-		fontStatus := "🔴 خاموش"
-		if isFont { fontStatus = "🟢 روشن" }
-
-		text := fmt.Sprintf(`📚 <b>بخش راهنما</b>
-▫️ ⏱ ساعت: %s
-▫️ 🎭 اموجی: %s
-▫️ 📝 بیو: %s
-▫️ ✒️ فونت: %s`, clockStatus, emojiStatus, bioStatus, fontStatus)
-		
-		return c.Send(text, guideMenu, tele.ModeHTML)
-	})
-
 	backToGuideHandler := func(c tele.Context) error {
 		var isClock, isEmoji, isBio, isFont bool
 		var bioMode string
@@ -2323,6 +2383,7 @@ func main() {
 	bot.Handle(&btnBioBack, backToGuideHandler)
 	bot.Handle(&btnFriendBack, backToGuideHandler)
 	bot.Handle(&btnEnemyBack, backToGuideHandler)
+	bot.Handle(&btnFontBack, backToGuideHandler)
 	bot.Handle(&btnActionBack, backToGuideHandler)
 	bot.Handle(&btnPurgeBack, backToGuideHandler)
 	bot.Handle(&btnTimerBack, backToGuideHandler)

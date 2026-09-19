@@ -412,81 +412,94 @@ func RegisterWolfPlusHandlers(bot *tele.Bot) {
 		return c.Send("🔙 <b>به منوی اصلی بازگشتید.</b>", getMainKeyboard(userID), tele.ModeHTML)
 	})
 
-	// قفل پیوی
+// =====================================
+	// بخش مدیریت و راهنمای قفل پیوی (PV Lock)
+	// =====================================
 	bot.Handle(&btnWP_PVLock, func(c tele.Context) error {
 		userID := c.Sender().ID
-		var pvLock bool
-		_ = db.QueryRow("SELECT is_pv_lock_enabled FROM users WHERE id = ?", userID).Scan(&pvLock)
+		var pvLockEnabled bool
+		_ = db.QueryRow("SELECT is_pv_lock_enabled FROM users WHERE id = ?", userID).Scan(&pvLockEnabled)
+		
 		statusStr := "🔴 خاموش"
-		if pvLock {
+		if pvLockEnabled {
 			statusStr = "🟢 روشن"
 		}
-		text := fmt.Sprintf("🔒 <b>تنظیمات قفل پیوی</b>\n➖➖➖➖➖➖\n📌 وضعیت فعلی: %s\n\nبا روشن کردن این بخش، هر پیامی از افراد ناشناس در پیوی بیاید در لحظه دوطرفه حذف می‌شود و اعلانی دریافت نمی‌کنید.\n\nبرای استثنا کردن افراد از این قاعده کافیست به پیوی آن‌ها رفته و دستور <code>قفل پیوی باز</code> را ارسال کنید.", statusStr)
+
+		var allowedCount int
+		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_pv_allowed WHERE owner_id = ?", userID).Scan(&allowedCount)
+
+		text := fmt.Sprintf(`🔒 <b>راهنما و مدیریت قفل پیوی (PV Lock)</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی:</b> %s
+👥 <b>تعداد افراد استثنا شده:</b> <code>%d نفر</code>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+با روشن کردن این قابلیت، هر شخصی (به جز ربات‌ها و افراد استثنا شده) در پیوی به شما پیام دهد، پیام و باکس چت او در کسری از ثانیه به صورت دوطرفه نابود می‌شود!
+
+⚙️ <b>دستورات داخل چت (پیوی):</b>
+شما می‌توانید با ارسال دستورات زیر در پیویِ شخص مورد نظر، این سیستم را مدیریت کنید:
+▫️ <code>قفل پیوی باز</code> : این شخص استثنا می‌شود و پیام‌هایش دیگر پاک نمی‌شود.
+▫️ <code>قفل پیوی بسته</code> : این شخص از لیست استثنا خارج می‌شود و مجدداً پیام‌هایش پاک می‌شود.
+
+▫️ <code>قفل پیوی روشن</code> : روشن کردن سریع سیستم قفل.
+▫️ <code>قفل پیوی خاموش</code> : خاموش کردن سریع سیستم قفل.`, statusStr, allowedCount)
+
 		return c.Send(text, pvLockMenu, tele.ModeHTML)
 	})
+
 	bot.Handle(&btnPV_On, func(c tele.Context) error {
 		userID := c.Sender().ID
 		_, _ = db.Exec("UPDATE users SET is_pv_lock_enabled = TRUE WHERE id = ?", userID)
-		return c.Send("🟢 <b>قفل پیوی روشن شد.</b> (حذف آنی پیام‌ها فعال است)", pvLockMenu, tele.ModeHTML)
+		
+		// آپدیت متن پیام برای نمایش تغییر وضعیت
+		var allowedCount int
+		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_pv_allowed WHERE owner_id = ?", userID).Scan(&allowedCount)
+		text := fmt.Sprintf(`🔒 <b>راهنما و مدیریت قفل پیوی (PV Lock)</b>
+➖➖➖➖➖➖➖➖➖➖
+📌 <b>وضعیت فعلی:</b> 🟢 روشن
+👥 <b>تعداد افراد استثنا شده:</b> <code>%d نفر</code>
+➖➖➖➖➖➖➖➖➖➖
+📖 <b>راهنمای عملکرد:</b>
+با روشن کردن این قابلیت، هر شخصی (به جز ربات‌ها و افراد استثنا شده) در پیوی به شما پیام دهد، پیام و باکس چت او در کسری از ثانیه به صورت دوطرفه نابود می‌شود!
+
+⚙️ <b>دستورات داخل چت (پیوی):</b>
+▫️ <code>قفل پیوی باز</code> : این شخص استثنا می‌شود و پیام‌هایش دیگر پاک نمی‌شود.
+▫️ <code>قفل پیوی بسته</code> : این شخص از لیست استثنا خارج می‌شود.
+▫️ <code>قفل پیوی روشن</code> : روشن کردن سریع سیستم قفل.
+▫️ <code>قفل پیوی خاموش</code> : خاموش کردن سریع سیستم قفل.`, allowedCount)
+		
+		_ = c.Edit(text, pvLockMenu, tele.ModeHTML)
+		return c.Respond(&tele.CallbackResponse{Text: "🟢 قفل پیوی روشن شد!"})
 	})
+
 	bot.Handle(&btnPV_Off, func(c tele.Context) error {
 		userID := c.Sender().ID
 		_, _ = db.Exec("UPDATE users SET is_pv_lock_enabled = FALSE WHERE id = ?", userID)
-		return c.Send("🔴 <b>قفل پیوی خاموش شد.</b>", pvLockMenu, tele.ModeHTML)
-	})
-
-	// ۱. ضد حذف
-	bot.Handle(&btnWP_AntiDel, func(c tele.Context) error {
-		userID := c.Sender().ID
-		antiDel, _, _, _, _, _, _, _, _ := getWolfPlusStatus(userID)
-		statusStr := "🔴 خاموش"
-		if antiDel {
-			statusStr = "🟢 روشن"
-		}
-		text := fmt.Sprintf(`🗑 <b>مدیریت ضد حذف پیام‌ها (Anti-Delete)</b>
+		
+		// آپدیت متن پیام برای نمایش تغییر وضعیت
+		var allowedCount int
+		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_pv_allowed WHERE owner_id = ?", userID).Scan(&allowedCount)
+		text := fmt.Sprintf(`🔒 <b>راهنما و مدیریت قفل پیوی (PV Lock)</b>
 ➖➖➖➖➖➖➖➖➖➖
-📌 <b>وضعیت فعلی شما:</b> %s
+📌 <b>وضعیت فعلی:</b> 🔴 خاموش
+👥 <b>تعداد افراد استثنا شده:</b> <code>%d نفر</code>
 ➖➖➖➖➖➖➖➖➖➖
 📖 <b>راهنمای عملکرد:</b>
-پیام‌های متنی و مدیاهای دریافتی در چت‌های خصوصی ذخیره شده و در صورت حذف شدن، به صورت تفکیک‌شده به <b>Saved Messages</b> ارسال می‌شوند.`, statusStr)
-		return c.Send(text, antiDelMenu, tele.ModeHTML)
-	})
-	bot.Handle(&btnAD_On, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET is_anti_delete_enabled = TRUE WHERE id = ?", userID)
-		return c.Send("🟢 <b>قابلیت ضد حذف پیوی روشن شد.</b>", antiDelMenu, tele.ModeHTML)
-	})
-	bot.Handle(&btnAD_Off, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET is_anti_delete_enabled = FALSE WHERE id = ?", userID)
-		return c.Send("🔴 <b>قابلیت ضد حذف خاموش شد.</b>", antiDelMenu, tele.ModeHTML)
+با روشن کردن این قابلیت، هر شخصی (به جز ربات‌ها و افراد استثنا شده) در پیوی به شما پیام دهد، پیام و باکس چت او در کسری از ثانیه به صورت دوطرفه نابود می‌شود!
+
+⚙️ <b>دستورات داخل چت (پیوی):</b>
+▫️ <code>قفل پیوی باز</code> : این شخص استثنا می‌شود و پیام‌هایش دیگر پاک نمی‌شود.
+▫️ <code>قفل پیوی بسته</code> : این شخص از لیست استثنا خارج می‌شود.
+▫️ <code>قفل پیوی روشن</code> : روشن کردن سریع سیستم قفل.
+▫️ <code>قفل پیوی خاموش</code> : خاموش کردن سریع سیستم قفل.`, allowedCount)
+		
+		_ = c.Edit(text, pvLockMenu, tele.ModeHTML)
+		return c.Respond(&tele.CallbackResponse{Text: "🔴 قفل پیوی خاموش شد!"})
 	})
 
-	// ۲. ادیت لاگر
-	bot.Handle(&btnWP_EditLog, func(c tele.Context) error {
+	bot.Handle(&btnPV_Back, func(c tele.Context) error {
 		userID := c.Sender().ID
-		_, editLog, _, _, _, _, _, _, _ := getWolfPlusStatus(userID)
-		statusStr := "🔴 خاموش"
-		if editLog {
-			statusStr = "🟢 روشن"
-		}
-		text := fmt.Sprintf(`📝 <b>مدیریت لاگر ویرایش (Edit Logger)</b>
-➖➖➖➖➖➖➖➖➖➖
-📌 <b>وضعیت فعلی شما:</b> %s
-➖➖➖➖➖➖➖➖➖➖
-📖 <b>راهنمای عملکرد:</b>
-هرگونه تغییر در متن پیام‌های خصوصی استخراج شده و به همراه نسخه قبل از ادیت در <b>Saved Messages</b> ثبت می‌گردد.`, statusStr)
-		return c.Send(text, editLogMenu, tele.ModeHTML)
-	})
-	bot.Handle(&btnEL_On, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET is_edit_logger_enabled = TRUE WHERE id = ?", userID)
-		return c.Send("🟢 <b>قابلیت ادیت لاگر روشن شد.</b>", editLogMenu, tele.ModeHTML)
-	})
-	bot.Handle(&btnEL_Off, func(c tele.Context) error {
-		userID := c.Sender().ID
-		_, _ = db.Exec("UPDATE users SET is_edit_logger_enabled = FALSE WHERE id = ?", userID)
-		return c.Send("🔴 <b>قابلیت ادیت لاگر خاموش شد.</b>", editLogMenu, tele.ModeHTML)
+		return c.Send(buildWolfPlusDashboardText(userID), wolfPlusMenu, tele.ModeHTML)
 	})
 
 	// ۳. رسانه تایمردار

@@ -79,6 +79,7 @@ var (
 	btnGAutoReact = guideMenu.Text("🔥 ری‌اکشن خودکار")
 	btnGPV        = guideMenu.Text("📩 پیوی همه")
 	btnGGroup     = guideMenu.Text("👥 گروه همه")
+	btnGTranslate    = tele.Btn{Text: "🌍 مترجم هوشمند"}
 	btnGBackMain  = guideMenu.Text("🔙 بازگشت به منوی اصلی")
 
 	btnClockOn   = guideClockMenu.Text("🟢 روشن کردن ساعت")
@@ -118,7 +119,8 @@ var (
 	btnAutoReactBack = guideAutoReactMenu.Text("🔙 بازگشت به راهنما")
 	btnPVBack        = guidePVMenu.Text("🔙 بازگشت به راهنما")
 	btnGroupBack     = guideGroupMenu.Text("🔙 بازگشت به راهنما")
-)
+
+    )
 
 // ==========================================
 // 3. تعریف منوهای بخش امکانات ویژه (ولف +)

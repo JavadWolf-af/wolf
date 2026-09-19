@@ -855,22 +855,24 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						
 						if isAllowed == 0 {
 							go func(p tg.InputPeerClass, mID int) {
+								// تاخیر کوتاه برای ثبت قطعی پیام در دیتابیس تلگرام
+								time.Sleep(300 * time.Millisecond)
+
 								dCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 								defer cancel()
 								
-								// ۱. ضربه اول: نابودی آنی خود پیام در صدم ثانیه
-								_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
-									Revoke: true,
-									ID:     []int{mID},
-								})
-								
-								// ۲. ضربه دوم: پاکسازی کامل چت برای پاک شدن دیالوگ از سمت دو طرف
-								_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
-									JustClear: false,
-									Revoke:    true,
+								// 🔴 شبیه‌سازی دقیق گزینه Delete Chat همراه با تیک Also delete for...
+								// ما به هیچ وجه نباید پیام را جداگانه (DeleteMessages) حذف کنیم، چون در این صورت باکس خالی چت می‌ماند!
+								// فقط از تابع حذف تاریخچه استفاده می‌کنیم تا کل باکس چت برای هر دو طرف پودر شود.
+								_, err := client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
+									JustClear: false, // false = نابود کردن کامل دیالوگ و باکس چت
+									Revoke:    true,  // true = تیک Also delete for... (برای طرف مقابل هم حذف شود)
 									Peer:      p,
-									MaxID:     mID, // استفاده از ID پیام به جای 0 برای جلوگیری از ارور تلگرام
+									MaxID:     mID,   // مشخص کردن آیدی پیام برای جلوگیری از ارورهای تلگرام
 								})
+								if err != nil {
+									log.Printf("Delete PV History Error: %v", err)
+								}
 							}(inputPeer, msg.ID)
 							return // ❌ خروج فوری از تابع (توقف ارسال به حالت روح یا لاگر)
 						}

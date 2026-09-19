@@ -69,6 +69,16 @@ var (
 	btnWP_PVLock     = tele.Btn{Text: "🔒 قفل پیوی"}
 	btnWP_Logger     = tele.Btn{Text: "📝 لاگر پیام"}
 	btnWP_Back       = tele.Btn{Text: "🔙 بازگشت به منوی اصلی"}
+	btnWP_Refresh    = tele.Btn{Text: "🔄 بروزرسانی وضعیت"}
+
+	// دکمه‌های جا افتاده زیرمنوهای ولف پلاس که ارور می‌دادند
+	btnAD_Back           = tele.Btn{Text: "🔙 بازگشت به ولف +"}
+	btnEL_Back           = tele.Btn{Text: "🔙 بازگشت به ولف +"}
+	btnTM_Back           = tele.Btn{Text: "🔙 بازگشت به ولف +"}
+	btnGD_Back           = tele.Btn{Text: "🔙 بازگشت به ولف +"}
+	btnTG_Back           = tele.Btn{Text: "🔙 بازگشت به ولف +"}
+	btnTG_BackToTarget   = tele.Btn{Text: "🔙 بازگشت به تارگت"}
+	btnPC_BackToProtMenu = tele.Btn{Text: "🔙 بازگشت به محافظت"}
 
 	btnPV_On   = tele.Btn{Text: "🟢 روشن"}
 	btnPV_Off  = tele.Btn{Text: "🔴 خاموش"}
@@ -87,7 +97,7 @@ var (
 	btnGAutoReact    = tele.Btn{Text: "🔥 ری‌اکشن خودکار"}
 	btnGPV           = tele.Btn{Text: "📩 پیوی همه"}
 	btnGGroup        = tele.Btn{Text: "👥 گروه همه"}
-	btnGTranslate    = tele.Btn{Text: "🌍 مترجم هوشمند"} // دکمه جدید مترجم
+	btnGTranslate    = tele.Btn{Text: "🌍 مترجم هوشمند"} // دکمه مترجم
 	btnGBackMain     = tele.Btn{Text: "🔙 بازگشت به منوی اصلی"}
 
 	// دکمه‌های بازگشت در زیرمنوهای راهنما
@@ -168,7 +178,7 @@ func init() {
 	wolfPlusMenu.Reply(
 		wolfPlusMenu.Row(btnWP_Ghost, btnWP_AntiDelete),
 		wolfPlusMenu.Row(btnWP_PVLock, btnWP_Logger),
-		wolfPlusMenu.Row(btnWP_Back),
+		wolfPlusMenu.Row(btnWP_Refresh, btnWP_Back),
 	)
 
 	pvLockMenu.Reply(
@@ -184,7 +194,7 @@ func init() {
 		guideMenu.Row(btnGAction, btnGPurge),
 		guideMenu.Row(btnGTimer, btnGAutoReact),
 		guideMenu.Row(btnGPV, btnGGroup),
-		guideMenu.Row(btnGTranslate), // دکمه مترجم در اینجا لود می‌شود
+		guideMenu.Row(btnGTranslate),
 		guideMenu.Row(btnGBackMain),
 	)
 
@@ -208,7 +218,7 @@ func init() {
 	guideAutoReactMenu.Reply(guideAutoReactMenu.Row(btnAutoReactBack))
 	guidePVMenu.Reply(guidePVMenu.Row(btnPVBack))
 	guideGroupMenu.Reply(guideGroupMenu.Row(btnGroupBack))
-	guideTranslateMenu.Reply(guideTranslateMenu.Row(btnTranslateBack)) // منوی راهنمای مترجم با دکمه بازگشت
+	guideTranslateMenu.Reply(guideTranslateMenu.Row(btnTranslateBack)) // اضافه شدن منوی راهنمای مترجم
 
 	waitingReceiptMenu.Reply(
 		waitingReceiptMenu.Row(btnCancelReceipt),

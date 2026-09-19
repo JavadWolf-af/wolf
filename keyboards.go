@@ -1,19 +1,59 @@
 package main
 
-import tele "gopkg.in/telebot.v3"
+import (
+	tele "gopkg.in/telebot.v3"
+)
 
 // ==========================================
-// تعریف تمامی منوها (کیبوردهای ثابت)
+// 1. تعریف منوهای اصلی و مدیریت ربات مادر
 // ==========================================
 var (
 	userMenu           = &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminMenu          = &tele.ReplyMarkup{ResizeKeyboard: true}
 	adminPanelMenu     = &tele.ReplyMarkup{ResizeKeyboard: true}
+	accountConfigMenu  = &tele.ReplyMarkup{ResizeKeyboard: true}
+	supportConfigMenu  = &tele.ReplyMarkup{ResizeKeyboard: true}
 	profileMenu        = &tele.ReplyMarkup{ResizeKeyboard: true}
-	wolfPlusMenu       = &tele.ReplyMarkup{ResizeKeyboard: true}
-	pvLockMenu         = &tele.ReplyMarkup{ResizeKeyboard: true}
-	guideMenu          = &tele.ReplyMarkup{ResizeKeyboard: true}
+	confirmSelfMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
+	walletReplyMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
+	waitingReceiptMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
 
+	btnBuy        = userMenu.Text("🛍️ خرید سلف")
+	btnProfile    = userMenu.Text("👤 حساب کاربری")
+	btnWallet     = userMenu.Text("👛 کیف پول 💳")
+	btnWolfPlus   = userMenu.Text("🐺 ولف +")
+	btnSupport    = userMenu.Text("🎧 پشتیبانی")
+	btnGuide      = userMenu.Text("📚 راهنما")
+	btnAdminPanel = adminMenu.Text("⚙️ مدیریت")
+	btnBack       = adminMenu.Text("🔙 بازگشت")
+
+	btnConfigAccount  = adminPanelMenu.Text("🛠 تنظیم حساب بانکی")
+	btnConfigSupport  = adminPanelMenu.Text("📞 تنظیم پشتیبانی")
+	btnConfigKeyPrice = adminPanelMenu.Text("🔑 تنظیم نرخ کلید")
+
+	btnConfigCardNum  = accountConfigMenu.Text("💳 شماره کارت")
+	btnConfigCardName = accountConfigMenu.Text("👤 نام صاحب حساب")
+	btnConfigCardBank = accountConfigMenu.Text("🏦 نام بانک")
+	btnBackToAdminAcc = accountConfigMenu.Text("🔙 بازگشت به مدیریت")
+
+	btnConfigSupportText = supportConfigMenu.Text("📝 تنظیم متن پشتیبانی")
+	btnConfigSupportID   = supportConfigMenu.Text("🆔 تنظیم آیدی پشتیبانی")
+	btnBackToAdminSup    = supportConfigMenu.Text("🔙 بازگشت به مدیریت")
+
+	btnTurnOnSelf  = profileMenu.Text("🟢 روشن کردن سلف")
+	btnTurnOffSelf = profileMenu.Text("🔴 خاموش کردن سلف")
+	btnExitSelf    = profileMenu.Text("🛑 خروج سلف")
+
+	btnConfirmSelfAction = confirmSelfMenu.Text("🟢 تایید و فعالسازی")
+	btnWalletConfirm     = walletReplyMenu.Text("✅ تایید و ساخت فاکتور")
+	btnCancelReceipt     = waitingReceiptMenu.Text("🔙 لغو و بازگشت به منوی اصلی")
+)
+
+// ==========================================
+// 2. تعریف منوهای بخش راهنمای سلف
+// ==========================================
+var (
+	guideMenu          = &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideClockMenu     = &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideEmojiMenu     = &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideBioMenu       = &tele.ReplyMarkup{ResizeKeyboard: true}
@@ -26,146 +66,167 @@ var (
 	guideAutoReactMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
 	guidePVMenu        = &tele.ReplyMarkup{ResizeKeyboard: true}
 	guideGroupMenu     = &tele.ReplyMarkup{ResizeKeyboard: true}
-	guideTranslateMenu = &tele.ReplyMarkup{ResizeKeyboard: true} // منوی راهنمای مترجم
+	guideTranslateMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
 
-	walletReplyMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
-	waitingReceiptMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
-	confirmSelfMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
+	btnGClock     = guideMenu.Text("⏱ ساعت زنده")
+	btnGEmoji     = guideMenu.Text("🎭 اموجی رندوم")
+	btnGBio       = guideMenu.Text("📝 بیوگرافی هوشمند")
+	btnGFont      = guideMenu.Text("✒️ خوشنویسی")
+	btnGFriend    = guideMenu.Text("🌸 دوست")
+	btnGEnemy     = guideMenu.Text("⚔️ دشمن")
+	btnGAction    = guideMenu.Text("🎬 اکشن‌ها")
+	btnGPurge     = guideMenu.Text("🗑 پاکسازی")
+	btnGTimer     = guideMenu.Text("⏳ تایمر")
+	btnGAutoReact = guideMenu.Text("🔥 ری‌اکشن خودکار")
+	btnGPV        = guideMenu.Text("📩 پیوی همه")
+	btnGGroup     = guideMenu.Text("👥 گروه همه")
+	btnGTranslate = guideMenu.Text("🌍 مترجم هوشمند")
+	btnGBackMain  = guideMenu.Text("🔙 بازگشت به منوی اصلی")
 
-	accountConfigMenu  = &tele.ReplyMarkup{ResizeKeyboard: true}
-	supportConfigMenu  = &tele.ReplyMarkup{ResizeKeyboard: true}
+	btnClockOn   = guideClockMenu.Text("🟢 روشن کردن ساعت")
+	btnClockOff  = guideClockMenu.Text("🔴 خاموش کردن ساعت")
+	btnClockBack = guideClockMenu.Text("🔙 بازگشت به راهنما")
+
+	btnEmojiOn   = guideEmojiMenu.Text("🟢 روشن کردن اموجی")
+	btnEmojiOff  = guideEmojiMenu.Text("🔴 خاموش کردن اموجی")
+	btnEmojiBack = guideEmojiMenu.Text("🔙 بازگشت به راهنما")
+
+	btnBioOn   = guideBioMenu.Text("🟢 روشن کردن بیو (رندوم)")
+	btnBioOff  = guideBioMenu.Text("🔴 خاموش کردن بیو")
+	btnBioBack = guideBioMenu.Text("🔙 بازگشت به راهنما")
+
+	btnFriendList  = guideFriendMenu.Text("📋 لیست دوستان")
+	btnFriendClear = guideFriendMenu.Text("🗑 پاکسازی دوستان")
+	btnFriendBack  = guideFriendMenu.Text("🔙 بازگشت به راهنما")
+
+	btnEnemyList  = guideEnemyMenu.Text("📋 لیست دشمنان")
+	btnEnemyClear = guideEnemyMenu.Text("🗑 پاکسازی دشمنان")
+	btnEnemyBack  = guideEnemyMenu.Text("🔙 بازگشت به راهنما")
+
+	btnFontOn         = guideFontMenu.Text("🟢 روشن کردن خوشنویسی")
+	btnFontOff        = guideFontMenu.Text("🔴 خاموش کردن خوشنویسی")
+	btnFontBoldItalic = guideFontMenu.Text("✨ بولد ایتالیک (پیش‌فرض)")
+	btnFontBold       = guideFontMenu.Text("🖋 بولد")
+	btnFontItalic     = guideFontMenu.Text("🖊 ایتالیک")
+	btnFontUnderline  = guideFontMenu.Text("📜 زیر خط")
+	btnFontStrike     = guideFontMenu.Text("❌ خط خورده")
+	btnFontMono       = guideFontMenu.Text("💻 مونو")
+	btnFontSpoiler    = guideFontMenu.Text("🕵️ اسپویل")
+	btnFontBack       = guideFontMenu.Text("🔙 بازگشت به راهنما")
+
+	btnActionBack    = guideActionMenu.Text("🔙 بازگشت به راهنما")
+	btnPurgeBack     = guidePurgeMenu.Text("🔙 بازگشت به راهنما")
+	btnTimerBack     = guideTimerMenu.Text("🔙 بازگشت به راهنما")
+	btnAutoReactBack = guideAutoReactMenu.Text("🔙 بازگشت به راهنما")
+	btnPVBack        = guidePVMenu.Text("🔙 بازگشت به راهنما")
+	btnGroupBack     = guideGroupMenu.Text("🔙 بازگشت به راهنما")
+	btnTranslateBack = guideTranslateMenu.Text("🔙 بازگشت به راهنما")
 )
 
 // ==========================================
-// تعریف تمامی دکمه‌ها (Buttons)
+// 3. تعریف منوهای بخش امکانات ویژه (ولف +)
 // ==========================================
 var (
-	btnProfile   = tele.Btn{Text: "👤 پروفایل من"}
-	btnWolfPlus  = tele.Btn{Text: "🐺 امکانات ولف +"}
-	btnGuide     = tele.Btn{Text: "📚 راهنما و امکانات"}
-	btnWallet    = tele.Btn{Text: "👛 کیف پول"}
-	btnSupport   = tele.Btn{Text: "پشتیبانی 📞"}
-	btnBuy       = tele.Btn{Text: "خرید/تمدید سلف 🛒"}
-	btnBack      = tele.Btn{Text: "🔙 بازگشت"}
+	wolfPlusMenu  = &tele.ReplyMarkup{ResizeKeyboard: true}
+	antiDelMenu   = &tele.ReplyMarkup{ResizeKeyboard: true}
+	editLogMenu   = &tele.ReplyMarkup{ResizeKeyboard: true}
+	timerMenu     = &tele.ReplyMarkup{ResizeKeyboard: true}
+	groupDelMenu  = &tele.ReplyMarkup{ResizeKeyboard: true}
+	targetMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
+	protectedMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
+	ghostMenu     = &tele.ReplyMarkup{ResizeKeyboard: true}
+	notifyMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
+	pvLockMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
 
-	btnAdminPanel = tele.Btn{Text: "👑 پنل مدیریت"}
+	btnWP_AntiDel   = wolfPlusMenu.Text("🗑 ضد حذف")
+	btnWP_EditLog   = wolfPlusMenu.Text("📝 ادیت لاگر")
+	btnWP_Timer     = wolfPlusMenu.Text("📸 رسانه تایمردار")
+	btnWP_Group     = wolfPlusMenu.Text("👥 ضد حذف گروه")
+	btnWP_Target    = wolfPlusMenu.Text("🎯 ردیاب مخاطب")
+	btnWP_Protected = wolfPlusMenu.Text("🔓 دانلودر ضدکپی")
+	btnWP_Ghost     = wolfPlusMenu.Text("👻 حالت روح")
+	btnWP_Notify    = wolfPlusMenu.Text("🔔 اعلان ربات")
+	btnWP_PVLock    = wolfPlusMenu.Text("🔒 قفل پیوی")
+	btnWP_Refresh   = wolfPlusMenu.Text("🔄 بروزرسانی وضعیت")
+	btnWP_BackMain  = wolfPlusMenu.Text("🔙 بازگشت به منوی اصلی")
 
-	btnBackToAdminAcc = tele.Btn{Text: "🔙 بازگشت به پنل"}
-	btnBackToAdminSup = tele.Btn{Text: "🔙 بازگشت به پنل"}
-	btnConfigAccount  = tele.Btn{Text: "تنظیمات شماره کارت"}
-	btnConfigCardNum  = tele.Btn{Text: "تغییر شماره کارت"}
-	btnConfigSupport  = tele.Btn{Text: "تنظیمات پشتیبانی"}
+	btnAD_On   = antiDelMenu.Text("🟢 روشن کردن ضد حذف")
+	btnAD_Off  = antiDelMenu.Text("🔴 خاموش کردن ضد حذف")
+	btnAD_Back = antiDelMenu.Text("🔙 بازگشت به ولف +")
 
-	btnTurnOnSelf        = tele.Btn{Text: "🟢 روشن کردن سلف"}
-	btnTurnOffSelf       = tele.Btn{Text: "🔴 خاموش کردن سلف"}
-	btnExitSelf          = tele.Btn{Text: "🛑 خروج از اکانت"}
-	btnConfirmSelfAction = tele.Btn{Text: "تایید و ادامه"}
-	btnCancelReceipt     = tele.Btn{Text: "لغو پرداخت"}
-	btnWalletConfirm     = tele.Btn{Text: "✅ تایید مبلغ و پرداخت"}
+	btnEL_On   = editLogMenu.Text("🟢 روشن کردن ادیت لاگر")
+	btnEL_Off  = editLogMenu.Text("🔴 خاموش کردن ادیت لاگر")
+	btnEL_Back = editLogMenu.Text("🔙 بازگشت به ولف +")
 
-	// دکمه‌های امکانات ولف پلاس
-	btnWP_Ghost      = tele.Btn{Text: "👻 حالت روح"}
-	btnWP_AntiDelete = tele.Btn{Text: "🚫 ضد حذف"}
-	btnWP_PVLock     = tele.Btn{Text: "🔒 قفل پیوی"}
-	btnWP_Logger     = tele.Btn{Text: "📝 لاگر پیام"}
-	btnWP_Back       = tele.Btn{Text: "🔙 بازگشت به منوی اصلی"}
-	btnWP_Refresh    = tele.Btn{Text: "🔄 بروزرسانی وضعیت"}
+	btnTM_On   = timerMenu.Text("🟢 روشن کردن تایمردار")
+	btnTM_Off  = timerMenu.Text("🔴 خاموش کردن تایمردار")
+	btnTM_Back = timerMenu.Text("🔙 بازگشت به ولف +")
 
-	// دکمه‌های جا افتاده زیرمنوهای ولف پلاس که ارور می‌دادند
-	btnAD_Back           = tele.Btn{Text: "🔙 بازگشت به ولف +"}
-	btnEL_Back           = tele.Btn{Text: "🔙 بازگشت به ولف +"}
-	btnTM_Back           = tele.Btn{Text: "🔙 بازگشت به ولف +"}
-	btnGD_Back           = tele.Btn{Text: "🔙 بازگشت به ولف +"}
-	btnTG_Back           = tele.Btn{Text: "🔙 بازگشت به ولف +"}
-	btnTG_BackToTarget   = tele.Btn{Text: "🔙 بازگشت به تارگت"}
-	btnPC_BackToProtMenu = tele.Btn{Text: "🔙 بازگشت به محافظت"}
+	btnGD_Add   = groupDelMenu.Text("➕ افزودن گروه به ضد حذف")
+	btnGD_Clear = groupDelMenu.Text("🗑 پاکسازی لیست گروه‌ها")
+	btnGD_Back  = groupDelMenu.Text("🔙 بازگشت به ولف +")
 
-	btnPV_On   = tele.Btn{Text: "🟢 روشن"}
-	btnPV_Off  = tele.Btn{Text: "🔴 خاموش"}
-	btnPV_Back = tele.Btn{Text: "🔙 بازگشت به ولف +"}
+	btnTG_Add          = targetMenu.Text("➕ افزودن مخاطب")
+	btnTG_Delete       = targetMenu.Text("➖ حذف مخاطب")
+	btnTG_List         = targetMenu.Text("📋 لیست مخاطبان")
+	btnTG_Clear        = targetMenu.Text("🗑 پاکسازی لیست اهداف")
+	btnTG_Back         = targetMenu.Text("🔙 بازگشت به ولف +")
+	btnTG_BackToTarget = targetMenu.Text("🔙 بازگشت به ردیاب")
 
-	// دکمه‌های بخش راهنما
-	btnGClock        = tele.Btn{Text: "⏱ ساعت زنده"}
-	btnGEmoji        = tele.Btn{Text: "🎭 اموجی رندوم"}
-	btnGBio          = tele.Btn{Text: "📝 بیو هوشمند"}
-	btnGFriend       = tele.Btn{Text: "🌸 سیستم دوست"}
-	btnGEnemy        = tele.Btn{Text: "⚔️ سیستم دشمن"}
-	btnGFont         = tele.Btn{Text: "✒️ خوشنویسی"}
-	btnGAction       = tele.Btn{Text: "🎬 اکشن جعلی"}
-	btnGPurge        = tele.Btn{Text: "🗑 پاکسازی (Purge)"}
-	btnGTimer        = tele.Btn{Text: "⏳ تایمر زنده"}
-	btnGAutoReact    = tele.Btn{Text: "🔥 ری‌اکشن خودکار"}
-	btnGPV           = tele.Btn{Text: "📩 پیوی همه"}
-	btnGGroup        = tele.Btn{Text: "👥 گروه همه"}
-	btnGTranslate    = tele.Btn{Text: "🌍 مترجم هوشمند"} // دکمه مترجم
-	btnGBackMain     = tele.Btn{Text: "🔙 بازگشت به منوی اصلی"}
+	btnPC_On             = protectedMenu.Text("🟢 روشن کردن دانلودر ضدکپی")
+	btnPC_Off            = protectedMenu.Text("🔴 خاموش کردن دانلودر ضدکپی")
+	btnPC_Add            = protectedMenu.Text("➕ افزودن کانال/گروه")
+	btnPC_Delete         = protectedMenu.Text("➖ حذف کانال/گروه")
+	btnPC_List           = protectedMenu.Text("📋 لیست کانال‌های قفل")
+	btnPC_Clear          = protectedMenu.Text("🗑 پاکسازی لیست")
+	btnPC_Back           = protectedMenu.Text("🔙 بازگشت به ولف +")
+	btnPC_BackToProtMenu = protectedMenu.Text("🔙 بازگشت به منوی ضدکپی")
 
-	// دکمه‌های بازگشت در زیرمنوهای راهنما
-	btnClockBack     = tele.Btn{Text: "🔙 بازگشت به راهنما"}
-	btnEmojiBack     = tele.Btn{Text: "🔙 بازگشت به راهنما"}
-	btnBioBack       = tele.Btn{Text: "🔙 بازگشت به راهنما"}
-	btnFriendBack    = tele.Btn{Text: "🔙 بازگشت به راهنما"}
-	btnEnemyBack     = tele.Btn{Text: "🔙 بازگشت به راهنما"}
-	btnFontBack      = tele.Btn{Text: "🔙 بازگشت به راهنما"}
-	btnActionBack    = tele.Btn{Text: "🔙 بازگشت به راهنما"}
-	btnPurgeBack     = tele.Btn{Text: "🔙 بازگشت به راهنما"}
-	btnTimerBack     = tele.Btn{Text: "🔙 بازگشت به راهنما"}
-	btnAutoReactBack = tele.Btn{Text: "🔙 بازگشت به راهنما"}
-	btnPVBack        = tele.Btn{Text: "🔙 بازگشت به راهنما"}
-	btnGroupBack     = tele.Btn{Text: "🔙 بازگشت به راهنما"}
-	btnTranslateBack = tele.Btn{Text: "🔙 بازگشت به راهنما"} // دکمه برگشت صفحه مترجم
+	btnGH_On   = ghostMenu.Text("🟢 روشن کردن حالت روح")
+	btnGH_Off  = ghostMenu.Text("🔴 خاموش کردن حالت روح")
+	btnGH_Back = ghostMenu.Text("🔙 بازگشت به ولف +")
 
-	// تنظیمات داخل راهنما
-	btnClockOn  = tele.Btn{Text: "🟢 روشن کردن ساعت"}
-	btnClockOff = tele.Btn{Text: "🔴 خاموش کردن ساعت"}
-	btnEmojiOn  = tele.Btn{Text: "🟢 روشن کردن اموجی"}
-	btnEmojiOff = tele.Btn{Text: "🔴 خاموش کردن اموجی"}
-	btnBioOn    = tele.Btn{Text: "🟢 روشن کردن بیو"}
-	btnBioOff   = tele.Btn{Text: "🔴 خاموش کردن بیو"}
-	btnFriendList  = tele.Btn{Text: "📋 لیست دوستان"}
-	btnFriendClear = tele.Btn{Text: "🗑 پاکسازی لیست دوستان"}
-	btnEnemyList   = tele.Btn{Text: "📋 لیست دشمنان"}
-	btnEnemyClear  = tele.Btn{Text: "🗑 پاکسازی لیست دشمنان"}
-	btnFontOn  = tele.Btn{Text: "🟢 روشن کردن فونت"}
-	btnFontOff = tele.Btn{Text: "🔴 خاموش کردن فونت"}
+	btnNT_On   = notifyMenu.Text("🟢 روشن کردن اعلان‌ها")
+	btnNT_Off  = notifyMenu.Text("🔴 خاموش کردن اعلان‌ها")
+	btnNT_Back = notifyMenu.Text("🔙 بازگشت به ولف +")
 
-	btnFontBoldItalic = tele.Btn{Text: "بولد ایتالیک"}
-	btnFontBold       = tele.Btn{Text: "بولد"}
-	btnFontItalic     = tele.Btn{Text: "ایتالیک"}
-	btnFontUnderline  = tele.Btn{Text: "زیر خط"}
-	btnFontStrike     = tele.Btn{Text: "خط خورده"}
-	btnFontMono       = tele.Btn{Text: "مونو"}
-	btnFontSpoiler    = tele.Btn{Text: "اسپویل"}
+	btnPV_On   = pvLockMenu.Text("🟢 قفل پیوی روشن")
+	btnPV_Off  = pvLockMenu.Text("🔴 قفل پیوی خاموش")
+	btnPV_Back = pvLockMenu.Text("🔙 بازگشت به ولف +")
 )
 
+// ==========================================
+// چیدمان و ساختار کیبوردها (تابع init به صورت خودکار اجرا می‌شود)
+// ==========================================
 func init() {
-	// Main Menus
+	// چیدمان منوهای اصلی
 	userMenu.Reply(
-		userMenu.Row(btnProfile),
-		userMenu.Row(btnWolfPlus, btnGuide),
-		userMenu.Row(btnWallet, btnBuy),
-		userMenu.Row(btnSupport),
+		userMenu.Row(btnBuy, btnProfile),
+		userMenu.Row(btnWallet, btnWolfPlus),
+		userMenu.Row(btnSupport, btnGuide),
 	)
 
 	adminMenu.Reply(
+		adminMenu.Row(btnBuy, btnProfile),
+		adminMenu.Row(btnWallet, btnWolfPlus),
+		adminMenu.Row(btnSupport, btnGuide),
 		adminMenu.Row(btnAdminPanel),
-		adminMenu.Row(btnProfile),
-		adminMenu.Row(btnWolfPlus, btnGuide),
-		adminMenu.Row(btnWallet, btnBuy),
-		adminMenu.Row(btnSupport),
 	)
 
 	adminPanelMenu.Reply(
 		adminPanelMenu.Row(btnConfigAccount, btnConfigSupport),
+		adminPanelMenu.Row(btnConfigKeyPrice),
 		adminPanelMenu.Row(btnBack),
 	)
 
 	accountConfigMenu.Reply(
-		accountConfigMenu.Row(btnConfigCardNum),
+		accountConfigMenu.Row(btnConfigCardNum, btnConfigCardName),
+		accountConfigMenu.Row(btnConfigCardBank),
 		accountConfigMenu.Row(btnBackToAdminAcc),
 	)
 
 	supportConfigMenu.Reply(
+		supportConfigMenu.Row(btnConfigSupportText, btnConfigSupportID),
 		supportConfigMenu.Row(btnBackToAdminSup),
 	)
 
@@ -173,55 +234,6 @@ func init() {
 		profileMenu.Row(btnTurnOnSelf, btnTurnOffSelf),
 		profileMenu.Row(btnExitSelf),
 		profileMenu.Row(btnBack),
-	)
-
-	wolfPlusMenu.Reply(
-		wolfPlusMenu.Row(btnWP_Ghost, btnWP_AntiDelete),
-		wolfPlusMenu.Row(btnWP_PVLock, btnWP_Logger),
-		wolfPlusMenu.Row(btnWP_Refresh, btnWP_Back),
-	)
-
-	pvLockMenu.Reply(
-		pvLockMenu.Row(btnPV_On, btnPV_Off),
-		pvLockMenu.Row(btnPV_Back),
-	)
-
-	// منوی اصلی راهنما
-	guideMenu.Reply(
-		guideMenu.Row(btnGClock, btnGEmoji),
-		guideMenu.Row(btnGBio, btnGFont),
-		guideMenu.Row(btnGFriend, btnGEnemy),
-		guideMenu.Row(btnGAction, btnGPurge),
-		guideMenu.Row(btnGTimer, btnGAutoReact),
-		guideMenu.Row(btnGPV, btnGGroup),
-		guideMenu.Row(btnGTranslate),
-		guideMenu.Row(btnGBackMain),
-	)
-
-	guideClockMenu.Reply(guideClockMenu.Row(btnClockOn, btnClockOff), guideClockMenu.Row(btnClockBack))
-	guideEmojiMenu.Reply(guideEmojiMenu.Row(btnEmojiOn, btnEmojiOff), guideEmojiMenu.Row(btnEmojiBack))
-	guideBioMenu.Reply(guideBioMenu.Row(btnBioOn, btnBioOff), guideBioMenu.Row(btnBioBack))
-	guideFriendMenu.Reply(guideFriendMenu.Row(btnFriendList, btnFriendClear), guideFriendMenu.Row(btnFriendBack))
-	guideEnemyMenu.Reply(guideEnemyMenu.Row(btnEnemyList, btnEnemyClear), guideEnemyMenu.Row(btnEnemyBack))
-
-	guideFontMenu.Reply(
-		guideFontMenu.Row(btnFontOn, btnFontOff),
-		guideFontMenu.Row(btnFontBoldItalic, btnFontBold, btnFontItalic),
-		guideFontMenu.Row(btnFontUnderline, btnFontStrike, btnFontMono),
-		guideFontMenu.Row(btnFontSpoiler),
-		guideFontMenu.Row(btnFontBack),
-	)
-
-	guideActionMenu.Reply(guideActionMenu.Row(btnActionBack))
-	guidePurgeMenu.Reply(guidePurgeMenu.Row(btnPurgeBack))
-	guideTimerMenu.Reply(guideTimerMenu.Row(btnTimerBack))
-	guideAutoReactMenu.Reply(guideAutoReactMenu.Row(btnAutoReactBack))
-	guidePVMenu.Reply(guidePVMenu.Row(btnPVBack))
-	guideGroupMenu.Reply(guideGroupMenu.Row(btnGroupBack))
-	guideTranslateMenu.Reply(guideTranslateMenu.Row(btnTranslateBack)) // اضافه شدن منوی راهنمای مترجم
-
-	waitingReceiptMenu.Reply(
-		waitingReceiptMenu.Row(btnCancelReceipt),
 	)
 
 	confirmSelfMenu.Reply(
@@ -233,17 +245,84 @@ func init() {
 		walletReplyMenu.Row(btnWalletConfirm),
 		walletReplyMenu.Row(btnBack),
 	)
+
+	waitingReceiptMenu.Reply(waitingReceiptMenu.Row(btnCancelReceipt))
+
+	// چیدمان منوهای راهنما
+	guideMenu.Reply(
+		guideMenu.Row(btnGClock, btnGEmoji),
+		guideMenu.Row(btnGBio, btnGFont),
+		guideMenu.Row(btnGFriend, btnGEnemy),
+		guideMenu.Row(btnGAction, btnGPurge),
+		guideMenu.Row(btnGTimer, btnGAutoReact),
+		guideMenu.Row(btnGPV, btnGGroup),
+		guideMenu.Row(btnGTranslate),
+		guideMenu.Row(btnGBackMain),
+	)
+	guideClockMenu.Reply(guideClockMenu.Row(btnClockOn, btnClockOff), guideClockMenu.Row(btnClockBack))
+	guideEmojiMenu.Reply(guideEmojiMenu.Row(btnEmojiOn, btnEmojiOff), guideEmojiMenu.Row(btnEmojiBack))
+	guideBioMenu.Reply(guideBioMenu.Row(btnBioOn, btnBioOff), guideBioMenu.Row(btnBioBack))
+	guideFriendMenu.Reply(guideFriendMenu.Row(btnFriendList, btnFriendClear), guideFriendMenu.Row(btnFriendBack))
+	guideEnemyMenu.Reply(guideEnemyMenu.Row(btnEnemyList, btnEnemyClear), guideEnemyMenu.Row(btnEnemyBack))
+	guideFontMenu.Reply(
+		guideFontMenu.Row(btnFontOn, btnFontOff),
+		guideFontMenu.Row(btnFontBoldItalic),
+		guideFontMenu.Row(btnFontBold, btnFontItalic),
+		guideFontMenu.Row(btnFontUnderline, btnFontStrike),
+		guideFontMenu.Row(btnFontMono, btnFontSpoiler),
+		guideFontMenu.Row(btnFontBack),
+	)
+	guideActionMenu.Reply(guideActionMenu.Row(btnActionBack))
+	guidePurgeMenu.Reply(guidePurgeMenu.Row(btnPurgeBack))
+	guideTimerMenu.Reply(guideTimerMenu.Row(btnTimerBack))
+	guideAutoReactMenu.Reply(guideAutoReactMenu.Row(btnAutoReactBack))
+	guidePVMenu.Reply(guidePVMenu.Row(btnPVBack))
+	guideGroupMenu.Reply(guideGroupMenu.Row(btnGroupBack))
+	guideTranslateMenu.Reply(guideTranslateMenu.Row(btnTranslateBack))
+
+	// چیدمان منوهای ولف پلاس
+	wolfPlusMenu.Reply(
+		wolfPlusMenu.Row(btnWP_AntiDel, btnWP_EditLog),
+		wolfPlusMenu.Row(btnWP_Timer, btnWP_Group),
+		wolfPlusMenu.Row(btnWP_Target, btnWP_Protected),
+		wolfPlusMenu.Row(btnWP_Ghost, btnWP_Notify),
+		wolfPlusMenu.Row(btnWP_PVLock),
+		wolfPlusMenu.Row(btnWP_Refresh, btnWP_BackMain),
+	)
+	antiDelMenu.Reply(antiDelMenu.Row(btnAD_On, btnAD_Off), antiDelMenu.Row(btnAD_Back))
+	editLogMenu.Reply(editLogMenu.Row(btnEL_On, btnEL_Off), editLogMenu.Row(btnEL_Back))
+	timerMenu.Reply(timerMenu.Row(btnTM_On, btnTM_Off), timerMenu.Row(btnTM_Back))
+	groupDelMenu.Reply(groupDelMenu.Row(btnGD_Add, btnGD_Clear), groupDelMenu.Row(btnGD_Back))
+	targetMenu.Reply(targetMenu.Row(btnTG_Add, btnTG_Delete), targetMenu.Row(btnTG_List, btnTG_Clear), targetMenu.Row(btnTG_Back))
+	protectedMenu.Reply(
+		protectedMenu.Row(btnPC_On, btnPC_Off),
+		protectedMenu.Row(btnPC_Add, btnPC_Delete),
+		protectedMenu.Row(btnPC_List, btnPC_Clear),
+		protectedMenu.Row(btnPC_Back),
+	)
+	ghostMenu.Reply(ghostMenu.Row(btnGH_On, btnGH_Off), ghostMenu.Row(btnGH_Back))
+	notifyMenu.Reply(notifyMenu.Row(btnNT_On, btnNT_Off), notifyMenu.Row(btnNT_Back))
+	pvLockMenu.Reply(pvLockMenu.Row(btnPV_On, btnPV_Off), pvLockMenu.Row(btnPV_Back))
 }
 
+// دکمه‌های شیشه‌ای کیف پول (Inline Keyboard)
 func getWalletInlineKeyboard() *tele.ReplyMarkup {
 	menu := &tele.ReplyMarkup{}
-	btn10k := menu.Data("10,000 تومان", "wallet_change", "10000")
-	btn20k := menu.Data("20,000 تومان", "wallet_change", "20000")
-	btn50k := menu.Data("50,000 تومان", "wallet_change", "50000")
+	btnP25k := menu.Data("➕ 25,000", "wallet_change", "25000")
+	btnP50k := menu.Data("➕ 50,000", "wallet_change", "50000")
+	btnP100k := menu.Data("➕ 100,000", "wallet_change", "100000")
+	btnM1k := menu.Data("➖ 1,000", "wallet_change", "-1000")
+	btnP1k := menu.Data("➕ 1,000", "wallet_change", "1000")
+	btnM5k := menu.Data("➖ 5,000", "wallet_change", "-5000")
+	btnP5k := menu.Data("➕ 5,000", "wallet_change", "5000")
+	btnM10k := menu.Data("➖ 10,000", "wallet_change", "-10000")
+	btnP10k := menu.Data("➕ 10,000", "wallet_change", "10000")
 
 	menu.Inline(
-		menu.Row(btn10k, btn20k),
-		menu.Row(btn50k),
+		menu.Row(btnP25k, btnP50k, btnP100k),
+		menu.Row(btnM1k, btnP1k),
+		menu.Row(btnM5k, btnP5k),
+		menu.Row(btnM10k, btnP10k),
 	)
 	return menu
 }

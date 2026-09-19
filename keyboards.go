@@ -248,6 +248,23 @@ func init() {
 
 	waitingReceiptMenu.Reply(waitingReceiptMenu.Row(btnCancelReceipt))
 
+	// دکمه مترجم را به یک ردیف جدید در منوی راهنما (guideMenu) اضافه کن
+	guideMenu.Reply(
+		guideMenu.Row(btnGClock, btnGEmoji),
+		guideMenu.Row(btnGBio, btnGFont),
+		guideMenu.Row(btnGFriend, btnGEnemy),
+		guideMenu.Row(btnGAction, btnGPurge),
+		guideMenu.Row(btnGTimer, btnGAutoReact),
+		guideMenu.Row(btnGPV, btnGGroup),
+		guideMenu.Row(btnGTranslate), // این خط اضافه شود
+		guideMenu.Row(btnGBackMain),
+	)
+
+	// منوی بازگشتِ صفحه مترجم
+	guideTranslateMenu.Reply(
+		guideTranslateMenu.Row(btnTranslateBack),
+	)
+
 	// چیدمان منوهای راهنما
 	guideMenu.Reply(
 		guideMenu.Row(btnGClock, btnGEmoji),

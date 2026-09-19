@@ -17,6 +17,7 @@ var (
 	confirmSelfMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
 	walletReplyMenu    = &tele.ReplyMarkup{ResizeKeyboard: true}
 	waitingReceiptMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
+	guideTranslateMenu = &tele.ReplyMarkup{ResizeKeyboard: true}
 
 	btnBuy        = userMenu.Text("🛍️ خرید سلف")
 	btnProfile    = userMenu.Text("👤 حساب کاربری")

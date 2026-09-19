@@ -855,20 +855,26 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						
 						if isAllowed == 0 {
 							go func(p tg.InputPeerClass, mID int) {
+								// تاخیر نیم ثانیه‌ای برای جلوگیری از باگ (Race Condition) تلگرام
+								// تا تلگرام اول پیام را کامل ثبت کند و بعد ما کل دیالوگ را نابود کنیم 
+								// تا هیچ صفحه خالی یا ردی در گوشی شما نماند.
+								time.Sleep(500 * time.Millisecond)
+
 								dCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 								defer cancel()
 								
-								// 1. حذف پیام اولیه
+								// 1. پاکسازی کامل تاریخچه و محو کردن خود دیالوگ (چت) از لیست شما و طرف مقابل
+								_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
+									JustClear: false, // این گزینه باعث حذف کامل باکس چت می‌شود
+									Revoke:    true,  // دو طرفه
+									Peer:      p,
+									MaxID:     0,     // 0 یعنی تمام پیام‌ها
+								})
+
+								// 2. شلیک نهایی به خود پیام برای اطمینان از پاک شدن در سرور
 								_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
 									Revoke: true,
 									ID:     []int{mID},
-								})
-								
-								// 2. پاکسازی کامل تاریخچه چت به صورت دوطرفه و محو کامل از سمت خود شما
-								_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
-									Peer:   p,
-									MaxID:  0,
-									Revoke: true,
 								})
 							}(inputPeer, msg.ID)
 							return // ❌ خروج فوری از تابع (توقف ارسال به حالت روح یا لاگر)
@@ -2245,7 +2251,7 @@ func main() {
 		return c.Send("⏳ <b>راهنمای شمارش معکوس (Timer)</b>\n\nبا ارسال دستور <code>تایمر 10</code>، یک شمارش معکوس زیبا در پیام ایجاد می‌شود.", guideTimerMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnGAutoReact, func(c tele.Context) error {
-		return c.Send("🔥 <b>راهنمای ری‌اکشن خودکار (Auto React)</b>\n\nبا ریپلای روی پیام یک نفر و ارسال <code>ری‌اکشن ❤️</code>، ربات به طور خودکار به پیام‌های آن شخص ریکلای می‌کند.", guideAutoReactMenu, tele.ModeHTML)
+		return c.Send("🔥 <b>راهنمای ری‌اکشن خودکار (Auto React)</b>\n\nبا ریپلای روی پیام یک نفر و ارسال <code>ری‌اکشن ❤️</code>، ربات به طور خودکار به پیام‌های آن شخص ری‌اکشن می‌زند.", guideAutoReactMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnGPV, func(c tele.Context) error {
 		return c.Send("📩 <b>راهنمای ارسال به پیوی همه</b>\n\nبا ریپلای روی یک پیام و ارسال <code>پیوی همه</code>، آن پیام برای تمام مخاطبان پیوی ارسال می‌شود.", guidePVMenu, tele.ModeHTML)
@@ -2278,12 +2284,6 @@ func main() {
 ▫️ 🎭 <b>اموجی رندوم:</b> %s
 ▫️ 📝 <b>بیوگرافی هوشمند:</b> %s
 ▫️ ✒️ <b>خوشنویسی پیام‌ها:</b> %s
-▫️ 🌸 <b>سیستم دوست:</b> <code>0 نفر</code> (همیشه فعال)
-▫️ ⚔️ <b>سیستم دشمن:</b> <code>2 نفر</code> (همیشه فعال)
-▫️ 🎬 <b>اکشن‌های جعلی:</b> فعال و آماده
-▫️ 🗑 <b>پاکسازی پیام‌ها:</b> فعال و آماده
-▫️ ⏳ <b>تایمر زنده:</b> فعال و آماده
-▫️ 🔥 <b>ری‌اکشن خودکار:</b> فعال و آماده
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>جهت مطالعه راهنما و تنظیم قابلیت‌ها، از کیبورد ثابت زیر استفاده کنید:</i>`,
 			clockStatus, emojiStatus, bioStatus, fontStatus)

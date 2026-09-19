@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"io"
-	"net/http"
+	"errors"
 	"fmt"
+	"io"
 	"math/rand"
+	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -162,6 +164,7 @@ func getKeyPrice() int {
 	}
 	return price
 }
+
 // ------------------------------------
 // سیستم مترجم هوشمند و بررسی زبان
 // ------------------------------------

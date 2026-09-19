@@ -725,6 +725,44 @@ func resolvePrivatePeerForHistory(ctx context.Context, client *telegram.Client, 
 	return nil, fmt.Errorf("valid access hash for private user %d not found", senderID)
 }
 
+func isFirstPrivateMessage(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, currentMsgID int) (bool, error) {
+	if inputPeer == nil {
+		return false, errors.New("private chat peer is nil")
+	}
+
+	res, err := client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+		Peer:  inputPeer,
+		Limit: 20,
+	})
+	if err != nil {
+		return false, fmt.Errorf("get history for first-message check: %w", err)
+	}
+
+	var messages []tg.MessageClass
+	switch h := res.(type) {
+	case *tg.MessagesMessages:
+		messages = h.Messages
+	case *tg.MessagesMessagesSlice:
+		messages = h.Messages
+	case *tg.MessagesChannelMessages:
+		messages = h.Messages
+	default:
+		return true, nil
+	}
+
+	for _, mClass := range messages {
+		m, ok := mClass.(*tg.Message)
+		if !ok {
+			continue
+		}
+		if m.ID != currentMsgID {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
 func deletePrivateHistorySilently(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass) error {
 	if inputPeer == nil {
 		return errors.New("private chat peer is nil")
@@ -1038,8 +1076,36 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 								dCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 								defer cancel()
 
-								// ابتدا خود پیام ورودی را حذف می‌کنیم. deleteMessages به peer نیاز ندارد
-								// و در صورت خطای resolve هم حداقل پیام مزاحم ناپدید می‌شود.
+								// برای عملیات getHistory ابتدا یک peer معتبر با access_hash پیدا می‌کنیم.
+								peer, err := resolvePrivatePeerForHistory(dCtx, client, entities, senderID)
+								if err != nil {
+									if up, ok := originalPeer.(*tg.InputPeerUser); ok && up.AccessHash != 0 {
+										peer = up
+									} else {
+										log.Printf("Delete PV History Silently Error: resolve peer: %v", err)
+										// حتی اگر peer قابل resolve نبود، حداقل خود پیام ورودی حذف شود.
+										if _, delErr := client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
+											Revoke: true,
+											ID:     []int{msgID},
+										}); delErr != nil {
+											log.Printf("Delete PV Message Error: %v", delErr)
+										}
+										return
+									}
+								}
+
+								// تشخیص «پیام اول»: اگر به‌جز همین پیام، پیام دیگری در تاریخچه نباشد.
+								// این بررسی را قبل از حذف انجام می‌دهیم تا بتوانیم بعداً در صورت فعال بودن
+								// گزینه، خود dialog را نیز برای هر دو طرف حذف کنیم.
+								firstMessage, firstErr := isFirstPrivateMessage(dCtx, client, peer, msgID)
+								if firstErr != nil {
+									log.Printf("PV First Message Check Error: %v", firstErr)
+								}
+
+								var deleteChatEnabled bool
+								_ = db.QueryRow("SELECT is_pv_delete_chat_enabled FROM users WHERE id = ?", userID).Scan(&deleteChatEnabled)
+
+								// ابتدا خود پیام ورودی را برای هر دو طرف حذف می‌کنیم.
 								if _, err := client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
 									Revoke: true,
 									ID:     []int{msgID},
@@ -1047,21 +1113,26 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 									log.Printf("Delete PV Message Error: %v", err)
 								}
 
-								// برای getHistory باید InputPeerUser معتبر (با access hash) داشته باشیم.
-								// در صورت نبودن یا min بودن user، از لیست Dialogs آن را resolve می‌کنیم.
-								peer, err := resolvePrivatePeerForHistory(dCtx, client, entities, senderID)
-								if err != nil {
-									// اگر peer اولیه معتبر بود، به عنوان آخرین fallback امتحان می‌کنیم.
-									if up, ok := originalPeer.(*tg.InputPeerUser); ok && up.AccessHash != 0 {
-										peer = up
-									} else {
-										log.Printf("Delete PV History Silently Error: resolve peer: %v", err)
-										return
-									}
-								}
-
+								// تمام پیام‌های موجود در چت را بدون messages.deleteHistory حذف می‌کنیم.
+								// بنابراین مسیر عادی قفل پیوی، پیام «History was cleared» را ایجاد نمی‌کند.
 								if err := deletePrivateHistorySilently(dCtx, client, peer); err != nil {
 									log.Printf("Delete PV History Silently Error: %v", err)
+								}
+
+								// در صورت فعال بودن این قابلیت، فقط وقتی پیام واقعاً اولین پیام چت بوده،
+								// delete chat دوطرفه را انجام می‌دهیم. این مرحله از messages.deleteHistory
+								// استفاده می‌کند و ممکن است طبق رفتار کلاینت تلگرام عبارت «History was cleared»
+								// در رابط کاربری ظاهر شود؛ این بخش فقط با دستور مخصوص فعال می‌شود.
+								if deleteChatEnabled && firstMessage {
+									_, err := client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
+										JustClear: false,
+										Revoke:    true,
+										Peer:      peer,
+										MaxID:     0,
+									})
+									if err != nil {
+										log.Printf("Delete PV Chat Two-Sided Error: %v", err)
+									}
 								}
 							}(senderID, msg.ID, e, inputPeer)
 							return
@@ -1153,6 +1224,18 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			_, _ = db.Exec("UPDATE users SET is_pv_lock_enabled = FALSE WHERE id = ?", userID)
 			if inputPeer != nil {
 				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔓 قفل پیوی خاموش شد")
+			}
+			return
+		} else if text == "قفل پیوی حذف چت روشن" {
+			_, _ = db.Exec("UPDATE users SET is_pv_delete_chat_enabled = TRUE WHERE id = ?", userID)
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "✅ حذف دوطرفه چت برای پیام اول روشن شد")
+			}
+			return
+		} else if text == "قفل پیوی حذف چت خاموش" {
+			_, _ = db.Exec("UPDATE users SET is_pv_delete_chat_enabled = FALSE WHERE id = ?", userID)
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ حذف دوطرفه چت برای پیام اول خاموش شد")
 			}
 			return
 		} else if text == "قفل پیوی باز" {
@@ -2141,6 +2224,16 @@ func startTelegramLogin(ctx context.Context, userID int64, cfg Config, authHandl
 	}
 }
 
+// ensurePVDeleteChatColumn ستون فعال‌سازی حذف کامل چت برای اولین پیام را اضافه می‌کند.
+// این گزینه به‌صورت پایدار در دیتابیس نگهداری می‌شود.
+func ensurePVDeleteChatColumn() {
+	_, err := db.Exec(`ALTER TABLE users
+		ADD COLUMN IF NOT EXISTS is_pv_delete_chat_enabled BOOLEAN NOT NULL DEFAULT FALSE`)
+	if err != nil {
+		log.Printf("PV Delete Chat DB Migration Error: %v", err)
+	}
+}
+
 // =====================================
 // راه‌اندازی اصلی ربات مادر
 // =====================================
@@ -2154,6 +2247,7 @@ func main() {
 	InitDB(cfg)
 	defer db.Close()
 
+	ensurePVDeleteChatColumn()
 	InitWolfPlusDB()
 
 	pref := tele.Settings{

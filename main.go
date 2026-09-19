@@ -854,19 +854,24 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						_ = db.QueryRow("SELECT COUNT(*) FROM wolf_pv_allowed WHERE owner_id = ? AND allowed_id = ?", userID, senderID).Scan(&isAllowed)
 						
 						if isAllowed == 0 {
-							go func(p tg.InputPeerClass) {
+							go func(p tg.InputPeerClass, mID int) {
 								dCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 								defer cancel()
 								
-								// فقط از تابع حذف تاریخچه استفاده می‌کنیم تا کل باکس چت محو شود
-								// با قرار دادن JustClear: false، باکس چت از لیست دیالوگ‌ها به صورت دوطرفه پاک خواهد شد
+								// ۱. ضربه اول: نابودی آنی خود پیام در صدم ثانیه
+								_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
+									Revoke: true,
+									ID:     []int{mID},
+								})
+								
+								// ۲. ضربه دوم: پاکسازی کامل چت برای پاک شدن دیالوگ از سمت دو طرف
 								_, _ = client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
 									JustClear: false,
 									Revoke:    true,
 									Peer:      p,
-									MaxID:     0,
+									MaxID:     mID, // استفاده از ID پیام به جای 0 برای جلوگیری از ارور تلگرام
 								})
-							}(inputPeer)
+							}(inputPeer, msg.ID)
 							return // ❌ خروج فوری از تابع (توقف ارسال به حالت روح یا لاگر)
 						}
 					}

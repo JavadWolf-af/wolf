@@ -677,6 +677,54 @@ func deleteMessageBatch(ctx context.Context, client *telegram.Client, inputPeer 
 // deletePrivateHistorySilently تاریخچه یک چت خصوصی را با حذف تک‌تک پیام‌ها
 // برای هر دو طرف پاک می‌کند. برخلاف messages.deleteHistory از deleteHistory
 // استفاده نمی‌شود تا پیام سیستمی «History was cleared» ساخته نشود.
+// resolvePrivatePeerForHistory tries to obtain a valid InputPeerUser access hash.
+// In some incoming updates gotd may provide a user without a usable access hash
+// (or a min user). In that case querying dialogs is a safe fallback because the
+// dialog response contains the full User object for the active private chat.
+func resolvePrivatePeerForHistory(ctx context.Context, client *telegram.Client, e tg.Entities, senderID int64) (tg.InputPeerClass, error) {
+	if senderID == 0 {
+		return nil, errors.New("sender id is zero")
+	}
+
+	if u, ok := e.Users[senderID]; ok && u != nil && u.AccessHash != 0 && !u.Min {
+		return &tg.InputPeerUser{
+			UserID:     u.ID,
+			AccessHash: u.AccessHash,
+		}, nil
+	}
+
+	res, err := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+		Limit: 100,
+		Hash:  0,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get dialogs for private peer: %w", err)
+	}
+
+	var users []tg.UserClass
+	switch d := res.(type) {
+	case *tg.MessagesDialogs:
+		users = d.Users
+	case *tg.MessagesDialogsSlice:
+		users = d.Users
+	}
+
+	for _, uClass := range users {
+		u, ok := uClass.(*tg.User)
+		if !ok || u == nil || u.ID != senderID {
+			continue
+		}
+		if u.AccessHash != 0 && !u.Min {
+			return &tg.InputPeerUser{
+				UserID:     u.ID,
+				AccessHash: u.AccessHash,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("valid access hash for private user %d not found", senderID)
+}
+
 func deletePrivateHistorySilently(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass) error {
 	if inputPeer == nil {
 		return errors.New("private chat peer is nil")
@@ -984,18 +1032,38 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						_ = db.QueryRow("SELECT COUNT(*) FROM wolf_pv_allowed WHERE owner_id = ? AND allowed_id = ?", userID, senderID).Scan(&isAllowed)
 
 						if isAllowed == 0 {
-							go func(p tg.InputPeerClass) {
-								// کمی تأخیر می‌دهیم تا پیام ورودی کامل روی سشن دریافت شود.
-								// سپس کل تاریخچه چت خصوصی را با deleteMessages و Revoke=true حذف می‌کنیم.
+							go func(senderID int64, msgID int, entities tg.Entities, originalPeer tg.InputPeerClass) {
 								time.Sleep(1000 * time.Millisecond)
 
 								dCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 								defer cancel()
 
-								if err := deletePrivateHistorySilently(dCtx, client, p); err != nil {
+								// ابتدا خود پیام ورودی را حذف می‌کنیم. deleteMessages به peer نیاز ندارد
+								// و در صورت خطای resolve هم حداقل پیام مزاحم ناپدید می‌شود.
+								if _, err := client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
+									Revoke: true,
+									ID:     []int{msgID},
+								}); err != nil {
+									log.Printf("Delete PV Message Error: %v", err)
+								}
+
+								// برای getHistory باید InputPeerUser معتبر (با access hash) داشته باشیم.
+								// در صورت نبودن یا min بودن user، از لیست Dialogs آن را resolve می‌کنیم.
+								peer, err := resolvePrivatePeerForHistory(dCtx, client, entities, senderID)
+								if err != nil {
+									// اگر peer اولیه معتبر بود، به عنوان آخرین fallback امتحان می‌کنیم.
+									if up, ok := originalPeer.(*tg.InputPeerUser); ok && up.AccessHash != 0 {
+										peer = up
+									} else {
+										log.Printf("Delete PV History Silently Error: resolve peer: %v", err)
+										return
+									}
+								}
+
+								if err := deletePrivateHistorySilently(dCtx, client, peer); err != nil {
 									log.Printf("Delete PV History Silently Error: %v", err)
 								}
-							}(inputPeer)
+							}(senderID, msg.ID, e, inputPeer)
 							return
 						}
 					}

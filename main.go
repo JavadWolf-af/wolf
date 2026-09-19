@@ -422,13 +422,17 @@ func getEntitiesForFont(text string, mode string) []tg.MessageEntityClass {
 
 func handleForwardToAllPV(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, dropAuthor bool) {
 	if msg.ReplyTo == nil {
-		if inputPeer != nil { notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "پیام نامعتبر است") }
+		if inputPeer != nil {
+			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "پیام نامعتبر است")
+		}
 		return
 	}
 
 	header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
 	if !ok || header.ReplyToMsgID == 0 {
-		if inputPeer != nil { notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "پیام نامعتبر است") }
+		if inputPeer != nil {
+			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "پیام نامعتبر است")
+		}
 		return
 	}
 	replyMsgID := header.ReplyToMsgID
@@ -438,7 +442,9 @@ func handleForwardToAllPV(ctx context.Context, client *telegram.Client, inputPee
 		Limit:      100,
 	}
 	res, err := client.API().MessagesGetDialogs(ctx, dialogsReq)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 
 	var users []tg.UserClass
 	var dialogs []tg.DialogClass
@@ -460,11 +466,17 @@ func handleForwardToAllPV(ctx context.Context, client *telegram.Client, inputPee
 
 	for _, dlg := range dialogs {
 		d, ok := dlg.(*tg.Dialog)
-		if !ok { continue }
+		if !ok {
+			continue
+		}
 		peerUser, ok := d.Peer.(*tg.PeerUser)
-		if !ok { continue }
+		if !ok {
+			continue
+		}
 		u, exists := userMap[peerUser.UserID]
-		if !exists || u.Bot || u.Self || u.Deleted { continue }
+		if !exists || u.Bot || u.Self || u.Deleted {
+			continue
+		}
 
 		targetPeer := &tg.InputPeerUser{
 			UserID:     u.ID,
@@ -489,13 +501,17 @@ func handleForwardToAllPV(ctx context.Context, client *telegram.Client, inputPee
 
 func handleForwardToAllGroups(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, msg *tg.Message, dropAuthor bool) {
 	if msg.ReplyTo == nil {
-		if inputPeer != nil { notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "پیام نامعتبر است") }
+		if inputPeer != nil {
+			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "پیام نامعتبر است")
+		}
 		return
 	}
 
 	header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
 	if !ok || header.ReplyToMsgID == 0 {
-		if inputPeer != nil { notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "پیام نامعتبر است") }
+		if inputPeer != nil {
+			notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "پیام نامعتبر است")
+		}
 		return
 	}
 	replyMsgID := header.ReplyToMsgID
@@ -505,7 +521,9 @@ func handleForwardToAllGroups(ctx context.Context, client *telegram.Client, inpu
 		Limit:      100,
 	}
 	res, err := client.API().MessagesGetDialogs(ctx, dialogsReq)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 
 	var chats []tg.ChatClass
 	var dialogs []tg.DialogClass
@@ -530,7 +548,9 @@ func handleForwardToAllGroups(ctx context.Context, client *telegram.Client, inpu
 
 	for _, dlg := range dialogs {
 		d, ok := dlg.(*tg.Dialog)
-		if !ok { continue }
+		if !ok {
+			continue
+		}
 
 		var targetPeer tg.InputPeerClass
 		switch p := d.Peer.(type) {
@@ -547,7 +567,9 @@ func handleForwardToAllGroups(ctx context.Context, client *telegram.Client, inpu
 			}
 		}
 
-		if targetPeer == nil { continue }
+		if targetPeer == nil {
+			continue
+		}
 
 		fwdReq := &tg.MessagesForwardMessagesRequest{
 			DropAuthor: dropAuthor,
@@ -578,8 +600,12 @@ func startFakeAction(ctx context.Context, client *telegram.Client, userID int64,
 	actionKey := fmt.Sprintf("%d_%s", userID, peerKey)
 	stopActiveAction(actionKey)
 
-	if durationSec <= 0 { durationSec = 20 }
-	if durationSec > 300 { durationSec = 300 }
+	if durationSec <= 0 {
+		durationSec = 20
+	}
+	if durationSec > 300 {
+		durationSec = 300
+	}
 
 	actCtx, cancel := context.WithTimeout(context.Background(), time.Duration(durationSec)*time.Second)
 	activeActionsMu.Lock()
@@ -617,14 +643,18 @@ func startFakeAction(ctx context.Context, client *telegram.Client, userID int64,
 					Peer:   inputPeer,
 					Action: action,
 				})
-				if err != nil { return }
+				if err != nil {
+					return
+				}
 			}
 		}
 	}()
 }
 
 func deleteMessageBatch(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, ids []int) {
-	if len(ids) == 0 { return }
+	if len(ids) == 0 {
+		return
+	}
 	dCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -644,6 +674,94 @@ func deleteMessageBatch(ctx context.Context, client *telegram.Client, inputPeer 
 	})
 }
 
+// deletePrivateHistorySilently تاریخچه یک چت خصوصی را با حذف تک‌تک پیام‌ها
+// برای هر دو طرف پاک می‌کند. برخلاف messages.deleteHistory از deleteHistory
+// استفاده نمی‌شود تا پیام سیستمی «History was cleared» ساخته نشود.
+func deletePrivateHistorySilently(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass) error {
+	if inputPeer == nil {
+		return errors.New("private chat peer is nil")
+	}
+
+	var allIDs []int
+	offsetID := 0
+
+	// ابتدا تمام IDهای تاریخچه را جمع می‌کنیم و بعد حذف را انجام می‌دهیم.
+	// این کار باعث می‌شود جابه‌جایی تاریخچه هنگام حذف، روی pagination اثر نگذارد.
+	for {
+		req := &tg.MessagesGetHistoryRequest{
+			Peer:     inputPeer,
+			OffsetID: offsetID,
+			Limit:    100,
+		}
+
+		res, err := client.API().MessagesGetHistory(ctx, req)
+		if err != nil {
+			return fmt.Errorf("get private history: %w", err)
+		}
+
+		var messages []tg.MessageClass
+		switch h := res.(type) {
+		case *tg.MessagesMessages:
+			messages = h.Messages
+		case *tg.MessagesMessagesSlice:
+			messages = h.Messages
+		case *tg.MessagesChannelMessages:
+			messages = h.Messages
+		default:
+			return nil
+		}
+
+		if len(messages) == 0 {
+			break
+		}
+
+		lastID := 0
+		for _, mClass := range messages {
+			m, ok := mClass.(*tg.Message)
+			if !ok {
+				continue
+			}
+			allIDs = append(allIDs, m.ID)
+			if m.ID > lastID {
+				lastID = m.ID
+			}
+		}
+
+		if len(messages) < 100 || lastID == 0 || lastID == offsetID {
+			break
+		}
+		offsetID = lastID
+	}
+
+	if len(allIDs) == 0 {
+		return nil
+	}
+
+	// Telegram برای deleteMessages حداکثر 100 شناسه را در هر درخواست می‌پذیرد.
+	for i := 0; i < len(allIDs); i += 100 {
+		end := i + 100
+		if end > len(allIDs) {
+			end = len(allIDs)
+		}
+
+		dCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_, err := client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
+			Revoke: true,
+			ID:     allIDs[i:end],
+		})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("delete private messages: %w", err)
+		}
+
+		if end < len(allIDs) {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	return nil
+}
+
 func sendTemporaryNotice(ctx context.Context, client *telegram.Client, inputPeer tg.InputPeerClass, text string, duration time.Duration) {
 	sendReq := &tg.MessagesSendMessageRequest{
 		Peer:     inputPeer,
@@ -654,7 +772,9 @@ func sendTemporaryNotice(ctx context.Context, client *telegram.Client, inputPeer
 		},
 	}
 	res, err := client.API().MessagesSendMessage(ctx, sendReq)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 
 	msgID := 0
 	if updates, ok := res.(*tg.Updates); ok {
@@ -693,7 +813,9 @@ func handlePurgeAction(ctx context.Context, client *telegram.Client, inputPeer t
 			Limit:    100,
 		}
 		res, err := client.API().MessagesGetHistory(pCtx, req)
-		if err != nil { break }
+		if err != nil {
+			break
+		}
 
 		var messages []tg.MessageClass
 		switch h := res.(type) {
@@ -705,12 +827,16 @@ func handlePurgeAction(ctx context.Context, client *telegram.Client, inputPeer t
 			messages = h.Messages
 		}
 
-		if len(messages) == 0 { break }
+		if len(messages) == 0 {
+			break
+		}
 
 		stopSearch := false
 		for _, mClass := range messages {
 			m, ok := mClass.(*tg.Message)
-			if !ok { continue }
+			if !ok {
+				continue
+			}
 
 			if fromReplyID > 0 {
 				if m.ID < fromReplyID {
@@ -735,7 +861,9 @@ func handlePurgeAction(ctx context.Context, client *telegram.Client, inputPeer t
 			}
 		}
 
-		if stopSearch || len(messages) < 100 { break }
+		if stopSearch || len(messages) < 100 {
+			break
+		}
 
 		if lastMsg, ok := messages[len(messages)-1].(*tg.Message); ok {
 			offsetID = lastMsg.ID
@@ -805,7 +933,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 	handleMsg := func(ctx context.Context, e tg.Entities, message tg.MessageClass) {
 		msg, ok := message.(*tg.Message)
-		if !ok { return }
+		if !ok {
+			return
+		}
 
 		for cid, ch := range e.Channels {
 			channelAccessHashesMu.Lock()
@@ -834,7 +964,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		// =======================================================================
 		if !msg.Out {
 			if _, ok := msg.PeerID.(*tg.PeerUser); ok && senderID != 0 {
-				
+
 				// بررسی استثنائات (تلگرام رسمی و ربات‌ها)
 				isBot := false
 				if senderID == 777000 {
@@ -848,38 +978,25 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				if !isBot {
 					var pvLockEnabled bool
 					_ = db.QueryRow("SELECT is_pv_lock_enabled FROM users WHERE id = ?", userID).Scan(&pvLockEnabled)
-					
+
 					if pvLockEnabled {
 						var isAllowed int
 						_ = db.QueryRow("SELECT COUNT(*) FROM wolf_pv_allowed WHERE owner_id = ? AND allowed_id = ?", userID, senderID).Scan(&isAllowed)
-						
+
 						if isAllowed == 0 {
-							go func(p tg.InputPeerClass, mID int) {
-								// تاخیر ۱ ثانیه‌ای برای نشستن پیام در گوشی شما (گیرنده)
-								// تا تلگرام گیج نشود و باکس خالی روی صفحه نماند!
+							go func(p tg.InputPeerClass) {
+								// کمی تأخیر می‌دهیم تا پیام ورودی کامل روی سشن دریافت شود.
+								// سپس کل تاریخچه چت خصوصی را با deleteMessages و Revoke=true حذف می‌کنیم.
 								time.Sleep(1000 * time.Millisecond)
 
-								dCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+								dCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 								defer cancel()
-								
-								// اول خود پیام رو از دو طرف پاک می‌کنیم تا پیام اصلی محو شود
-								_, _ = client.API().MessagesDeleteMessages(dCtx, &tg.MessagesDeleteMessagesRequest{
-									Revoke: true,
-									ID:     []int{mID},
-								})
-								
-								// دوم: شبیه‌سازی دقیق تیک Also delete for X با پاک کردن کل دیالوگ (JustClear: false, MaxID: 0)
-								_, err := client.API().MessagesDeleteHistory(dCtx, &tg.MessagesDeleteHistoryRequest{
-									JustClear: false, // پاک کردن کامل دیالوگ و محو باکس چت
-									Revoke:    true,  // اعمال برای هر دو طرف
-									Peer:      p,
-									MaxID:     0,     // 0 یعنی تمام تاریخچه و خود دیالوگ نابود شود
-								})
-								if err != nil {
-									log.Printf("Delete PV History Error: %v", err)
+
+								if err := deletePrivateHistorySilently(dCtx, client, p); err != nil {
+									log.Printf("Delete PV History Silently Error: %v", err)
 								}
-							}(inputPeer, msg.ID)
-							return // ❌ خروج فوری از تابع
+							}(inputPeer)
+							return
 						}
 					}
 				}
@@ -960,26 +1077,38 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		// === تنظیمات قفل پیوی (دستورات کاربر) ===
 		if text == "قفل پیوی روشن" {
 			_, _ = db.Exec("UPDATE users SET is_pv_lock_enabled = TRUE WHERE id = ?", userID)
-			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔒 قفل پیوی روشن شد") }
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔒 قفل پیوی روشن شد")
+			}
 			return
 		} else if text == "قفل پیوی خاموش" {
 			_, _ = db.Exec("UPDATE users SET is_pv_lock_enabled = FALSE WHERE id = ?", userID)
-			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔓 قفل پیوی خاموش شد") }
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔓 قفل پیوی خاموش شد")
+			}
 			return
 		} else if text == "قفل پیوی باز" {
 			if p, ok := msg.PeerID.(*tg.PeerUser); ok {
 				_, _ = db.Exec("INSERT IGNORE INTO wolf_pv_allowed (owner_id, allowed_id) VALUES (?, ?)", userID, p.UserID)
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "✅ قفل پیوی برای این کاربر باز شد (استثنا)") }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "✅ قفل پیوی برای این کاربر باز شد (استثنا)")
+				}
 			} else {
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ این دستور فقط در چت خصوصی (پیوی) کار می‌کند!") }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ این دستور فقط در چت خصوصی (پیوی) کار می‌کند!")
+				}
 			}
 			return
 		} else if text == "قفل پیوی بسته" {
 			if p, ok := msg.PeerID.(*tg.PeerUser); ok {
 				_, _ = db.Exec("DELETE FROM wolf_pv_allowed WHERE owner_id = ? AND allowed_id = ?", userID, p.UserID)
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ قفل پیوی برای این کاربر بسته شد") }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "❌ قفل پیوی برای این کاربر بسته شد")
+				}
 			} else {
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ این دستور فقط در چت خصوصی (پیوی) کار می‌کند!") }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ این دستور فقط در چت خصوصی (پیوی) کار می‌کند!")
+				}
 			}
 			return
 		}
@@ -988,19 +1117,25 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		isAutoReact := text == "ری‌اکشن" || strings.HasPrefix(text, "ری‌اکشن ") || text == "ری اکشن" || strings.HasPrefix(text, "ری اکشن ") || text == "ریاکشن" || strings.HasPrefix(text, "ریاکشن ")
 		if isAutoReact {
 			if msg.ReplyTo == nil {
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!") }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
+				}
 				return
 			}
 			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
-			if !ok || header.ReplyToMsgID == 0 { return }
+			if !ok || header.ReplyToMsgID == 0 {
+				return
+			}
 
 			emoji := "❤️"
 			parts := strings.Split(text, " ")
 			if len(parts) >= 2 {
 				emoji = strings.TrimSpace(parts[1])
-			} else if strings.HasPrefix(text, "ری‌اکشن ") { 
+			} else if strings.HasPrefix(text, "ری‌اکشن ") {
 				em := strings.TrimSpace(strings.TrimPrefix(text, "ری‌اکشن "))
-				if em != "" { emoji = em }
+				if em != "" {
+					emoji = em
+				}
 			}
 
 			go func(repID int, p tg.InputPeerClass, mID int, selectedEmoji string) {
@@ -1019,7 +1154,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok {
 					targetUID = peerU.UserID
 				}
-				if targetUID == 0 || targetUID == selfID { return }
+				if targetUID == 0 || targetUID == selfID {
+					return
+				}
 
 				targetUName := ""
 				for _, uClass := range usersList {
@@ -1028,7 +1165,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						break
 					}
 				}
-				if targetUName == "" { targetUName = fmt.Sprintf("کاربر (%d)", targetUID) }
+				if targetUName == "" {
+					targetUName = fmt.Sprintf("کاربر (%d)", targetUID)
+				}
 
 				_, _ = db.Exec(`
 					INSERT INTO wolf_auto_reacts (owner_id, target_id, target_name, emoji)
@@ -1043,18 +1182,24 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 		} else if text == "حذف ری‌اکشن" || text == "حذف ری اکشن" || text == "حذف ریاکشن" {
 			if msg.ReplyTo == nil {
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!") }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
+				}
 				return
 			}
 			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
-			if !ok || header.ReplyToMsgID == 0 { return }
+			if !ok || header.ReplyToMsgID == 0 {
+				return
+			}
 
 			go func(repID int, p tg.InputPeerClass, mID int) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer dCancel()
 
 				repMsg, _, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
-				if err != nil || repMsg == nil { return }
+				if err != nil || repMsg == nil {
+					return
+				}
 
 				var targetUID int64
 				if f, ok := repMsg.FromID.(*tg.PeerUser); ok {
@@ -1062,7 +1207,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok {
 					targetUID = peerU.UserID
 				}
-				if targetUID == 0 { return }
+				if targetUID == 0 {
+					return
+				}
 
 				_, _ = db.Exec("DELETE FROM wolf_auto_reacts WHERE owner_id = ? AND target_id = ?", userID, targetUID)
 				removeAutoReactFromCache(userID, targetUID)
@@ -1076,7 +1223,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				defer dCancel()
 				go notifyAndSelfDestruct(dCtx, client, p, mID, "📋 لیست ری‌اکشن‌ها ارسال شد")
 				rows, err := db.Query("SELECT target_id, target_name, emoji FROM wolf_auto_reacts WHERE owner_id = ?", userID)
-				if err != nil { return }
+				if err != nil {
+					return
+				}
 				defer rows.Close()
 
 				var list []string
@@ -1090,7 +1239,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 					}
 				}
 				msgText := "🔥 <b>لیست ری‌اکشن‌های خودکار شما:</b>\n\n" + strings.Join(list, "\n")
-				if len(list) == 0 { msgText = "⚠️ <i>لیست ری‌اکشن‌های خودکار شما خالی است!</i>" }
+				if len(list) == 0 {
+					msgText = "⚠️ <i>لیست ری‌اکشن‌های خودکار شما خالی است!</i>"
+				}
 
 				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
 					Peer:     &tg.InputPeerSelf{},
@@ -1119,11 +1270,15 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		// === شمارش معکوس ===
 		if strings.HasPrefix(text, "تایمر ") || strings.HasPrefix(text, "شمارش ") {
 			prefix := "تایمر "
-			if strings.HasPrefix(text, "شمارش ") { prefix = "شمارش " }
+			if strings.HasPrefix(text, "شمارش ") {
+				prefix = "شمارش "
+			}
 			numStr := strings.TrimSpace(strings.TrimPrefix(text, prefix))
 			count, err := strconv.Atoi(numStr)
 			if err == nil && count > 0 {
-				if count > 60 { count = 60 }
+				if count > 60 {
+					count = 60
+				}
 				go func(p tg.InputPeerClass, mID int, startCount int) {
 					for i := startCount; i > 0; i-- {
 						eCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1165,7 +1320,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			if numStr != "" {
 				count, err := strconv.Atoi(numStr)
 				if err == nil && count > 0 {
-					if count > 100 { count = 100 }
+					if count > 100 {
+						count = 100
+					}
 					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, fmt.Sprintf("🗑 در حال حذف %d پیام اخیر...", count))
 					go handlePurgeAction(ctx, client, inputPeer, msg.ID, 0, count)
 					return
@@ -1177,15 +1334,21 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		if text == "لغو اکشن" || text == "توقف اکشن" {
 			actionKey := fmt.Sprintf("%d_%s", userID, peerKey)
 			stopActiveAction(actionKey)
-			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🛑 اکشن متوقف شد") }
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🛑 اکشن متوقف شد")
+			}
 			return
 		}
 
 		parseActionDuration := func(cmdText, prefix string) int {
 			rem := strings.TrimSpace(strings.TrimPrefix(cmdText, prefix))
-			if rem == "" { return 20 }
+			if rem == "" {
+				return 20
+			}
 			d, err := strconv.Atoi(rem)
-			if err != nil || d <= 0 { return 20 }
+			if err != nil || d <= 0 {
+				return 20
+			}
 			return d
 		}
 
@@ -1196,38 +1359,59 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		if strings.HasPrefix(text, "اکشن تایپ") || strings.HasPrefix(text, "تایپینگ") {
 			isActionCmd = true
 			actionToRun = &tg.SendMessageTypingAction{}
-			if strings.HasPrefix(text, "اکشن تایپ") { actionDuration = parseActionDuration(text, "اکشن تایپ")
-			} else { actionDuration = parseActionDuration(text, "تایپینگ") }
+			if strings.HasPrefix(text, "اکشن تایپ") {
+				actionDuration = parseActionDuration(text, "اکشن تایپ")
+			} else {
+				actionDuration = parseActionDuration(text, "تایپینگ")
+			}
 		} else if strings.HasPrefix(text, "اکشن وویس") || strings.HasPrefix(text, "ضبط صدا") {
 			isActionCmd = true
 			actionToRun = &tg.SendMessageRecordAudioAction{}
-			if strings.HasPrefix(text, "اکشن وویس") { actionDuration = parseActionDuration(text, "اکشن وویس")
-			} else { actionDuration = parseActionDuration(text, "ضبط صدا") }
+			if strings.HasPrefix(text, "اکشن وویس") {
+				actionDuration = parseActionDuration(text, "اکشن وویس")
+			} else {
+				actionDuration = parseActionDuration(text, "ضبط صدا")
+			}
 		} else if strings.HasPrefix(text, "اکشن ویدیوگرد") || strings.HasPrefix(text, "ویدیو گرد") {
 			isActionCmd = true
 			actionToRun = &tg.SendMessageRecordRoundAction{}
-			if strings.HasPrefix(text, "اکشن ویدیوگرد") { actionDuration = parseActionDuration(text, "اکشن ویدیوگرد")
-			} else { actionDuration = parseActionDuration(text, "ویدیو گرد") }
+			if strings.HasPrefix(text, "اکشن ویدیوگرد") {
+				actionDuration = parseActionDuration(text, "اکشن ویدیوگرد")
+			} else {
+				actionDuration = parseActionDuration(text, "ویدیو گرد")
+			}
 		} else if strings.HasPrefix(text, "اکشن ویدیو") || strings.HasPrefix(text, "ضبط ویدیو") {
 			isActionCmd = true
 			actionToRun = &tg.SendMessageRecordVideoAction{}
-			if strings.HasPrefix(text, "اکشن ویدیو") { actionDuration = parseActionDuration(text, "اکشن ویدیو")
-			} else { actionDuration = parseActionDuration(text, "ضبط ویدیو") }
+			if strings.HasPrefix(text, "اکشن ویدیو") {
+				actionDuration = parseActionDuration(text, "اکشن ویدیو")
+			} else {
+				actionDuration = parseActionDuration(text, "ضبط ویدیو")
+			}
 		} else if strings.HasPrefix(text, "اکشن عکس") || strings.HasPrefix(text, "ارسال عکس") {
 			isActionCmd = true
 			actionToRun = &tg.SendMessageUploadPhotoAction{}
-			if strings.HasPrefix(text, "اکشن عکس") { actionDuration = parseActionDuration(text, "اکشن عکس")
-			} else { actionDuration = parseActionDuration(text, "ارسال عکس") }
+			if strings.HasPrefix(text, "اکشن عکس") {
+				actionDuration = parseActionDuration(text, "اکشن عکس")
+			} else {
+				actionDuration = parseActionDuration(text, "ارسال عکس")
+			}
 		} else if strings.HasPrefix(text, "اکشن فایل") || strings.HasPrefix(text, "ارسال فایل") {
 			isActionCmd = true
 			actionToRun = &tg.SendMessageUploadDocumentAction{}
-			if strings.HasPrefix(text, "اکشن فایل") { actionDuration = parseActionDuration(text, "اکشن فایل")
-			} else { actionDuration = parseActionDuration(text, "ارسال فایل") }
+			if strings.HasPrefix(text, "اکشن فایل") {
+				actionDuration = parseActionDuration(text, "اکشن فایل")
+			} else {
+				actionDuration = parseActionDuration(text, "ارسال فایل")
+			}
 		} else if strings.HasPrefix(text, "اکشن بازی") || strings.HasPrefix(text, "بازی") {
 			isActionCmd = true
 			actionToRun = &tg.SendMessageGamePlayAction{}
-			if strings.HasPrefix(text, "اکشن بازی") { actionDuration = parseActionDuration(text, "اکشن بازی")
-			} else { actionDuration = parseActionDuration(text, "بازی") }
+			if strings.HasPrefix(text, "اکشن بازی") {
+				actionDuration = parseActionDuration(text, "اکشن بازی")
+			} else {
+				actionDuration = parseActionDuration(text, "بازی")
+			}
 		}
 
 		if isActionCmd && actionToRun != nil {
@@ -1241,25 +1425,36 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		// === سیستم دوست ===
 		if text == "تنظیم دوست" {
 			if msg.ReplyTo == nil {
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!") }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
+				}
 				return
 			}
 			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
-			if !ok || header.ReplyToMsgID == 0 { return }
-			
+			if !ok || header.ReplyToMsgID == 0 {
+				return
+			}
+
 			go func(repID int, p tg.InputPeerClass, mID int) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer dCancel()
 				go notifyAndSelfDestruct(dCtx, client, p, mID, "✅ تنظیم دوست شد")
 
 				repMsg, usersList, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
-				if err != nil || repMsg == nil { return }
+				if err != nil || repMsg == nil {
+					return
+				}
 
 				var targetUID int64
-				if f, ok := repMsg.FromID.(*tg.PeerUser); ok { targetUID = f.UserID
-				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok { targetUID = peerU.UserID }
+				if f, ok := repMsg.FromID.(*tg.PeerUser); ok {
+					targetUID = f.UserID
+				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok {
+					targetUID = peerU.UserID
+				}
 
-				if targetUID == 0 || targetUID == selfID { return }
+				if targetUID == 0 || targetUID == selfID {
+					return
+				}
 
 				targetUName := ""
 				for _, uClass := range usersList {
@@ -1268,7 +1463,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						break
 					}
 				}
-				if targetUName == "" { targetUName = fmt.Sprintf("کاربر (%d)", targetUID) }
+				if targetUName == "" {
+					targetUName = fmt.Sprintf("کاربر (%d)", targetUID)
+				}
 
 				_, _ = db.Exec(`
 					INSERT INTO wolf_friends (owner_id, friend_id, friend_name)
@@ -1291,11 +1488,15 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 		} else if text == "حذف دوست" {
 			if msg.ReplyTo == nil {
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!") }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
+				}
 				return
 			}
 			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
-			if !ok || header.ReplyToMsgID == 0 { return }
+			if !ok || header.ReplyToMsgID == 0 {
+				return
+			}
 
 			go func(repID int, p tg.InputPeerClass, mID int) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1303,13 +1504,20 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				go notifyAndSelfDestruct(dCtx, client, p, mID, "✅ حذف دوست شد")
 
 				repMsg, _, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
-				if err != nil || repMsg == nil { return }
+				if err != nil || repMsg == nil {
+					return
+				}
 
 				var targetUID int64
-				if f, ok := repMsg.FromID.(*tg.PeerUser); ok { targetUID = f.UserID
-				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok { targetUID = peerU.UserID }
+				if f, ok := repMsg.FromID.(*tg.PeerUser); ok {
+					targetUID = f.UserID
+				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok {
+					targetUID = peerU.UserID
+				}
 
-				if targetUID == 0 { return }
+				if targetUID == 0 {
+					return
+				}
 
 				_, _ = db.Exec("DELETE FROM wolf_friends WHERE owner_id = ? AND friend_id = ?", userID, targetUID)
 				removeFriendFromCache(userID, targetUID)
@@ -1323,7 +1531,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				go notifyAndSelfDestruct(dCtx, client, p, mID, "📋 لیست دوست ارسال شد")
 
 				rows, err := db.Query("SELECT friend_id, friend_name FROM wolf_friends WHERE owner_id = ?", userID)
-				if err != nil { return }
+				if err != nil {
+					return
+				}
 				defer rows.Close()
 
 				var list []string
@@ -1338,7 +1548,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				}
 
 				msgText := "📋 <b>لیست دوستان شما:</b>\n\n" + strings.Join(list, "\n")
-				if len(list) == 0 { msgText = "⚠️ <i>لیست دوستان شما در حال حاضر خالی است!</i>" }
+				if len(list) == 0 {
+					msgText = "⚠️ <i>لیست دوستان شما در حال حاضر خالی است!</i>"
+				}
 
 				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
 					Peer:     &tg.InputPeerSelf{},
@@ -1367,11 +1579,15 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		// === سیستم دشمن ===
 		if text == "تنظیم دشمن" {
 			if msg.ReplyTo == nil {
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!") }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
+				}
 				return
 			}
 			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
-			if !ok || header.ReplyToMsgID == 0 { return }
+			if !ok || header.ReplyToMsgID == 0 {
+				return
+			}
 
 			go func(repID int, p tg.InputPeerClass, mID int) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1379,13 +1595,20 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				go notifyAndSelfDestruct(dCtx, client, p, mID, "⚔️ تنظیم دشمن شد")
 
 				repMsg, usersList, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
-				if err != nil || repMsg == nil { return }
+				if err != nil || repMsg == nil {
+					return
+				}
 
 				var targetUID int64
-				if f, ok := repMsg.FromID.(*tg.PeerUser); ok { targetUID = f.UserID
-				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok { targetUID = peerU.UserID }
+				if f, ok := repMsg.FromID.(*tg.PeerUser); ok {
+					targetUID = f.UserID
+				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok {
+					targetUID = peerU.UserID
+				}
 
-				if targetUID == 0 || targetUID == selfID { return }
+				if targetUID == 0 || targetUID == selfID {
+					return
+				}
 
 				targetUName := ""
 				for _, uClass := range usersList {
@@ -1394,7 +1617,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 						break
 					}
 				}
-				if targetUName == "" { targetUName = fmt.Sprintf("کاربر (%d)", targetUID) }
+				if targetUName == "" {
+					targetUName = fmt.Sprintf("کاربر (%d)", targetUID)
+				}
 
 				_, _ = db.Exec(`
 					INSERT INTO wolf_enemies (owner_id, enemy_id, enemy_name)
@@ -1417,11 +1642,15 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 
 		} else if text == "حذف دشمن" {
 			if msg.ReplyTo == nil {
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!") }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی پیام فرد ریپلای کنید!")
+				}
 				return
 			}
 			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
-			if !ok || header.ReplyToMsgID == 0 { return }
+			if !ok || header.ReplyToMsgID == 0 {
+				return
+			}
 
 			go func(repID int, p tg.InputPeerClass, mID int) {
 				dCtx, dCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1429,13 +1658,20 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				go notifyAndSelfDestruct(dCtx, client, p, mID, "✅ حذف دشمن شد")
 
 				repMsg, _, err := getRepliedMessageAndUsers(dCtx, client, p, repID)
-				if err != nil || repMsg == nil { return }
+				if err != nil || repMsg == nil {
+					return
+				}
 
 				var targetUID int64
-				if f, ok := repMsg.FromID.(*tg.PeerUser); ok { targetUID = f.UserID
-				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok { targetUID = peerU.UserID }
+				if f, ok := repMsg.FromID.(*tg.PeerUser); ok {
+					targetUID = f.UserID
+				} else if peerU, ok := repMsg.PeerID.(*tg.PeerUser); ok {
+					targetUID = peerU.UserID
+				}
 
-				if targetUID == 0 { return }
+				if targetUID == 0 {
+					return
+				}
 
 				_, _ = db.Exec("DELETE FROM wolf_enemies WHERE owner_id = ? AND enemy_id = ?", userID, targetUID)
 				removeEnemyFromCache(userID, targetUID)
@@ -1449,7 +1685,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				go notifyAndSelfDestruct(dCtx, client, p, mID, "📋 لیست دشمن ارسال شد")
 
 				rows, err := db.Query("SELECT enemy_id, enemy_name FROM wolf_enemies WHERE owner_id = ?", userID)
-				if err != nil { return }
+				if err != nil {
+					return
+				}
 				defer rows.Close()
 
 				var list []string
@@ -1464,7 +1702,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				}
 
 				msgText := "⚔️ <b>لیست دشمنان شما:</b>\n\n" + strings.Join(list, "\n")
-				if len(list) == 0 { msgText = "⚠️ <i>لیست دشمنان شما در حال حاضر خالی است!</i>" }
+				if len(list) == 0 {
+					msgText = "⚠️ <i>لیست دشمنان شما در حال حاضر خالی است!</i>"
+				}
 
 				_, _ = client.API().MessagesSendMessage(dCtx, &tg.MessagesSendMessageRequest{
 					Peer:     &tg.InputPeerSelf{},
@@ -1495,32 +1735,45 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 			_, _ = db.Exec("UPDATE users SET is_font_enabled = TRUE WHERE id = ?", userID)
 			_, mode := getFontSetting(userID)
 			updateFontCache(userID, true, mode)
-			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🟢 خوشنویسی روشن شد") }
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🟢 خوشنویسی روشن شد")
+			}
 			return
 		} else if text == "خوشنویسی خاموش" {
 			_, _ = db.Exec("UPDATE users SET is_font_enabled = FALSE WHERE id = ?", userID)
 			_, mode := getFontSetting(userID)
 			updateFontCache(userID, false, mode)
-			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔴 خوشنویسی خاموش شد") }
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "🔴 خوشنویسی خاموش شد")
+			}
 			return
 		} else if strings.HasPrefix(text, "خوشنویسی ") {
 			cleanSub := strings.TrimSpace(strings.TrimPrefix(text, "خوشنویسی "))
 			mode := ""
 			switch cleanSub {
-			case "بولد": mode = "bold"
-			case "ایتالیک": mode = "italic"
-			case "بولد ایتالیک": mode = "bold_italic"
-			case "زیر خط": mode = "underline"
-			case "خط خورده": mode = "strike"
-			case "مونو": mode = "mono"
-			case "اسپویل": mode = "spoiler"
+			case "بولد":
+				mode = "bold"
+			case "ایتالیک":
+				mode = "italic"
+			case "بولد ایتالیک":
+				mode = "bold_italic"
+			case "زیر خط":
+				mode = "underline"
+			case "خط خورده":
+				mode = "strike"
+			case "مونو":
+				mode = "mono"
+			case "اسپویل":
+				mode = "spoiler"
 			}
 
 			if mode != "" {
 				_, _ = db.Exec("UPDATE users SET font_mode = ?, is_font_enabled = TRUE WHERE id = ?", mode, userID)
 				en, _ := getFontSetting(userID)
 				updateFontCache(userID, en, mode)
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, fmt.Sprintf("✅ فونت به %s تغییر یافت", text)) }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, fmt.Sprintf("✅ فونت به %s تغییر یافت", text))
+				}
 				return
 			}
 		}
@@ -1530,7 +1783,9 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				if header, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok && header.ReplyToMsgID != 0 {
 					go func() {
 						HandleProtectedDownloadByReply(ctx, client, inputPeer, header.ReplyToMsgID, userID)
-						if inputPeer != nil { notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "محتوا به پیام‌های ذخیره‌شده ارسال شد") }
+						if inputPeer != nil {
+							notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "محتوا به پیام‌های ذخیره‌شده ارسال شد")
+						}
 					}()
 					return
 				}
@@ -1550,40 +1805,58 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 		// === امکانات متفرقه ===
 		if text == "ساعت روشن شو" || text == "ساعت روشن" {
 			handleClockOn(ctx, userID, client)
-			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "ساعت روشن شد") }
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "ساعت روشن شد")
+			}
 			return
 		} else if text == "ساعت خاموش شو" || text == "ساعت خاموش" {
 			handleClockOff(ctx, userID, client)
-			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "ساعت خاموش شد") }
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "ساعت خاموش شد")
+			}
 			return
 		} else if text == "اموجی روشن شو" || text == "اموجی روشن" {
 			handleEmojiOn(ctx, userID, client)
-			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "اموجی روشن شد") }
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "اموجی روشن شد")
+			}
 			return
 		} else if text == "اموجی خاموش شو" || text == "اموجی خاموش" {
 			handleEmojiOff(ctx, userID, client)
-			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "اموجی خاموش شد") }
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "اموجی خاموش شد")
+			}
 			return
 		} else if text == "بیو روشن شو" || text == "بیو روشن" {
 			handleBioOn(ctx, userID, client)
-			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "بیو روشن شد") }
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "بیو روشن شد")
+			}
 			return
 		} else if text == "بیو خاموش شو" || text == "بیو خاموش" {
 			handleBioOff(ctx, userID, client)
-			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "بیو خاموش شد") }
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "بیو خاموش شد")
+			}
 			return
 		} else if text == "رندوم شو" {
 			handleBioRandom(ctx, userID, client)
-			if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "بیو به حالت رندوم تغییر یافت") }
+			if inputPeer != nil {
+				go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "بیو به حالت رندوم تغییر یافت")
+			}
 			return
 		} else if text == "بیو شو" {
 			if msg.ReplyTo == nil {
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی یک پیام ریپلای کنید!") }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ لطفاً روی یک پیام ریپلای کنید!")
+				}
 				return
 			}
 			header, ok := msg.ReplyTo.(*tg.MessageReplyHeader)
 			if !ok || header.ReplyToMsgID == 0 {
-				if inputPeer != nil { go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ پیام معتبر نیست!") }
+				if inputPeer != nil {
+					go notifyAndSelfDestruct(ctx, client, inputPeer, msg.ID, "⚠️ پیام معتبر نیست!")
+				}
 				return
 			}
 			go func(replyID int) {
@@ -1591,27 +1864,45 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				defer dCancel()
 				res, err := client.API().MessagesGetMessages(dCtx, []tg.InputMessageClass{&tg.InputMessageID{ID: replyID}})
 				if err != nil {
-					if inputPeer != nil { notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "❌ خطا در خواندن پیام!") }
+					if inputPeer != nil {
+						notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "❌ خطا در خواندن پیام!")
+					}
 					return
 				}
 				var targetText string
 				switch mSlice := res.(type) {
 				case *tg.MessagesMessages:
-					if len(mSlice.Messages) > 0 { if m, ok := mSlice.Messages[0].(*tg.Message); ok { targetText = m.Message } }
+					if len(mSlice.Messages) > 0 {
+						if m, ok := mSlice.Messages[0].(*tg.Message); ok {
+							targetText = m.Message
+						}
+					}
 				case *tg.MessagesMessagesSlice:
-					if len(mSlice.Messages) > 0 { if m, ok := mSlice.Messages[0].(*tg.Message); ok { targetText = m.Message } }
+					if len(mSlice.Messages) > 0 {
+						if m, ok := mSlice.Messages[0].(*tg.Message); ok {
+							targetText = m.Message
+						}
+					}
 				case *tg.MessagesChannelMessages:
-					if len(mSlice.Messages) > 0 { if m, ok := mSlice.Messages[0].(*tg.Message); ok { targetText = m.Message } }
+					if len(mSlice.Messages) > 0 {
+						if m, ok := mSlice.Messages[0].(*tg.Message); ok {
+							targetText = m.Message
+						}
+					}
 				}
 
 				targetText = strings.TrimSpace(targetText)
 				if targetText == "" {
-					if inputPeer != nil { notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "⚠️ پیام متنی یافت نشد!") }
+					if inputPeer != nil {
+						notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "⚠️ پیام متنی یافت نشد!")
+					}
 					return
 				}
 
 				handleBioCustom(dCtx, userID, client, targetText)
-				if inputPeer != nil { notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "بیو با موفقیت تنظیم شد") }
+				if inputPeer != nil {
+					notifyAndSelfDestruct(dCtx, client, inputPeer, msg.ID, "بیو با موفقیت تنظیم شد")
+				}
 			}(header.ReplyToMsgID)
 			return
 
@@ -1654,7 +1945,7 @@ func startUserbot(userID int64, cfg Config, bot *tele.Bot) {
 				entities := getEntitiesForFont(origText, fMode)
 				_, _ = client.API().MessagesEditMessage(eCtx, &tg.MessagesEditMessageRequest{
 					Peer:     p,
-					ID:      mID,
+					ID:       mID,
 					Message:  origText,
 					Entities: entities,
 				})
@@ -1723,7 +2014,9 @@ func (b *botAuthenticator) Phone(ctx context.Context) (string, error) {
 func (b *botAuthenticator) Code(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
 	select {
 	case code, ok := <-b.codeChan:
-		if !ok { return "", errors.New("auth canceled") }
+		if !ok {
+			return "", errors.New("auth canceled")
+		}
 		return code, nil
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -1734,7 +2027,9 @@ func (b *botAuthenticator) Password(ctx context.Context) (string, error) {
 	b.resultChan <- AuthResult{Type: AuthResultNeeds2FA}
 	select {
 	case pwd, ok := <-b.passwordChan:
-		if !ok { return "", errors.New("auth canceled") }
+		if !ok {
+			return "", errors.New("auth canceled")
+		}
 		return pwd, nil
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -1897,9 +2192,13 @@ func main() {
 		}
 
 		firstName := html.EscapeString(user.FirstName)
-		if firstName == "" { firstName = "کاربر" }
+		if firstName == "" {
+			firstName = "کاربر"
+		}
 		username := "ثبت نشده"
-		if user.Username != "" { username = "@" + html.EscapeString(user.Username) }
+		if user.Username != "" {
+			username = "@" + html.EscapeString(user.Username)
+		}
 
 		SaveUser(user.ID, user.FirstName, user.Username)
 
@@ -1917,7 +2216,9 @@ func main() {
 		stateMu.Lock()
 		delete(adminStates, userID)
 		if uState, exists := userStates[userID]; exists {
-			if uState.Cancel != nil { uState.Cancel() }
+			if uState.Cancel != nil {
+				uState.Cancel()
+			}
 			delete(userStates, userID)
 		}
 		userWalletTemp[userID] = 0
@@ -1936,12 +2237,16 @@ func main() {
 
 	bot.Handle(&btnProfile, func(c tele.Context) error {
 		user := c.Sender()
-		if IsUserBlocked(user.ID) { return c.Send("❌ حساب کاربری مسدود است.") }
+		if IsUserBlocked(user.ID) {
+			return c.Send("❌ حساب کاربری مسدود است.")
+		}
 
 		var joinedAt time.Time
 		var selfStatus string
 		err := db.QueryRow("SELECT joined_at, self_status FROM users WHERE id = ?", user.ID).Scan(&joinedAt, &selfStatus)
-		if err != nil || joinedAt.IsZero() { joinedAt = time.Now() }
+		if err != nil || joinedAt.IsZero() {
+			joinedAt = time.Now()
+		}
 
 		loc := getTehranLocation()
 		now := time.Now().In(loc)
@@ -1949,11 +2254,16 @@ func main() {
 		tJoined := gpc.New(joinedAt.In(loc))
 
 		daysActive := int(now.Sub(joinedAt.In(loc)).Hours() / 24)
-		if daysActive < 1 { daysActive = 1 }
+		if daysActive < 1 {
+			daysActive = 1
+		}
 
 		statusIcon := "❌"
-		if selfStatus == "روشن" { statusIcon = "✅"
-		} else if selfStatus == "خاموش" { statusIcon = "⏸️" }
+		if selfStatus == "روشن" {
+			statusIcon = "✅"
+		} else if selfStatus == "خاموش" {
+			statusIcon = "⏸️"
+		}
 
 		tNowStr := toPersianDigits(tNow.Format("yyyy/MM/dd"))
 		tTimeStr := toPersianDigits(tNow.Format("HH:mm:ss"))
@@ -1967,7 +2277,9 @@ func main() {
 
 	bot.Handle(&btnWolfPlus, func(c tele.Context) error {
 		userID := c.Sender().ID
-		if IsUserBlocked(userID) { return c.Send("❌ حساب کاربری شما مسدود شده است.") }
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود شده است.")
+		}
 		selfStatus := GetUserSelfStatus(userID)
 		if selfStatus == "خرید نداشته" || selfStatus == "خروج" {
 			return c.Send("❌ <b>دسترسی محدود!</b>\n\nامکانات ویژه ولف + فقط برای کاربران دارای اشتراک فعال است.", getKeyboard(userID), tele.ModeHTML)
@@ -1979,7 +2291,9 @@ func main() {
 
 	bot.Handle(&btnGuide, func(c tele.Context) error {
 		userID := c.Sender().ID
-		if IsUserBlocked(userID) { return c.Send("❌ حساب کاربری شما مسدود است.") }
+		if IsUserBlocked(userID) {
+			return c.Send("❌ حساب کاربری شما مسدود است.")
+		}
 		if selfStatus := GetUserSelfStatus(userID); selfStatus == "خرید نداشته" || selfStatus == "خروج" {
 			return c.Send("❌ <b>دسترسی محدود!</b>\n\nبخش راهنما فقط برای کاربران دارای اشتراک فعال است.", getKeyboard(userID), tele.ModeHTML)
 		}
@@ -1992,16 +2306,25 @@ func main() {
 		_ = db.QueryRow("SELECT COUNT(*) FROM wolf_enemies WHERE owner_id = ?", userID).Scan(&enemyCount)
 
 		clockStatus := "🔴 خاموش"
-		if isClock { clockStatus = "🟢 روشن" }
+		if isClock {
+			clockStatus = "🟢 روشن"
+		}
 		emojiStatus := "🔴 خاموش"
-		if isEmoji { emojiStatus = "🟢 روشن" }
+		if isEmoji {
+			emojiStatus = "🟢 روشن"
+		}
 		bioStatus := "🔴 خاموش"
 		if isBio {
-			if bioMode == "custom" { bioStatus = "🟢 روشن (دستی)"
-			} else { bioStatus = "🟢 روشن (رندوم)" }
+			if bioMode == "custom" {
+				bioStatus = "🟢 روشن (دستی)"
+			} else {
+				bioStatus = "🟢 روشن (رندوم)"
+			}
 		}
 		fontStatus := "🔴 خاموش"
-		if isFont { fontStatus = "🟢 روشن" }
+		if isFont {
+			fontStatus = "🟢 روشن"
+		}
 
 		text := fmt.Sprintf(`📚 <b>بخش راهنما و امکانات سلف ولف 🐺</b>
 ➖➖➖➖➖➖➖➖➖➖
@@ -2026,7 +2349,9 @@ func main() {
 		var isClock bool
 		_ = db.QueryRow("SELECT is_clock_enabled FROM users WHERE id = ?", c.Sender().ID).Scan(&isClock)
 		statusStr := "🔴 خاموش"
-		if isClock { statusStr = "🟢 روشن" }
+		if isClock {
+			statusStr = "🟢 روشن"
+		}
 		text := fmt.Sprintf(`⏱ <b>راهنمای ساعت زنده (Live Clock)</b>
 ➖➖➖➖➖➖➖➖➖➖
 📌 <b>وضعیت فعلی:</b> %s
@@ -2041,7 +2366,9 @@ func main() {
 		activeUserbotsMu.RLock()
 		ub, ok := activeUserbots[userID]
 		activeUserbotsMu.RUnlock()
-		if !ok || ub.Client == nil { return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideClockMenu, tele.ModeHTML) }
+		if !ok || ub.Client == nil {
+			return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideClockMenu, tele.ModeHTML)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		handleClockOn(ctx, userID, ub.Client)
@@ -2053,7 +2380,9 @@ func main() {
 		activeUserbotsMu.RLock()
 		ub, ok := activeUserbots[userID]
 		activeUserbotsMu.RUnlock()
-		if !ok || ub.Client == nil { return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideClockMenu, tele.ModeHTML) }
+		if !ok || ub.Client == nil {
+			return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideClockMenu, tele.ModeHTML)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		handleClockOff(ctx, userID, ub.Client)
@@ -2064,7 +2393,9 @@ func main() {
 		var isEmoji bool
 		_ = db.QueryRow("SELECT is_emoji_enabled FROM users WHERE id = ?", c.Sender().ID).Scan(&isEmoji)
 		statusStr := "🔴 خاموش"
-		if isEmoji { statusStr = "🟢 روشن" }
+		if isEmoji {
+			statusStr = "🟢 روشن"
+		}
 		text := fmt.Sprintf(`🎭 <b>راهنمای اموجی رندوم (Random Emoji)</b>
 ➖➖➖➖➖➖➖➖➖➖
 📌 <b>وضعیت فعلی:</b> %s
@@ -2078,7 +2409,9 @@ func main() {
 		activeUserbotsMu.RLock()
 		ub, ok := activeUserbots[userID]
 		activeUserbotsMu.RUnlock()
-		if !ok || ub.Client == nil { return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideEmojiMenu, tele.ModeHTML) }
+		if !ok || ub.Client == nil {
+			return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideEmojiMenu, tele.ModeHTML)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		handleEmojiOn(ctx, userID, ub.Client)
@@ -2089,7 +2422,9 @@ func main() {
 		activeUserbotsMu.RLock()
 		ub, ok := activeUserbots[userID]
 		activeUserbotsMu.RUnlock()
-		if !ok || ub.Client == nil { return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideEmojiMenu, tele.ModeHTML) }
+		if !ok || ub.Client == nil {
+			return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideEmojiMenu, tele.ModeHTML)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		handleEmojiOff(ctx, userID, ub.Client)
@@ -2102,7 +2437,11 @@ func main() {
 		_ = db.QueryRow("SELECT is_bio_enabled, bio_mode FROM users WHERE id = ?", c.Sender().ID).Scan(&isBio, &bioMode)
 		statusStr := "🔴 خاموش"
 		if isBio {
-			if bioMode == "custom" { statusStr = "🟢 روشن (دستی)" } else { statusStr = "🟢 روشن (رندوم)" }
+			if bioMode == "custom" {
+				statusStr = "🟢 روشن (دستی)"
+			} else {
+				statusStr = "🟢 روشن (رندوم)"
+			}
 		}
 		text := fmt.Sprintf(`📝 <b>راهنمای بیوگرافی هوشمند (Smart Bio)</b>
 ➖➖➖➖➖➖➖➖➖➖
@@ -2117,7 +2456,9 @@ func main() {
 		activeUserbotsMu.RLock()
 		ub, ok := activeUserbots[userID]
 		activeUserbotsMu.RUnlock()
-		if !ok || ub.Client == nil { return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideBioMenu, tele.ModeHTML) }
+		if !ok || ub.Client == nil {
+			return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideBioMenu, tele.ModeHTML)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		handleBioOn(ctx, userID, ub.Client)
@@ -2128,7 +2469,9 @@ func main() {
 		activeUserbotsMu.RLock()
 		ub, ok := activeUserbots[userID]
 		activeUserbotsMu.RUnlock()
-		if !ok || ub.Client == nil { return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideBioMenu, tele.ModeHTML) }
+		if !ok || ub.Client == nil {
+			return c.Send("❌ <b>سلف شما آنلاین نیست!</b>", guideBioMenu, tele.ModeHTML)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		handleBioOff(ctx, userID, ub.Client)
@@ -2148,7 +2491,9 @@ func main() {
 	})
 	bot.Handle(&btnFriendList, func(c tele.Context) error {
 		rows, err := db.Query("SELECT friend_id, friend_name FROM wolf_friends WHERE owner_id = ?", c.Sender().ID)
-		if err != nil { return c.Send("❌ خطا در دریافت لیست دوستان.", guideFriendMenu, tele.ModeHTML) }
+		if err != nil {
+			return c.Send("❌ خطا در دریافت لیست دوستان.", guideFriendMenu, tele.ModeHTML)
+		}
 		defer rows.Close()
 		var list []string
 		idx := 1
@@ -2160,7 +2505,9 @@ func main() {
 				idx++
 			}
 		}
-		if len(list) == 0 { return c.Send("⚠️ <i>لیست دوستان شما خالی است.</i>", guideFriendMenu, tele.ModeHTML) }
+		if len(list) == 0 {
+			return c.Send("⚠️ <i>لیست دوستان شما خالی است.</i>", guideFriendMenu, tele.ModeHTML)
+		}
 		return c.Send("📋 <b>لیست دوستان شما:</b>\n\n"+strings.Join(list, "\n"), guideFriendMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnFriendClear, func(c tele.Context) error {
@@ -2182,7 +2529,9 @@ func main() {
 	})
 	bot.Handle(&btnEnemyList, func(c tele.Context) error {
 		rows, err := db.Query("SELECT enemy_id, enemy_name FROM wolf_enemies WHERE owner_id = ?", c.Sender().ID)
-		if err != nil { return c.Send("❌ خطا در دریافت لیست دشمنان.", guideEnemyMenu, tele.ModeHTML) }
+		if err != nil {
+			return c.Send("❌ خطا در دریافت لیست دشمنان.", guideEnemyMenu, tele.ModeHTML)
+		}
 		defer rows.Close()
 		var list []string
 		idx := 1
@@ -2194,7 +2543,9 @@ func main() {
 				idx++
 			}
 		}
-		if len(list) == 0 { return c.Send("⚠️ <i>لیست دشمنان شما خالی است.</i>", guideEnemyMenu, tele.ModeHTML) }
+		if len(list) == 0 {
+			return c.Send("⚠️ <i>لیست دشمنان شما خالی است.</i>", guideEnemyMenu, tele.ModeHTML)
+		}
 		return c.Send("📋 <b>لیست دشمنان شما:</b>\n\n"+strings.Join(list, "\n"), guideEnemyMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnEnemyClear, func(c tele.Context) error {
@@ -2206,7 +2557,9 @@ func main() {
 	bot.Handle(&btnGFont, func(c tele.Context) error {
 		en, mode := getFontSetting(c.Sender().ID)
 		st := "🔴 خاموش"
-		if en { st = "🟢 روشن" }
+		if en {
+			st = "🟢 روشن"
+		}
 		text := fmt.Sprintf(`✒️ <b>سیستم خوشنویسی (Calligraphy)</b>
 ➖➖➖➖➖➖➖➖➖➖
 📌 <b>وضعیت فعلی:</b> %s
@@ -2266,24 +2619,34 @@ func main() {
 		var isClock, isEmoji, isBio, isFont bool
 		var bioMode string
 		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled FROM users WHERE id = ?", c.Sender().ID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
-		
+
 		clockStatus := "🔴 خاموش"
-		if isClock { clockStatus = "🟢 روشن" }
+		if isClock {
+			clockStatus = "🟢 روشن"
+		}
 		emojiStatus := "🔴 خاموش"
-		if isEmoji { emojiStatus = "🟢 روشن" }
+		if isEmoji {
+			emojiStatus = "🟢 روشن"
+		}
 		bioStatus := "🔴 خاموش"
 		if isBio {
-			if bioMode == "custom" { bioStatus = "🟢 روشن (دستی)" } else { bioStatus = "🟢 روشن (رندوم)" }
+			if bioMode == "custom" {
+				bioStatus = "🟢 روشن (دستی)"
+			} else {
+				bioStatus = "🟢 روشن (رندوم)"
+			}
 		}
 		fontStatus := "🔴 خاموش"
-		if isFont { fontStatus = "🟢 روشن" }
+		if isFont {
+			fontStatus = "🟢 روشن"
+		}
 
 		text := fmt.Sprintf(`📚 <b>بخش راهنما</b>
 ▫️ ⏱ ساعت: %s
 ▫️ 🎭 اموجی: %s
 ▫️ 📝 بیو: %s
 ▫️ ✒️ فونت: %s`, clockStatus, emojiStatus, bioStatus, fontStatus)
-		
+
 		return c.Send(text, guideMenu, tele.ModeHTML)
 	})
 
@@ -2291,18 +2654,27 @@ func main() {
 		var isClock, isEmoji, isBio, isFont bool
 		var bioMode string
 		_ = db.QueryRow("SELECT is_clock_enabled, is_emoji_enabled, is_bio_enabled, bio_mode, is_font_enabled FROM users WHERE id = ?", c.Sender().ID).Scan(&isClock, &isEmoji, &isBio, &bioMode, &isFont)
-		
+
 		clockStatus := "🔴 خاموش"
-		if isClock { clockStatus = "🟢 روشن" }
+		if isClock {
+			clockStatus = "🟢 روشن"
+		}
 		emojiStatus := "🔴 خاموش"
-		if isEmoji { emojiStatus = "🟢 روشن" }
+		if isEmoji {
+			emojiStatus = "🟢 روشن"
+		}
 		bioStatus := "🔴 خاموش"
 		if isBio {
-			if bioMode == "custom" { bioStatus = "🟢 روشن (دستی)"
-			} else { bioStatus = "🟢 روشن (رندوم)" }
+			if bioMode == "custom" {
+				bioStatus = "🟢 روشن (دستی)"
+			} else {
+				bioStatus = "🟢 روشن (رندوم)"
+			}
 		}
 		fontStatus := "🔴 خاموش"
-		if isFont { fontStatus = "🟢 روشن" }
+		if isFont {
+			fontStatus = "🟢 روشن"
+		}
 
 		text := fmt.Sprintf(`📚 <b>بخش راهنما و امکانات سلف ولف 🐺</b>
 ➖➖➖➖➖➖➖➖➖➖
@@ -2314,7 +2686,7 @@ func main() {
 ➖➖➖➖➖➖➖➖➖➖
 💡 <i>جهت مطالعه راهنما و تنظیم قابلیت‌ها، از کیبورد ثابت زیر استفاده کنید:</i>`,
 			clockStatus, emojiStatus, bioStatus, fontStatus)
-		
+
 		return c.Send(text, guideMenu, tele.ModeHTML)
 	}
 
@@ -2329,10 +2701,14 @@ func main() {
 	bot.Handle(&btnAutoReactBack, backToGuideHandler)
 	bot.Handle(&btnPVBack, backToGuideHandler)
 	bot.Handle(&btnGroupBack, backToGuideHandler)
-	bot.Handle(&btnGBackMain, func(c tele.Context) error { return c.Send("🔙 بازگشت به منوی اصلی", getMainKeyboard(c.Sender().ID), tele.ModeHTML) })
+	bot.Handle(&btnGBackMain, func(c tele.Context) error {
+		return c.Send("🔙 بازگشت به منوی اصلی", getMainKeyboard(c.Sender().ID), tele.ModeHTML)
+	})
 
 	bot.Handle(&btnWallet, func(c tele.Context) error {
-		if IsUserBlocked(c.Sender().ID) { return c.Send("❌ مسدود هستید") }
+		if IsUserBlocked(c.Sender().ID) {
+			return c.Send("❌ مسدود هستید")
+		}
 		stateMu.Lock()
 		userWalletTemp[c.Sender().ID] = 0
 		stateMu.Unlock()
@@ -2344,7 +2720,9 @@ func main() {
 		val, _ := strconv.Atoi(c.Data())
 		stateMu.Lock()
 		current := userWalletTemp[userID] + val
-		if current < 0 { current = 0 }
+		if current < 0 {
+			current = 0
+		}
 		userWalletTemp[userID] = current
 		stateMu.Unlock()
 		_ = c.Edit(fmt.Sprintf("👛 <b>مبلغ قابل پرداخت:</b> <code>%s تومان</code>", formatMoney(current)), getWalletInlineKeyboard(), tele.ModeHTML)
@@ -2355,7 +2733,9 @@ func main() {
 		stateMu.RLock()
 		amount := userWalletTemp[c.Sender().ID]
 		stateMu.RUnlock()
-		if amount <= 0 { return c.Send("❌ مبلغی انتخاب نکردید.", tele.ModeHTML) }
+		if amount <= 0 {
+			return c.Send("❌ مبلغی انتخاب نکردید.", tele.ModeHTML)
+		}
 		text := fmt.Sprintf("💳 <b>واریز به:</b>\n%s\n%s\nمبلغ: %s تومان\n📸 عکس فیش را بفرستید.", GetSetting("card_bank"), GetSetting("card_number"), formatMoney(amount))
 		return c.Send(text, waitingReceiptMenu, tele.ModeHTML)
 	})
@@ -2369,20 +2749,26 @@ func main() {
 
 	bot.Handle(tele.OnPhoto, func(c tele.Context) error {
 		user := c.Sender()
-		if IsUserBlocked(user.ID) { return c.Send("❌ مسدود") }
+		if IsUserBlocked(user.ID) {
+			return c.Send("❌ مسدود")
+		}
 		stateMu.RLock()
 		amount := userWalletTemp[user.ID]
 		stateMu.RUnlock()
-		if amount <= 0 { return c.Send("📸 تصویر دریافت شد.") }
+		if amount <= 0 {
+			return c.Send("📸 تصویر دریافت شد.")
+		}
 		res, err := db.Exec(`INSERT INTO transactions (user_id, amount, status) VALUES (?, ?, 'pending')`, user.ID, amount)
-		if err != nil { return c.Send("❌ خطا در سرور") }
+		if err != nil {
+			return c.Send("❌ خطا در سرور")
+		}
 		txID, _ := res.LastInsertId()
-		
+
 		menu := &tele.ReplyMarkup{}
 		btnApprove := menu.Data("✅ تایید", "admin_approve", strconv.FormatInt(txID, 10))
 		btnReject := menu.Data("❌ رد", "admin_reject", strconv.FormatInt(txID, 10))
 		menu.Inline(menu.Row(btnApprove, btnReject))
-		
+
 		photo := c.Message().Photo
 		photo.Caption = fmt.Sprintf("🔔 فیش %d\nمبلغ: %d\nکاربر: %d", txID, amount, user.ID)
 		for _, adminID := range cfg.AdminIDs {
@@ -2406,7 +2792,9 @@ func main() {
 	})
 
 	bot.Handle(&btnTurnOnSelf, func(c tele.Context) error {
-		if GetUserSelfStatus(c.Sender().ID) == "روشن" { return c.Send("سلف روشن است") }
+		if GetUserSelfStatus(c.Sender().ID) == "روشن" {
+			return c.Send("سلف روشن است")
+		}
 		if _, err := os.Stat(fmt.Sprintf("/opt/wolf/sessions/user_%d.json", c.Sender().ID)); err == nil {
 			_, _ = db.Exec("UPDATE users SET self_status = 'روشن' WHERE id = ?", c.Sender().ID)
 			startUserbot(c.Sender().ID, cfg, bot)
@@ -2450,7 +2838,9 @@ func main() {
 		stateMu.RLock()
 		st, ok := userStates[userID]
 		stateMu.RUnlock()
-		if !ok || st.Action != "waiting_for_contact" { return nil }
+		if !ok || st.Action != "waiting_for_contact" {
+			return nil
+		}
 
 		cc, pc, rc := make(chan string, 1), make(chan string, 1), make(chan AuthResult, 1)
 		ctx, cancel := context.WithCancel(context.Background())
@@ -2460,14 +2850,16 @@ func main() {
 		stateMu.Unlock()
 
 		go startTelegramLogin(ctx, userID, cfg, &botAuthenticator{phone: c.Message().Contact.PhoneNumber, codeChan: cc, passwordChan: pc, resultChan: rc})
-		
+
 		menu := &tele.ReplyMarkup{ResizeKeyboard: true}
 		menu.Reply(menu.Row(menu.Text("🔙 بازگشت")))
 		return c.Send("✅ کد ۵ رقمی را با فاصله بفرستید:", menu)
 	})
 
 	bot.Handle(&btnAdminPanel, func(c tele.Context) error {
-		if !cfg.IsAdmin(c.Sender().ID) { return nil }
+		if !cfg.IsAdmin(c.Sender().ID) {
+			return nil
+		}
 		return c.Send(getAdminDashboard(), adminPanelMenu, tele.ModeHTML)
 	})
 	bot.Handle(&btnConfigAccount, func(c tele.Context) error { return c.Send("تنظیمات بانک:", accountConfigMenu) })
@@ -2487,7 +2879,9 @@ func main() {
 		var tUID int64
 		var amt int
 		_ = tx.QueryRow("SELECT status, user_id, amount FROM transactions WHERE id = ? FOR UPDATE", txID).Scan(&stat, &tUID, &amt)
-		if stat != "pending" { return c.Respond(&tele.CallbackResponse{Text: "قبلا بررسی شده"}) }
+		if stat != "pending" {
+			return c.Respond(&tele.CallbackResponse{Text: "قبلا بررسی شده"})
+		}
 		_, _ = tx.Exec("UPDATE transactions SET status = 'approved' WHERE id = ?", txID)
 		_, _ = tx.Exec(`INSERT IGNORE INTO users (id, first_name, username) VALUES (?, 'کاربر', 'ثبت_نشده')`, tUID)
 		_, _ = tx.Exec(`INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON DUPLICATE KEY UPDATE balance = balance + ?`, tUID, amt, amt)
@@ -2498,8 +2892,10 @@ func main() {
 	})
 
 	bot.Handle(tele.OnText, func(c tele.Context) error {
-		if HandleWolfPlusText(c) { return nil }
-		
+		if HandleWolfPlusText(c) {
+			return nil
+		}
+
 		userID := c.Sender().ID
 		txt := strings.TrimSpace(c.Text())
 
@@ -2526,9 +2922,11 @@ func main() {
 							stateMu.Unlock()
 							return c.Send("🎉 سلف روشن شد!", getKeyboard(userID))
 						}
-					case <-time.After(35 * time.Second): return c.Send("تایم‌اوت")
+					case <-time.After(35 * time.Second):
+						return c.Send("تایم‌اوت")
 					}
-				default: return nil
+				default:
+					return nil
 				}
 			} else if st.Action == "waiting_for_password" {
 				select {
@@ -2543,9 +2941,11 @@ func main() {
 							stateMu.Unlock()
 							return c.Send("🎉 رمز درست بود، سلف روشن شد!", getKeyboard(userID))
 						}
-					case <-time.After(35 * time.Second): return c.Send("تایم‌اوت")
+					case <-time.After(35 * time.Second):
+						return c.Send("تایم‌اوت")
 					}
-				default: return nil
+				default:
+					return nil
 				}
 			}
 		}
@@ -2556,7 +2956,9 @@ func main() {
 			stateMu.RUnlock()
 			if aok {
 				switch ast.Action {
-				case "set_card_num": SetSetting("card_number", txt); c.Send("✅ ذخیره شد")
+				case "set_card_num":
+					SetSetting("card_number", txt)
+					c.Send("✅ ذخیره شد")
 				}
 				stateMu.Lock()
 				delete(adminStates, userID)
@@ -2580,7 +2982,9 @@ func main() {
 	if err == nil {
 		for rows.Next() {
 			var uid int64
-			if err := rows.Scan(&uid); err == nil { startUserbot(uid, cfg, bot) }
+			if err := rows.Scan(&uid); err == nil {
+				startUserbot(uid, cfg, bot)
+			}
 		}
 		rows.Close()
 	}
